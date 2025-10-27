@@ -1,0 +1,23 @@
+{
+  "projects": {
+    "dev": "habs-meet-dev",
+    "prod": "habs-meet-prod"
+  },
+  "targets": {
+    "habs-meet-dev": {
+      "hosting": {
+        "habs-meet-dev": [
+          "habs-meet-dev"
+        ]
+      }
+    },
+    "habs-meet-prod": {
+      "hosting": {
+        "habs-meet-prod": [
+          "habs-meet-prod"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

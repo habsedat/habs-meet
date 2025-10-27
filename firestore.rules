@@ -1,0 +1,90 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isHost(roomId) {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid)).data.role == 'host';
+    }
+    
+    function isParticipant(roomId) {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid));
+    }
+    
+    function roomNotEnded(roomId) {
+      return get(/databases/$(database)/documents/rooms/$(roomId)).data.status != 'ended';
+    }
+    
+    // Rooms collection
+    match /rooms/{roomId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.auth.uid == request.resource.data.createdBy;
+      allow update: if isHost(roomId);
+      allow delete: if isHost(roomId);
+      
+      // Participants subcollection
+      match /participants/{participantId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && request.auth.uid == request.resource.data.uid;
+        allow update: if isHost(roomId) || (isAuthenticated() && request.auth.uid == resource.data.uid);
+        allow delete: if isHost(roomId);
+      }
+      
+      // Chat subcollection
+      match /chat/{msgId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && 
+          (request.auth.uid == request.resource.data.uid || request.resource.data.isSystemMessage == true);
+        allow update, delete: if false; // Chat messages are immutable
+      }
+    }
+    
+    // Invites collection
+    match /invites/{inviteId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.auth.uid == resource.data.createdBy;
+      allow update: if isAuthenticated() && request.auth.uid == resource.data.createdBy;
+      allow delete: if isAuthenticated() && request.auth.uid == resource.data.createdBy;
+    }
+    
+    // Recordings collection
+    match /recordings/{recId} {
+      allow read: if isAuthenticated() && 
+        exists(/databases/$(database)/documents/rooms/$(resource.data.roomId)/participants/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/rooms/$(resource.data.roomId)/participants/$(request.auth.uid)).data.role == 'host';
+      allow create: if isAuthenticated(); // Only functions can create recordings
+      allow update, delete: if false; // Recordings are immutable
+    }
+    
+    // Users collection - CRITICAL for user authentication and profiles
+    match /users/{userId} {
+      allow read: if isAuthenticated(); // Allow reading all users for admin checking
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+      allow update: if isAuthenticated() && request.auth.uid == userId;
+      allow delete: if false; // Users cannot delete their own profiles
+    }
+    
+    // User uploads collection - for file storage metadata
+    match /userUploads/{uploadId} {
+      allow read: if isAuthenticated() && request.auth.uid == resource.data.userId;
+      allow create: if isAuthenticated() && request.auth.uid == request.resource.data.userId;
+      allow update: if isAuthenticated() && request.auth.uid == resource.data.userId;
+      allow delete: if isAuthenticated() && request.auth.uid == resource.data.userId;
+    }
+    
+    // Default media collection - available to all authenticated users
+    match /defaultMedia/{mediaId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated(); // Allow any authenticated user to create (for first admin setup)
+      allow update: if isAuthenticated() && request.auth.uid == resource.data.uploadedBy;
+      allow delete: if isAuthenticated() && request.auth.uid == resource.data.uploadedBy;
+    }
+  }
+}
+

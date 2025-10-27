@@ -1,0 +1,47 @@
+/* HistoryPage specific styles */
+.recording-card {
+  transition: all 0.2s ease-in-out;
+  border: 1px solid #E5E7EB;
+}
+
+.recording-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+}
+
+.recording-icon {
+  background: linear-gradient(135deg, #FEE2E2 0%, #FECACA 100%);
+  border: 1px solid #FCA5A5;
+}
+
+.empty-state {
+  background: linear-gradient(135deg, #1F2937 0%, #111827 100%);
+  border: 1px solid #374151;
+}
+
+/* File size and duration styling */
+.file-info {
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 0.875rem;
+}
+
+/* Responsive grid */
+@media (max-width: 768px) {
+  .recording-card {
+    padding: 1rem;
+  }
+  
+  .recording-card .flex {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+  
+  .recording-card .flex > div:last-child {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
+
+
+

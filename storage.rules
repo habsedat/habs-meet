@@ -1,0 +1,29 @@
+rules_version = '2';
+
+// Firebase Storage Security Rules
+service firebase.storage {
+  match /b/{bucket}/o {
+    // User uploads - users can only access their own files
+    match /userUploads/{userId}/{fileName} {
+      // Allow read, write, and delete only if the user is authenticated and owns the file
+      allow read, write, delete: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Default media - available to all authenticated users
+    match /defaultMedia/{category}/{fileName} {
+      // Allow read, write, and delete for all authenticated users (for admin setup)
+      allow read, write, delete: if request.auth != null;
+    }
+    
+    // Catch-all for default media in case of different path structure
+    match /defaultMedia/{allPaths=**} {
+      // Allow read, write, and delete for all authenticated users
+      allow read, write, delete: if request.auth != null;
+    }
+    
+    // Default rule - deny all other access
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
