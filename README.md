@@ -1,6 +1,6 @@
 # Habs Meet
 
-A professional video meeting application built with React, LiveKit, and Firebase. Features invite-only meetings, real-time chat, screen sharing, and HD recording capabilities.
+A professional video meeting application built with React, LiveKit, and Firebase. Features invite-only meetings, real-time chat, screen sharing, HD recording capabilities, and **advanced background effects** with LiveKit track processors.
 
 ## 🎨 Brand Identity
 
@@ -37,7 +37,8 @@ habs-meet/
 - **Database**: Firestore
 - **Storage**: Firebase Storage
 - **Authentication**: Firebase Auth
-- **Video**: LiveKit Cloud
+- **Video**: LiveKit Cloud with Track Processors
+- **Background Effects**: LiveKit BackgroundBlur & VirtualBackground
 - **Package Manager**: pnpm
 
 ## 🚀 Quick Start
@@ -50,7 +51,7 @@ habs-meet/
 
 ### 1. Clone and Install
 ```bash
-git clone <repository-url>
+git clone https://github.com/habsedat/habs-meet.git
 cd habs-meet
 pnpm install
 ```
@@ -140,6 +141,13 @@ firebase deploy --only hosting,functions
 - **Recording**: HD meeting recordings with cloud storage
 - **Host Controls**: Lock rooms, manage participants, start/stop recordings
 
+### 🎭 Background Effects (NEW!)
+- **Live Background Blur**: Professional blur effects using LiveKit processors
+- **Virtual Backgrounds**: Image and video backgrounds with real-time segmentation
+- **Persistent Preferences**: Background choices saved across sessions
+- **Multi-Attach Support**: Same processed track for main and modal previews
+- **Zoom-like Experience**: Optional background effects with toggle control
+
 ### User Experience
 - **Responsive Design**: Works on desktop, tablet, and mobile
 - **Keyboard Shortcuts**: M (mute), V (video), S (share), Esc (leave)
@@ -172,6 +180,12 @@ firebase deploy --only hosting,functions
 - **Thumbnails**: ~250 kbps
 - **Screen Share**: Up to 3.5 Mbps
 - **Codec**: VP9 with H.264 fallback for Safari
+
+### Background Effects
+- **Track Processors**: LiveKit BackgroundBlur & VirtualBackground
+- **WebGL Support**: Automatic fallback for unsupported browsers
+- **Memory Management**: Proper cleanup to prevent context leaks
+- **Error Handling**: Graceful degradation when effects fail
 
 ### Recording
 - Egress API for recording management
@@ -268,8 +282,9 @@ Visit `/brand` in development to see the complete design system including:
 2. Generate an invite link
 3. Redeem invite as participant
 4. Join meeting
-5. Start recording
-6. Verify webhook creates recording document
+5. Test background effects (blur, images, videos)
+6. Start recording
+7. Verify webhook creates recording document
 
 ### Manual Testing
 ```bash
@@ -288,11 +303,18 @@ node scripts/seed.js
 - Context providers manage global state
 - TypeScript for type safety
 
+### Background Effects Architecture
+- **BackgroundEngine**: Manages LiveKit track processors
+- **Multi-Attach**: Same LocalVideoTrack attached to multiple video elements
+- **Persistent Storage**: localStorage for background preferences
+- **Error Handling**: Graceful fallbacks when WebGL/processors fail
+
 ### Performance
 - Lazy loading for routes
 - Optimized video streaming
 - Efficient Firestore queries
 - Minimal bundle size with Vite
+- WebGL context management
 
 ### Accessibility
 - Keyboard navigation support
@@ -314,6 +336,12 @@ firebase emulators:start --import=./emulator-data --export-on-exit
 - Verify WebSocket URL in environment variables
 - Check API key and secret configuration
 - Ensure CORS is properly configured
+
+#### Background Effects Not Working
+- Check WebGL support in browser
+- Verify LiveKit track processors are loaded
+- Check console for processor initialization errors
+- Ensure MediaPipe WASM files are accessible
 
 #### Build Errors
 ```bash
@@ -344,5 +372,6 @@ For support and questions:
 - Check the troubleshooting section
 - Review Firebase and LiveKit documentation
 
+---
 
-
+**Live Demo**: https://habs-meet-dev.web.app
