@@ -1,0 +1,340 @@
+/* Professional Meeting Components Styles */
+
+/* Chat Panel */
+.chat-panel {
+  @apply flex flex-col h-full bg-gray-800;
+}
+
+.chat-header {
+  @apply flex items-center justify-between p-4 border-b border-gray-700;
+}
+
+.chat-title {
+  @apply text-white text-lg font-semibold;
+}
+
+.chat-close-btn {
+  @apply p-1 text-gray-400 hover:text-white transition-colors;
+}
+
+.chat-messages {
+  @apply flex-1 overflow-y-auto p-4 space-y-3;
+}
+
+.chat-empty {
+  @apply flex items-center justify-center h-full text-gray-400;
+}
+
+.chat-message {
+  @apply flex flex-col;
+}
+
+.chat-message.local {
+  @apply items-end;
+}
+
+.chat-message.remote {
+  @apply items-start;
+}
+
+.message-header {
+  @apply flex items-center space-x-2 mb-1;
+}
+
+.message-sender {
+  @apply text-sm font-medium text-gray-300;
+}
+
+.message-time {
+  @apply text-xs text-gray-500;
+}
+
+.message-content {
+  @apply max-w-xs px-3 py-2 rounded-lg;
+}
+
+.chat-message.local .message-content {
+  @apply bg-blue-600 text-white;
+}
+
+.chat-message.remote .message-content {
+  @apply bg-gray-700 text-white;
+}
+
+.message-emoji {
+  @apply text-2xl;
+}
+
+.chat-input {
+  @apply flex items-center p-4 border-t border-gray-700;
+}
+
+.chat-input-field {
+  @apply flex-1 bg-gray-700 text-white px-3 py-2 rounded-lg border border-gray-600 focus:outline-none focus:border-blue-500;
+}
+
+.chat-send-btn {
+  @apply ml-2 p-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+}
+
+/* Participants Panel */
+.participants-panel {
+  @apply flex flex-col h-full bg-gray-800;
+}
+
+.participants-header {
+  @apply flex items-center justify-between p-4 border-b border-gray-700;
+}
+
+.participants-title {
+  @apply text-white text-lg font-semibold;
+}
+
+.participants-close-btn {
+  @apply p-1 text-gray-400 hover:text-white transition-colors;
+}
+
+.host-controls {
+  @apply p-4 border-b border-gray-700;
+}
+
+.host-control-btn {
+  @apply flex items-center space-x-2 px-3 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors;
+}
+
+.participants-list {
+  @apply flex-1 overflow-y-auto p-4 space-y-3;
+}
+
+.participant-item {
+  @apply flex items-center justify-between p-3 bg-gray-700 rounded-lg;
+}
+
+.participant-info {
+  @apply flex items-center space-x-3;
+}
+
+.participant-avatar {
+  @apply w-10 h-10 bg-blue-600 text-white rounded-full flex items-center justify-center font-semibold;
+}
+
+.participant-details {
+  @apply flex flex-col;
+}
+
+.participant-name {
+  @apply text-white font-medium;
+}
+
+.participant-status {
+  @apply flex items-center space-x-2 mt-1;
+}
+
+.status-indicator {
+  @apply w-4 h-4 rounded-full flex items-center justify-center;
+}
+
+.status-indicator.video-on {
+  @apply bg-green-500;
+}
+
+.status-indicator.video-off {
+  @apply bg-red-500;
+}
+
+.status-indicator.audio-on {
+  @apply bg-green-500;
+}
+
+.status-indicator.audio-off {
+  @apply bg-red-500;
+}
+
+.participant-actions {
+  @apply relative;
+}
+
+.participant-more-btn {
+  @apply p-1 text-gray-400 hover:text-white transition-colors;
+}
+
+.participant-dropdown {
+  @apply absolute right-0 top-8 bg-gray-700 rounded-lg shadow-lg border border-gray-600 z-10;
+}
+
+.dropdown-item {
+  @apply flex items-center space-x-2 w-full px-4 py-2 text-white hover:bg-gray-600 transition-colors;
+}
+
+.dropdown-item.remove {
+  @apply text-red-400 hover:bg-red-900/20;
+}
+
+/* Settings Panel */
+.settings-panel {
+  @apply flex flex-col h-full bg-gray-800;
+}
+
+.settings-header {
+  @apply flex items-center justify-between p-4 border-b border-gray-700;
+}
+
+.settings-title {
+  @apply text-white text-lg font-semibold;
+}
+
+.settings-close-btn {
+  @apply p-1 text-gray-400 hover:text-white transition-colors;
+}
+
+.settings-content {
+  @apply flex-1 overflow-y-auto p-4;
+}
+
+.settings-section {
+  @apply mb-6;
+}
+
+.settings-section-title {
+  @apply text-white text-base font-semibold mb-4;
+}
+
+.setting-item {
+  @apply mb-4;
+}
+
+.setting-label {
+  @apply block text-gray-300 text-sm font-medium mb-2;
+}
+
+.setting-select {
+  @apply w-full bg-gray-700 text-white px-3 py-2 rounded-lg border border-gray-600 focus:outline-none focus:border-blue-500;
+}
+
+.setting-checkbox {
+  @apply mr-2;
+}
+
+/* Meeting Controls Enhancements */
+.meeting-controls {
+  @apply flex items-center justify-center space-x-3 p-4;
+}
+
+.primary-controls {
+  @apply flex items-center space-x-3;
+}
+
+.secondary-controls {
+  @apply flex items-center space-x-2 ml-4;
+}
+
+.control-btn {
+  @apply p-3 rounded-full transition-all duration-200 relative;
+}
+
+.control-btn.enabled {
+  @apply bg-white text-gray-800 hover:bg-gray-200;
+}
+
+.control-btn.disabled {
+  @apply bg-red-600 text-white hover:bg-red-700;
+}
+
+.control-btn.secondary {
+  @apply bg-gray-600 text-white hover:bg-gray-700;
+}
+
+.control-btn.leave-btn {
+  @apply bg-red-600 text-white hover:bg-red-700;
+}
+
+.badge {
+  @apply absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center;
+}
+
+.more-controls-dropdown {
+  @apply absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 bg-gray-800 rounded-lg shadow-lg border border-gray-600 z-10;
+}
+
+.control-option {
+  @apply flex items-center space-x-2 w-full px-4 py-2 text-white hover:bg-gray-700 transition-colors;
+}
+
+/* Video Grid Enhancements */
+.video-container {
+  @apply relative aspect-video bg-gray-900 rounded-lg overflow-hidden;
+}
+
+.video-container video {
+  @apply w-full h-full object-cover;
+}
+
+.participant-info {
+  @apply absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-3;
+}
+
+.participant-name {
+  @apply text-white font-medium text-sm;
+}
+
+.participant-status {
+  @apply flex items-center space-x-2 mt-1;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .meeting-controls {
+    @apply flex-wrap space-x-2 space-y-2;
+  }
+  
+  .secondary-controls {
+    @apply ml-0 w-full justify-center;
+  }
+  
+  .participants-panel,
+  .chat-panel,
+  .settings-panel {
+    @apply w-full;
+  }
+}
+
+/* Animation Classes */
+.fade-in {
+  @apply animate-fadeIn;
+}
+
+.slide-in-right {
+  @apply animate-slideInRight;
+}
+
+.slide-in-left {
+  @apply animate-slideInLeft;
+}
+
+/* Custom Animations */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes slideInLeft {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.3s ease-in-out;
+}
+
+.animate-slideInRight {
+  animation: slideInRight 0.3s ease-in-out;
+}
+
+.animate-slideInLeft {
+  animation: slideInLeft 0.3s ease-in-out;
+}

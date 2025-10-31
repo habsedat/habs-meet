@@ -8,7 +8,7 @@ import toast from 'react-hot-toast';
 const PreMeetingPage: React.FC = () => {
   const { user, userProfile } = useAuth();
   const navigate = useNavigate();
-  const [roomTitle, setRoomTitle] = useState('Loading...');
+  const [roomTitle, setRoomTitle] = useState('Meeting Room');
   const [isLoading, setIsLoading] = useState(true);
   const [roomId, setRoomId] = useState<string | null>(null);
 
@@ -86,7 +86,6 @@ const PreMeetingPage: React.FC = () => {
       
       toast.success('Successfully joined the meeting!');
       setRoomId(result.roomId);
-      setRoomTitle('Meeting Room'); // Use default title since result doesn't have title
       setIsLoading(false);
       
     } catch (error: any) {
