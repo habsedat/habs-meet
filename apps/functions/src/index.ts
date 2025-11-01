@@ -313,7 +313,7 @@ export const getMeetingToken = functions.https.onRequest(async (req, res) => {
       at.addGrant({
         room: roomId,
         roomJoin: true,
-        canPublish: participantData.role === 'host' || participantData.role === 'speaker',
+        canPublish: true,
         canSubscribe: true,
         canPublishData: true,
         canUpdateOwnMetadata: true,

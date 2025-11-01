@@ -52,23 +52,38 @@ const HomePage: React.FC = () => {
       return;
     }
 
-    // Extract invite ID from URL
-    const url = new URL(inviteLink);
-    const pathParts = url.pathname.split('/');
-    const inviteId = pathParts[pathParts.length - 1];
-    
-    if (!inviteId) {
+    try {
+      // Extract room ID from URL
+      const url = new URL(inviteLink);
+      const pathParts = url.pathname.split('/');
+      
+      // Check if it's a /join/:roomId link
+      if (pathParts[pathParts.length - 2] === 'join') {
+        const roomId = pathParts[pathParts.length - 1];
+        if (roomId) {
+          // Navigate directly to join page
+          window.location.href = `/join/${roomId}`;
+          return;
+        }
+      }
+      
+      // Otherwise, check for old invite format
+      const inviteId = pathParts[pathParts.length - 1];
+      if (!inviteId) {
+        toast.error('Invalid invite link format');
+        return;
+      }
+
+      // Store invite info in session storage
+      sessionStorage.setItem('pendingInvite', JSON.stringify({
+        inviteId,
+        token: url.searchParams.get('token')
+      }));
+
+      navigate('/pre-meeting');
+    } catch (error) {
       toast.error('Invalid invite link format');
-      return;
     }
-
-    // Store invite info in session storage
-    sessionStorage.setItem('pendingInvite', JSON.stringify({
-      inviteId,
-      token: url.searchParams.get('token')
-    }));
-
-    navigate('/pre-meeting');
   };
 
   const handleTabClick = (tab: 'calendar' | 'schedule' | 'share') => {

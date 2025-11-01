@@ -30,7 +30,7 @@ const MeetingControls: React.FC<MeetingControlsProps> = ({
       {/* Microphone toggle */}
       <button
         onClick={toggleMicrophone}
-        className={`p-2 rounded-full transition-colors ${
+        className={`p-1.5 sm:p-2 rounded-full transition-colors ${
           isMicrophoneEnabled
             ? 'bg-cloud text-midnight hover:bg-gray-200'
             : 'bg-red-600 text-cloud hover:bg-red-700'
@@ -64,7 +64,7 @@ const MeetingControls: React.FC<MeetingControlsProps> = ({
       {/* Camera toggle */}
       <button
         onClick={toggleCamera}
-        className={`p-2 rounded-full transition-colors ${
+        className={`p-1.5 sm:p-2 rounded-full transition-colors ${
           isCameraEnabled
             ? 'bg-cloud text-midnight hover:bg-gray-200'
             : 'bg-red-600 text-cloud hover:bg-red-700'
@@ -98,7 +98,7 @@ const MeetingControls: React.FC<MeetingControlsProps> = ({
       {/* Screen share toggle */}
       <button
         onClick={toggleScreenShare}
-        className={`p-2 rounded-full transition-colors ${
+        className={`p-1.5 sm:p-2 rounded-full transition-colors ${
           isScreenSharing
             ? 'bg-goldBright text-midnight hover:bg-yellow-400'
             : 'bg-cloud text-midnight hover:bg-gray-200'
@@ -126,7 +126,7 @@ const MeetingControls: React.FC<MeetingControlsProps> = ({
           {/* Record button */}
           <button
             onClick={onRecord}
-            className={`p-2 rounded-full transition-colors ${
+            className={`p-1.5 sm:p-2 rounded-full transition-colors ${
               isRecording
                 ? 'bg-red-600 text-cloud hover:bg-red-700'
                 : 'bg-cloud text-midnight hover:bg-gray-200'
@@ -147,7 +147,7 @@ const MeetingControls: React.FC<MeetingControlsProps> = ({
           {/* Lock/Unlock button */}
           <button
             onClick={onLock}
-            className={`p-2 rounded-full transition-colors ${
+            className={`p-1.5 sm:p-2 rounded-full transition-colors ${
               isLocked
                 ? 'bg-red-600 text-cloud hover:bg-red-700'
                 : 'bg-cloud text-midnight hover:bg-gray-200'

@@ -42,7 +42,7 @@ const VideoGrid: React.FC = () => {
   }
 
   return (
-    <div className="video-grid gap-4 h-full p-4">
+    <div className="video-grid h-full gap-4 p-2 sm:p-4">
       {allParticipants.map((participant) => (
         <VideoTile key={participant.identity || participant.sid} participant={participant} currentUserUid={user?.uid} />
       ))}
@@ -141,24 +141,24 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid }) =>
   const isCurrentUser = currentUserUid && (participant.identity === currentUserUid || isLocal);
 
   return (
-    <div className="video-container aspect-video bg-gray-900 rounded-lg overflow-hidden relative">
+    <div className="video-container w-full h-full bg-gray-900 rounded-lg overflow-hidden relative" style={{ aspectRatio: '16/9' }}>
       {/* Video element container */}
       <div ref={containerRef} className="w-full h-full bg-gradient-to-br from-techBlue to-violetDeep flex items-center justify-center">
         {/* Placeholder when no video */}
         <div className="text-center text-cloud">
-          <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-2">
-            <span className="text-2xl font-bold">
+          <div className="w-12 h-12 sm:w-16 sm:h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-2">
+            <span className="text-xl sm:text-2xl font-bold">
               {displayName.charAt(0).toUpperCase()}
             </span>
           </div>
-          <p className="text-sm font-medium">Video Stream</p>
+          <p className="text-xs sm:text-sm font-medium">Video Stream</p>
         </div>
       </div>
       
       {/* Participant info overlay */}
       {isCurrentUser && (
-        <div className="absolute top-4 left-4 z-10">
-          <div className="relative bg-gradient-to-r from-techBlue via-violetDeep to-techBlue bg-[length:200%_100%] animate-[gradient_3s_ease_infinite] px-4 py-2 rounded-lg shadow-lg">
+        <div className="absolute top-2 left-2 sm:top-4 sm:left-4 z-10">
+          <div className="relative bg-gradient-to-r from-techBlue via-violetDeep to-techBlue bg-[length:200%_100%] animate-[gradient_3s_ease_infinite] px-2 py-1 sm:px-4 sm:py-2 rounded-lg shadow-lg">
             <style>
               {`
                 @keyframes gradient {
@@ -167,7 +167,7 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid }) =>
                 }
               `}
             </style>
-            <span className="font-semibold text-sm text-cloud drop-shadow-md">
+            <span className="font-semibold text-xs sm:text-sm text-cloud drop-shadow-md">
               {displayName}
             </span>
           </div>

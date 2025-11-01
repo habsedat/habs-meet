@@ -11,6 +11,7 @@ const PreMeetingPage: React.FC = () => {
   const [roomTitle, setRoomTitle] = useState('Meeting Room');
   const [isLoading, setIsLoading] = useState(true);
   const [roomId, setRoomId] = useState<string | null>(null);
+  const [isParticipant, setIsParticipant] = useState(false);
 
   useEffect(() => {
     if (!user || !userProfile) {
@@ -44,6 +45,10 @@ const PreMeetingPage: React.FC = () => {
     }
 
     setRoomId(storedRoomId);
+
+    // Check if user is a participant (from join link)
+    const isParticipantFlag = sessionStorage.getItem('isParticipant');
+    setIsParticipant(isParticipantFlag === 'true');
 
     // Load room information
     const loadRoom = async () => {
@@ -110,6 +115,7 @@ const PreMeetingPage: React.FC = () => {
     <PreMeetingSetup 
       roomId={roomId!} 
       roomTitle={roomTitle}
+      isParticipant={isParticipant}
     />
   );
 };

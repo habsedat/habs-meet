@@ -9,6 +9,7 @@ import RoomPage from './pages/RoomPage';
 import HistoryPage from './pages/HistoryPage';
 import BrandPage from './pages/BrandPage';
 import InvitePage from './pages/InvitePage';
+import JoinPage from './pages/JoinPage';
 import AdminPage from './pages/AdminPage';
 import ProtectedRoute from './components/ProtectedRoute';
 
@@ -39,6 +40,14 @@ function AppRoutes() {
           </ProtectedRoute>
         } />
         <Route path="/invite/:inviteId" element={<InvitePage />} />
+        <Route
+          path="/join/:roomId"
+          element={
+            <ProtectedRoute>
+              <JoinPage />
+            </ProtectedRoute>
+          }
+        />
         <Route
           path="/pre-meeting"
           element={

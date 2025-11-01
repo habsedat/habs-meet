@@ -8,6 +8,7 @@ import toast from 'react-hot-toast';
 interface PreMeetingSetupProps {
   roomId: string;
   roomTitle: string;
+  isParticipant?: boolean;
 }
 
 interface MediaDevice {
@@ -17,7 +18,7 @@ interface MediaDevice {
 
 // Also use MediaDeviceInfo for compatibility
 
-const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle }) => {
+const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, isParticipant = false }) => {
   const navigate = useNavigate();
   const containerRef = useRef<HTMLDivElement>(null);
   const [videoTrack, setVideoTrack] = useState<LocalVideoTrack | null>(null);
@@ -942,13 +943,13 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle }) 
                 </p>
               </div>
 
-              {/* Start Button */}
+              {/* Start/Join Button */}
               <button
                 onClick={handleStart}
                 disabled={isStarting}
                 className="w-full bg-goldBright text-midnight py-2.5 rounded-lg font-semibold hover:bg-yellow-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm mt-4"
               >
-                {isStarting ? 'Starting...' : 'Start'}
+                {isStarting ? 'Joining...' : (isParticipant ? 'Join Meeting' : 'Start')}
               </button>
             </div>
           </div>

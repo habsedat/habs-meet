@@ -80,6 +80,13 @@ body {
   height: 100%;
 }
 
+@media (max-width: 640px) {
+  .video-grid {
+    grid-template-columns: 1fr;
+    gap: 0.5rem;
+  }
+}
+
 .video-container {
   position: relative;
   background: #000;

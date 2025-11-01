@@ -28,6 +28,7 @@ const RoomPage: React.FC = () => {
   const [showShareModal, setShowShareModal] = useState(false);
   const [shareLink, setShareLink] = useState('');
   const [isGeneratingLink, setIsGeneratingLink] = useState(false);
+  const [showBottomControls, setShowBottomControls] = useState(true);
 
   // Load room data
   useEffect(() => {
@@ -124,6 +125,34 @@ const RoomPage: React.FC = () => {
     );
   }, [isConnected, publishFromSavedSettings]);
 
+  // Auto-hide bottom controls after 15 seconds of inactivity
+  useEffect(() => {
+    let inactivityTimer: NodeJS.Timeout;
+    
+    const resetTimer = () => {
+      setShowBottomControls(true);
+      clearTimeout(inactivityTimer);
+      inactivityTimer = setTimeout(() => {
+        setShowBottomControls(false);
+      }, 15000); // 15 seconds
+    };
+    
+    // Initial timer
+    resetTimer();
+    
+    // Reset on mouse movement
+    const handleMouseMove = () => {
+      resetTimer();
+    };
+    
+    window.addEventListener('mousemove', handleMouseMove);
+    
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      clearTimeout(inactivityTimer);
+    };
+  }, []);
+
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyPress = (e: KeyboardEvent) => {
@@ -200,16 +229,9 @@ const RoomPage: React.FC = () => {
     
     setIsGeneratingLink(true);
     try {
-      // Create invite link
-      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days from now
-      const { link } = await api.createInvite({
-        roomId,
-        role: 'viewer',
-        maxUses: 100,
-        expiresAt: expiresAt.toISOString(),
-      });
-      
-      setShareLink(link);
+      // Create shorter, more professional link using room ID
+      const shortLink = `${window.location.origin}/join/${roomId}`;
+      setShareLink(shortLink);
       setShowShareModal(true);
     } catch (error: any) {
       toast.error('Failed to create invite link: ' + error.message);
@@ -238,12 +260,12 @@ const RoomPage: React.FC = () => {
   return (
     <div className="h-screen bg-midnight flex flex-col overflow-hidden relative">
       {/* Top bar - always visible, thin */}
-      <header className="h-12 bg-gray-900/90 backdrop-blur-sm border-b border-gray-700 px-4 flex items-center justify-between z-20">
-        <div className="flex items-center space-x-3">
+      <header className="h-12 bg-gray-900/90 backdrop-blur-sm border-b border-gray-700 px-2 sm:px-4 flex items-center justify-between z-20">
+        <div className="flex items-center space-x-2 sm:space-x-3">
           <div className="w-8 h-8 bg-gradient-to-br from-techBlue to-violetDeep rounded-lg flex items-center justify-center">
             <span className="text-cloud font-bold text-lg">H</span>
           </div>
-          <span className="text-cloud font-medium text-sm">{roomData.title}</span>
+          <span className="text-cloud font-medium text-xs sm:text-sm truncate max-w-[200px] sm:max-w-none">{roomData.title}</span>
         </div>
         <div className="flex items-center space-x-2">
           {activePanel && (
@@ -262,7 +284,7 @@ const RoomPage: React.FC = () => {
       
       <div className="flex-1 flex overflow-hidden relative">
         {/* Main video area */}
-        <div className={`flex-1 flex flex-col overflow-hidden transition-all duration-300 ${activePanel ? 'mr-80' : ''}`}>
+        <div className={`flex-1 flex flex-col overflow-hidden transition-all duration-300 ${activePanel ? 'mr-0 sm:mr-80' : ''}`}>
           <div className="flex-1 overflow-hidden">
             <VideoGrid />
           </div>
@@ -270,7 +292,7 @@ const RoomPage: React.FC = () => {
 
         {/* Side panel - slide in from right when active */}
         {activePanel && (
-          <div className="absolute right-0 top-0 bottom-0 w-80 bg-cloud border-l border-gray-300 flex flex-col overflow-hidden shadow-2xl z-30">
+          <div className="absolute right-0 top-0 bottom-0 w-full sm:w-80 bg-cloud border-l border-gray-300 flex flex-col overflow-hidden shadow-2xl z-30">
             {/* Panel header */}
             <div className="h-12 bg-gray-800 flex items-center justify-between px-4 border-b border-gray-700">
               <h3 className="text-cloud font-semibold text-sm uppercase">
@@ -311,10 +333,10 @@ const RoomPage: React.FC = () => {
         )}
       </div>
 
-      {/* Bottom controls bar - always visible */}
-      <div className="h-14 bg-gray-900/95 backdrop-blur-sm border-t border-gray-700 flex items-center justify-center px-4 z-20">
+      {/* Bottom controls bar - auto-hide */}
+      <div className={`h-14 bg-gray-900/95 backdrop-blur-sm border-t border-gray-700 flex items-center justify-center px-2 sm:px-4 z-20 transition-transform duration-300 ${showBottomControls ? 'translate-y-0' : 'translate-y-full'}`}>
         {/* Center - main controls */}
-        <div className="flex items-center space-x-2">
+        <div className="flex items-center space-x-1 sm:space-x-2">
           <MeetingControls
             isHost={isHost}
             onRecord={handleRecord}
@@ -327,7 +349,7 @@ const RoomPage: React.FC = () => {
           
           <button
             onClick={() => setActivePanel(activePanel === 'participants' ? null : 'participants')}
-            className={`relative p-2 hover:bg-gray-700 rounded transition-colors ${
+            className={`relative p-1.5 sm:p-2 hover:bg-gray-700 rounded transition-colors ${
               activePanel === 'participants' ? 'text-techBlue' : 'text-gray-400 hover:text-white'
             }`}
             title="Participants"
@@ -342,7 +364,7 @@ const RoomPage: React.FC = () => {
 
           <button
             onClick={() => setActivePanel(activePanel === 'chat' ? null : 'chat')}
-            className={`p-2 hover:bg-gray-700 rounded transition-colors ${
+            className={`p-1.5 sm:p-2 hover:bg-gray-700 rounded transition-colors ${
               activePanel === 'chat' ? 'text-techBlue' : 'text-gray-400 hover:text-white'
             }`}
             title="Chat"
@@ -355,7 +377,7 @@ const RoomPage: React.FC = () => {
           {isHost && (
             <button
               onClick={handleShareLink}
-              className={`p-2 hover:bg-gray-700 rounded transition-colors ${
+              className={`p-1.5 sm:p-2 hover:bg-gray-700 rounded transition-colors ${
                 isGeneratingLink ? 'opacity-50 cursor-not-allowed' : 'text-gray-400 hover:text-white'
               }`}
               title="Share meeting link"
@@ -372,9 +394,9 @@ const RoomPage: React.FC = () => {
           {/* Right side - end/leave button */}
           <button
             onClick={handleLeave}
-            className="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-lg font-medium transition-colors"
+            className="bg-red-600 hover:bg-red-700 text-white px-4 sm:px-6 py-2 rounded-lg font-medium transition-colors text-sm sm:text-base"
           >
-            End
+            {isHost ? 'End' : 'Leave'}
           </button>
         </div>
       </div>
