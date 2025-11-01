@@ -26,11 +26,11 @@ const MeetingControls: React.FC<MeetingControlsProps> = ({
   } = useLiveKit();
 
   return (
-    <div className="flex items-center justify-center space-x-4 p-4 bg-midnight border-t border-gray-800">
+    <>
       {/* Microphone toggle */}
       <button
         onClick={toggleMicrophone}
-        className={`p-3 rounded-full transition-colors ${
+        className={`p-2 rounded-full transition-colors ${
           isMicrophoneEnabled
             ? 'bg-cloud text-midnight hover:bg-gray-200'
             : 'bg-red-600 text-cloud hover:bg-red-700'
@@ -38,7 +38,7 @@ const MeetingControls: React.FC<MeetingControlsProps> = ({
         title={isMicrophoneEnabled ? 'Mute microphone (M)' : 'Unmute microphone (M)'}
       >
         <svg
-          className="w-6 h-6"
+          className="w-5 h-5"
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
@@ -64,7 +64,7 @@ const MeetingControls: React.FC<MeetingControlsProps> = ({
       {/* Camera toggle */}
       <button
         onClick={toggleCamera}
-        className={`p-3 rounded-full transition-colors ${
+        className={`p-2 rounded-full transition-colors ${
           isCameraEnabled
             ? 'bg-cloud text-midnight hover:bg-gray-200'
             : 'bg-red-600 text-cloud hover:bg-red-700'
@@ -72,7 +72,7 @@ const MeetingControls: React.FC<MeetingControlsProps> = ({
         title={isCameraEnabled ? 'Turn off camera (V)' : 'Turn on camera (V)'}
       >
         <svg
-          className="w-6 h-6"
+          className="w-5 h-5"
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
@@ -98,7 +98,7 @@ const MeetingControls: React.FC<MeetingControlsProps> = ({
       {/* Screen share toggle */}
       <button
         onClick={toggleScreenShare}
-        className={`p-3 rounded-full transition-colors ${
+        className={`p-2 rounded-full transition-colors ${
           isScreenSharing
             ? 'bg-goldBright text-midnight hover:bg-yellow-400'
             : 'bg-cloud text-midnight hover:bg-gray-200'
@@ -106,7 +106,7 @@ const MeetingControls: React.FC<MeetingControlsProps> = ({
         title={isScreenSharing ? 'Stop sharing (S)' : 'Share screen (S)'}
       >
         <svg
-          className="w-6 h-6"
+          className="w-5 h-5"
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
@@ -126,7 +126,7 @@ const MeetingControls: React.FC<MeetingControlsProps> = ({
           {/* Record button */}
           <button
             onClick={onRecord}
-            className={`p-3 rounded-full transition-colors ${
+            className={`p-2 rounded-full transition-colors ${
               isRecording
                 ? 'bg-red-600 text-cloud hover:bg-red-700'
                 : 'bg-cloud text-midnight hover:bg-gray-200'
@@ -134,7 +134,7 @@ const MeetingControls: React.FC<MeetingControlsProps> = ({
             title={isRecording ? 'Stop recording' : 'Start recording'}
           >
             <svg
-              className="w-6 h-6"
+              className="w-5 h-5"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -147,7 +147,7 @@ const MeetingControls: React.FC<MeetingControlsProps> = ({
           {/* Lock/Unlock button */}
           <button
             onClick={onLock}
-            className={`p-3 rounded-full transition-colors ${
+            className={`p-2 rounded-full transition-colors ${
               isLocked
                 ? 'bg-red-600 text-cloud hover:bg-red-700'
                 : 'bg-cloud text-midnight hover:bg-gray-200'
@@ -155,7 +155,7 @@ const MeetingControls: React.FC<MeetingControlsProps> = ({
             title={isLocked ? 'Unlock room' : 'Lock room'}
           >
             <svg
-              className="w-6 h-6"
+              className="w-5 h-5"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -179,7 +179,7 @@ const MeetingControls: React.FC<MeetingControlsProps> = ({
           </button>
         </>
       )}
-    </div>
+    </>
   );
 };
 

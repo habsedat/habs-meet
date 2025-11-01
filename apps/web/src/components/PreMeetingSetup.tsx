@@ -663,6 +663,22 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle }) 
     try {
       localStorage.setItem('alwaysShowPreview', JSON.stringify(alwaysShowPreview));
       
+      // Save pre-meeting settings for room
+      const settings = {
+        videoDeviceId: selectedVideoDevice || null,
+        audioDeviceId: selectedAudioDevice || null,
+        videoEnabled: isVideoEnabled !== false,
+        audioEnabled: isMicEnabled !== false,
+        backgroundEffectsEnabled: isBackgroundEffectsEnabled === true,
+        savedBackground: (() => {
+          try {
+            const raw = localStorage.getItem('savedBackground');
+            return raw ? JSON.parse(raw) : savedBackground;
+          } catch { return savedBackground; }
+        })(),
+      };
+      localStorage.setItem('preMeetingSettings', JSON.stringify(settings));
+      
       if (videoTrack) {
         videoTrack.stop();
         videoTrack.detach();

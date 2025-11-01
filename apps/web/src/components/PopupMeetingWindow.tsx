@@ -390,7 +390,7 @@ const PopupMeetingWindow: React.FC<PopupMeetingWindowProps> = ({ roomId, onClose
           onMouseDown={handleVideoMouseDown}
           onMouseUp={handleVideoMouseUp}
         >
-          <VideoGrid participants={participants} />
+          <VideoGrid />
           
           {/* Video resize handles */}
           <div className="absolute bottom-0 right-0 w-4 h-4 bg-blue-500 cursor-se-resize opacity-50 hover:opacity-100"

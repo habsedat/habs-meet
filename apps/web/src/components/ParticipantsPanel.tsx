@@ -1,13 +1,6 @@
 import React from 'react';
 import { useAuth } from '../contexts/AuthContext';
-
-interface Participant {
-  id: string;
-  uid: string;
-  role: 'host' | 'speaker' | 'viewer';
-  joinedAt: any;
-  leftAt?: any;
-}
+import { Participant } from '../lib/meetingService';
 
 interface ParticipantsPanelProps {
   participants: Participant[];
@@ -79,7 +72,7 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
                     {/* Avatar */}
                     <div className="w-10 h-10 bg-gradient-to-br from-techBlue to-violetDeep rounded-full flex items-center justify-center">
                       <span className="text-cloud font-medium text-sm">
-                        {participant.uid.charAt(0).toUpperCase()}
+                        {participant.displayName?.charAt(0).toUpperCase() || participant.uid.charAt(0).toUpperCase()}
                       </span>
                     </div>
 
@@ -87,7 +80,7 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
                     <div>
                       <div className="flex items-center space-x-2">
                         <p className="font-medium text-sm text-midnight">
-                          {participant.uid}
+                          {participant.displayName || participant.uid}
                           {isCurrentUser && ' (You)'}
                         </p>
                         {participant.role === 'host' && (

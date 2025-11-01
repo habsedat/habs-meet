@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
-import { Room, RoomEvent, Track, RemoteParticipant, LocalParticipant, LocalTrackPublication, LocalVideoTrack } from 'livekit-client';
+import { Room, RoomEvent, Track, RemoteParticipant, LocalParticipant, LocalTrackPublication, LocalVideoTrack, createLocalVideoTrack, createLocalAudioTrack } from 'livekit-client';
 import { LIVEKIT_CONFIG } from '../lib/livekitConfig';
+import { backgroundEngine } from '../video/BackgroundEngine';
 
 interface LiveKitContextType {
   room: Room | null;
@@ -37,6 +38,9 @@ interface LiveKitContextType {
   
   // Background Engine
   getLocalVideoTrack: () => LocalVideoTrack | null;
+  
+  // Publish from saved settings
+  publishFromSavedSettings: () => Promise<void>;
 }
 
 const LiveKitContext = createContext<LiveKitContextType | undefined>(undefined);
@@ -66,6 +70,8 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
   const [error, setError] = useState<string | null>(null);
   
   const roomRef = useRef<Room | null>(null);
+  const hasPublishedRef = useRef(false);
+  const [, forceUpdate] = useState({});
 
   const connect = async (token: string) => {
     if (isConnecting || isConnected) return;
@@ -109,16 +115,15 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
         setLocalParticipant(null);
         setParticipantCount(0);
         roomRef.current = null;
+        hasPublishedRef.current = false;
       });
 
       newRoom.on(RoomEvent.ParticipantConnected, (participant) => {
-        console.log('Participant connected:', participant.identity);
         setParticipants(prev => new Map(prev.set(participant.identity, participant)));
         setParticipantCount(newRoom.participants.size + 1);
       });
 
       newRoom.on(RoomEvent.ParticipantDisconnected, (participant) => {
-        console.log('Participant disconnected:', participant.identity);
         setParticipants(prev => {
           const newMap = new Map(prev);
           newMap.delete(participant.identity);
@@ -127,43 +132,36 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
         setParticipantCount(newRoom.participants.size + 1);
       });
 
-      newRoom.on(RoomEvent.TrackSubscribed, (track, _publication, participant) => {
-        console.log('Track subscribed:', track.kind, participant.identity);
-        if (track.kind === Track.Kind.Video || track.kind === Track.Kind.Audio) {
-          const element = track.attach();
-          element.id = `${participant.identity}-${track.kind}`;
-          document.body.appendChild(element);
-        }
+      newRoom.on(RoomEvent.TrackSubscribed, () => {
+        // VideoGrid will handle track attachment
       });
 
-      newRoom.on(RoomEvent.TrackUnsubscribed, (track, _publication, participant) => {
-        console.log('Track unsubscribed:', track.kind, participant.identity);
-        track.detach();
-        const element = document.getElementById(`${participant.identity}-${track.kind}`);
-        if (element) {
-          element.remove();
-        }
+      newRoom.on(RoomEvent.TrackUnsubscribed, () => {
+        // VideoGrid will handle track detachment
       });
 
-      newRoom.on(RoomEvent.TrackMuted, (publication, participant) => {
-        console.log('Track muted:', publication.kind, participant.identity);
+      newRoom.on(RoomEvent.TrackMuted, () => {
+        // Track muted
       });
 
-      newRoom.on(RoomEvent.TrackUnmuted, (publication, participant) => {
-        console.log('Track unmuted:', publication.kind, participant.identity);
+      newRoom.on(RoomEvent.TrackUnmuted, () => {
+        // Track unmuted
       });
 
-      newRoom.on(RoomEvent.ConnectionStateChanged, (state) => {
-        console.log('Connection state changed:', state);
+      newRoom.on(RoomEvent.LocalTrackPublished, () => {
+        // Force re-render by setting a new object
+        forceUpdate({});
+      });
+
+      newRoom.on(RoomEvent.ConnectionStateChanged, () => {
+        // Connection state changed
       });
 
       // Connect to room
       await newRoom.connect(LIVEKIT_CONFIG.serverUrl, token);
       setRoom(newRoom);
-
-      // Enable microphone and camera by default
-      await newRoom.localParticipant.setMicrophoneEnabled(true);
-      await newRoom.localParticipant.setCameraEnabled(true);
+      
+      // Don't enable camera/mic here - let RoomPage handle track creation with user's device choices
 
     } catch (error: any) {
       console.error('Failed to connect to room:', error);
@@ -239,6 +237,71 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
     return track ?? null;
   }, [localParticipant]);
 
+  const publishFromSavedSettings = useCallback(async () => {
+    if (hasPublishedRef.current) {
+      return;
+    }
+    
+    const r = roomRef.current;
+    if (!r) {
+      return;
+    }
+
+    hasPublishedRef.current = true;
+    
+    const raw = localStorage.getItem('preMeetingSettings');
+    const saved = raw ? JSON.parse(raw) : {};
+    const videoOn = saved.videoEnabled !== false;
+    const audioOn = saved.audioEnabled !== false;
+
+    // VIDEO
+    if (videoOn) {
+      const vTrack: LocalVideoTrack = await createLocalVideoTrack({
+        deviceId: saved.videoDeviceId ? { exact: saved.videoDeviceId } : undefined,
+        resolution: { width: 1280, height: 720 },
+      });
+
+      // Apply background effect if enabled
+      try {
+        const bgEnabled =
+          saved.backgroundEffectsEnabled ||
+          localStorage.getItem('backgroundEffectsEnabled') === 'true';
+        const chosenBg =
+          saved.savedBackground ||
+          (localStorage.getItem('savedBackground') &&
+            JSON.parse(localStorage.getItem('savedBackground')!));
+
+        if (bgEnabled && chosenBg) {
+          await backgroundEngine.init(vTrack);
+          if (chosenBg.type === 'blur') await backgroundEngine.setBlur();
+          else if (chosenBg.type === 'image' && chosenBg.url) await backgroundEngine.setImage(chosenBg.url);
+        }
+      } catch (e) {
+        console.warn('[LiveKit] background effect failed, continuing without it', e);
+      }
+
+      await r.localParticipant.publishTrack(vTrack, {
+        source: Track.Source.Camera,
+      });
+      setIsCameraEnabled(true);
+      
+      // Force a re-render after a short delay to allow VideoTile to pick up the track
+      setTimeout(() => {
+        forceUpdate({});
+        setLocalParticipant(r.localParticipant);
+      }, 100);
+    }
+
+    // AUDIO
+    if (audioOn) {
+      const aTrack = await createLocalAudioTrack({
+        deviceId: saved.audioDeviceId ? { exact: saved.audioDeviceId } : undefined,
+      });
+      await r.localParticipant.publishTrack(aTrack);
+      setIsMicrophoneEnabled(true);
+    }
+  }, []);
+
   const value: LiveKitContextType = {
     room,
     isConnected,
@@ -274,6 +337,9 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
     
     // Background Engine
     getLocalVideoTrack,
+    
+    // Publish from saved settings
+    publishFromSavedSettings,
   };
 
   return <LiveKitContext.Provider value={value}>{children}</LiveKitContext.Provider>;

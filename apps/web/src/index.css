@@ -16,8 +16,14 @@
   box-sizing: border-box;
 }
 
-body {
+html, body {
+  height: 100%;
   margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
     'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
     sans-serif;
@@ -25,6 +31,11 @@ body {
   -moz-osx-font-smoothing: grayscale;
   background-color: var(--midnight);
   color: var(--cloud);
+}
+
+#root {
+  height: 100%;
+  overflow: hidden;
 }
 
 /* Custom Component Styles */

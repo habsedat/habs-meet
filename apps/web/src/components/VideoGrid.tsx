@@ -1,21 +1,22 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { useLiveKit } from '../contexts/LiveKitContext';
+import { useAuth } from '../contexts/AuthContext';
+import { RemoteParticipant, LocalParticipant, Track, TrackPublication, ParticipantEvent } from 'livekit-client';
 
-interface Participant {
-  id: string;
-  uid: string;
-  role: 'host' | 'speaker' | 'viewer';
-  joinedAt: any;
-  leftAt?: any;
-}
+const VideoGrid: React.FC = () => {
+  const { participants, localParticipant } = useLiveKit();
+  const { user } = useAuth();
 
-interface VideoGridProps {
-  participants: Participant[];
-}
+  // Combine local and remote participants
+  const allParticipants: (LocalParticipant | RemoteParticipant)[] = [];
+  if (localParticipant) {
+    allParticipants.push(localParticipant);
+  }
+  participants.forEach((participant) => {
+    allParticipants.push(participant);
+  });
 
-const VideoGrid: React.FC<VideoGridProps> = ({ participants }) => {
-  const activeParticipants = participants.filter(p => !p.leftAt);
-
-  if (activeParticipants.length === 0) {
+  if (allParticipants.length === 0) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center">
@@ -41,30 +42,113 @@ const VideoGrid: React.FC<VideoGridProps> = ({ participants }) => {
   }
 
   return (
-    <div className="video-grid gap-4 h-full">
-      {activeParticipants.map((participant) => (
-        <VideoTile key={participant.id} participant={participant} />
+    <div className="video-grid gap-4 h-full p-4">
+      {allParticipants.map((participant) => (
+        <VideoTile key={participant.identity || participant.sid} participant={participant} currentUserUid={user?.uid} />
       ))}
     </div>
   );
 };
 
 interface VideoTileProps {
-  participant: Participant;
+  participant: LocalParticipant | RemoteParticipant;
+  currentUserUid?: string;
 }
 
-const VideoTile: React.FC<VideoTileProps> = ({ participant }) => {
-  // TODO: Integrate with LiveKit to show actual video streams
-  const isLocalParticipant = participant.uid === 'local'; // This would be determined by LiveKit
-  
+const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const isLocal = participant instanceof LocalParticipant;
+  const [videoPublication, setVideoPublication] = useState<TrackPublication | null>(null);
+
+  // Listen for track publications
+  useEffect(() => {
+    // Get initial video publication - accept Camera or Unknown
+    const vidPub: TrackPublication | null = 
+      (participant.getTrack(Track.Source.Camera) as TrackPublication) ||
+      (participant.getTrack(Track.Source.Unknown) as TrackPublication) ||
+      null;
+    setVideoPublication(vidPub);
+
+    // Listen for track published/unpublished events
+    const handleTrackPublished = (publication: TrackPublication) => {
+      if (publication.kind === Track.Kind.Video) {
+        setVideoPublication(publication);
+      }
+    };
+
+    const handleTrackUnpublished = (publication: TrackPublication) => {
+      if (publication.kind === Track.Kind.Video) {
+        setVideoPublication(null);
+      }
+    };
+
+    participant.on(ParticipantEvent.TrackPublished, handleTrackPublished);
+    participant.on(ParticipantEvent.TrackUnpublished, handleTrackUnpublished);
+
+    return () => {
+      participant.off(ParticipantEvent.TrackPublished, handleTrackPublished);
+      participant.off(ParticipantEvent.TrackUnpublished, handleTrackUnpublished);
+    };
+  }, [participant, isLocal]);
+
+  // Periodic check for video track (in case it's published after initial render)
+  useEffect(() => {
+    if (!isLocal || videoPublication) return; // Only check for local if no track yet
+    
+    const checkInterval = setInterval(() => {
+      const vidPub: TrackPublication | null = 
+        (participant.getTrack(Track.Source.Camera) as TrackPublication) ||
+        (participant.getTrack(Track.Source.Unknown) as TrackPublication) ||
+        null;
+      
+      if (vidPub && !videoPublication) {
+        setVideoPublication(vidPub);
+      }
+    }, 500);
+
+    return () => clearInterval(checkInterval);
+  }, [participant, isLocal, videoPublication]);
+
+  // Attach video track when publication changes
+  useEffect(() => {
+    if (!containerRef.current) return;
+    
+    if (videoPublication && videoPublication.track) {
+      const element = videoPublication.track.attach();
+      element.autoplay = true;
+      element.setAttribute('playsInline', 'true');
+      element.muted = isLocal; // Mute local video to prevent feedback
+      element.style.width = '100%';
+      element.style.height = '100%';
+      element.style.objectFit = 'cover';
+
+      // Clear existing content and append video element
+      if (containerRef.current) {
+        containerRef.current.innerHTML = '';
+        containerRef.current.appendChild(element);
+      }
+    }
+
+    return () => {
+      if (videoPublication?.track && containerRef.current) {
+        videoPublication.track.detach();
+      }
+    };
+  }, [videoPublication, isLocal]);
+
+  // Determine display name
+  const displayName = participant.name || participant.identity || 'Unknown';
+  const isCurrentUser = currentUserUid && (participant.identity === currentUserUid || isLocal);
+
   return (
     <div className="video-container aspect-video bg-gray-900 rounded-lg overflow-hidden relative">
-      {/* Placeholder for video element */}
-      <div className="w-full h-full bg-gradient-to-br from-techBlue to-violetDeep flex items-center justify-center">
+      {/* Video element container */}
+      <div ref={containerRef} className="w-full h-full bg-gradient-to-br from-techBlue to-violetDeep flex items-center justify-center">
+        {/* Placeholder when no video */}
         <div className="text-center text-cloud">
           <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-2">
             <span className="text-2xl font-bold">
-              {participant.uid.charAt(0).toUpperCase()}
+              {displayName.charAt(0).toUpperCase()}
             </span>
           </div>
           <p className="text-sm font-medium">Video Stream</p>
@@ -72,31 +156,51 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant }) => {
       </div>
       
       {/* Participant info overlay */}
-      <div className="participant-info">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            <span className="font-medium text-sm">
-              {participant.uid} {isLocalParticipant && '(You)'}
+      {isCurrentUser && (
+        <div className="absolute top-4 left-4 z-10">
+          <div className="relative bg-gradient-to-r from-techBlue via-violetDeep to-techBlue bg-[length:200%_100%] animate-[gradient_3s_ease_infinite] px-4 py-2 rounded-lg shadow-lg">
+            <style>
+              {`
+                @keyframes gradient {
+                  0%, 100% { background-position: 0% 50%; }
+                  50% { background-position: 100% 50%; }
+                }
+              `}
+            </style>
+            <span className="font-semibold text-sm text-cloud drop-shadow-md">
+              {displayName}
             </span>
-            {participant.role === 'host' && (
-              <span className="bg-goldBright text-midnight px-2 py-1 rounded text-xs font-medium">
-                Host
-              </span>
-            )}
-          </div>
-          
-          <div className="participant-status">
-            <div className="status-indicator"></div>
-            <div className="status-indicator muted"></div>
-            <div className="status-indicator camera-off"></div>
           </div>
         </div>
-      </div>
+      )}
+      {!isCurrentUser && (
+        <div className="participant-info absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <span className="font-medium text-sm text-white">
+                {displayName}
+              </span>
+            </div>
+            
+            <div className="flex items-center space-x-1">
+              {/* Mic status */}
+              {participant.isMicrophoneEnabled ? (
+                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+              ) : (
+                <div className="w-2 h-2 bg-red-500 rounded-full"></div>
+              )}
+              {/* Camera status */}
+              {participant.isCameraEnabled ? (
+                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+              ) : (
+                <div className="w-2 h-2 bg-red-500 rounded-full"></div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
 
 export default VideoGrid;
-
-
-

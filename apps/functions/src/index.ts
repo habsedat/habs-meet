@@ -443,20 +443,23 @@ export const api = functions.https.onRequest(async (req, res) => {
     const path = req.path;
     const method = req.method;
 
+    console.log('[API Router] Path:', path, 'Method:', method);
+
     // Route to appropriate function
-    if (path.startsWith('/invites/create') && method === 'POST') {
+    if (path.startsWith('/api/invites/create') && method === 'POST') {
       return createInvite(req, res);
-    } else if (path.startsWith('/invites/redeem') && method === 'POST') {
+    } else if (path.startsWith('/api/invites/redeem') && method === 'POST') {
       return redeemInvite(req, res);
-    } else if (path.startsWith('/invites/revoke') && method === 'POST') {
+    } else if (path.startsWith('/api/invites/revoke') && method === 'POST') {
       return revokeInvite(req, res);
-    } else if (path.startsWith('/meet/token') && method === 'POST') {
+    } else if (path.startsWith('/api/meet/token') && method === 'POST') {
       return getMeetingToken(req, res);
-    } else if (path.startsWith('/meet/rooms/') && path.endsWith('/guard') && method === 'GET') {
+    } else if (path.startsWith('/api/meet/rooms/') && path.endsWith('/guard') && method === 'GET') {
       return getRoomGuard(req, res);
-    } else if (path.startsWith('/meet/webhooks/livekit') && method === 'POST') {
+    } else if (path.startsWith('/api/meet/webhooks/livekit') && method === 'POST') {
       return livekitWebhook(req, res);
     } else {
+      console.log('[API Router] No route found for:', path);
       return res.status(404).json({ error: 'Endpoint not found' });
     }
   });
