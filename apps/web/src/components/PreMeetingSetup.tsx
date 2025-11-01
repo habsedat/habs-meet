@@ -1,6 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../contexts/AuthContext';
 import { createLocalVideoTrack, createLocalAudioTrack, LocalVideoTrack, LocalAudioTrack } from 'livekit-client';
 import { backgroundEngine } from '../video/BackgroundEngine';
 import BackgroundEffectsPanel from './BackgroundEffectsPanel';
@@ -19,7 +18,6 @@ interface MediaDevice {
 // Also use MediaDeviceInfo for compatibility
 
 const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle }) => {
-  const { userProfile } = useAuth();
   const navigate = useNavigate();
   const containerRef = useRef<HTMLDivElement>(null);
   const [videoTrack, setVideoTrack] = useState<LocalVideoTrack | null>(null);
@@ -47,6 +45,41 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle }) 
   
   const [showBackgroundPanel, setShowBackgroundPanel] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
+  
+  // Detect mobile/tablet screen size
+  const [isMobile, setIsMobile] = useState(false);
+  
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 640); // sm breakpoint in Tailwind
+    };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+  
+  // Memoize close handler to prevent effect re-running
+  const handleClosePanel = useCallback(() => {
+    setShowBackgroundPanel(false);
+  }, []);
+  
+  // Handle native back button on mobile
+  useEffect(() => {
+    if (!isMobile || showBackgroundPanel) return; // Don't handle if background panel is open
+    
+    const handlePopState = () => {
+      // User pressed back button, navigate to home
+      navigate('/home');
+    };
+    
+    // Push a history state so back button works
+    window.history.pushState({ preMeetingOpen: true }, '');
+    
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, [isMobile, navigate, showBackgroundPanel]);
 
   // Function to refresh device list
   const refreshDevices = async () => {
@@ -647,18 +680,6 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle }) 
     }
   };
 
-      const [currentSelected, setCurrentSelected] = useState<'none' | 'blur' | string | null>(() => {
-        const saved = localStorage.getItem('savedBackground');
-        if (saved) {
-          try {
-            const bg = JSON.parse(saved);
-            if (bg.type === 'blur') return 'blur';
-            if (bg.type === 'image' || bg.type === 'video') return `bg_${bg.type}_${bg.url?.slice(0, 20)}`;
-          } catch {}
-        }
-        return 'none';
-      });
-
       const handleBackgroundChange = async (type: 'none' | 'blur' | 'image' | 'video', url?: string) => {
         if (!videoTrack) return;
 
@@ -670,46 +691,33 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle }) 
             return;
           }
 
-          // Update current selected state immediately
+          // persist selection in localStorage
           if (type === 'none') {
-            setCurrentSelected('none');
             setSavedBackground(null);
             localStorage.removeItem('savedBackground');
           } else if (type === 'blur') {
-            setCurrentSelected('blur');
             const backgroundToSave = { type: 'blur' as const };
             setSavedBackground(backgroundToSave);
             localStorage.setItem('savedBackground', JSON.stringify(backgroundToSave));
-          } else if (type === 'image' || type === 'video') {
-            const bgId = `bg_${type}_${url?.slice(0, 20)}`;
-            setCurrentSelected(bgId);
+          } else {
             const backgroundToSave = { type, url };
             setSavedBackground(backgroundToSave);
             localStorage.setItem('savedBackground', JSON.stringify(backgroundToSave));
           }
 
-          // Apply background - EACH TYPE DOES ONLY ONE FUNCTION
-          // SWAPPED: The functions are backwards, so swapping the calls
+          // ensure feature is ON so processor stays attached
+          if (!isBackgroundEffectsEnabled) setIsBackgroundEffectsEnabled(true);
+
+          // Apply (keeping your swapped none/blur behavior)
+          // Note: Each method (setBlur, setNone, setImage, setVideo) will handle init internally
           if (type === 'none') {
-            // NONE button clicked - but actually apply blur (functions are reversed)
-            if (backgroundEngine && typeof backgroundEngine.setBlur === 'function') {
-              await backgroundEngine.setBlur();
-            }
+            await backgroundEngine.setBlur?.();
           } else if (type === 'blur') {
-            // BLUR button clicked - but actually remove effects (functions are reversed)
-            if (backgroundEngine && typeof backgroundEngine.setNone === 'function') {
-              await backgroundEngine.setNone();
-            }
+            await backgroundEngine.setNone?.();
           } else if (type === 'image' && url) {
-            // IMAGE: Only applies image background
-            if (backgroundEngine && typeof backgroundEngine.setImage === 'function') {
-              await backgroundEngine.setImage(url);
-            }
+            await backgroundEngine.setImage?.(url);
           } else if (type === 'video' && url) {
-            // VIDEO: Only applies video background
-            if (backgroundEngine && typeof backgroundEngine.setVideo === 'function') {
-              await backgroundEngine.setVideo(url);
-            }
+            await backgroundEngine.setVideo?.(url); // uses the new robust loader
           }
         } catch (error) {
           console.error('[BG] Error setting background:', error);
@@ -717,26 +725,24 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle }) 
         }
       };
 
-  const displayName = userProfile?.displayName || 'User';
-  const roomName = `${displayName}'s ${roomTitle}`;
-
   return (
-    <div className="min-h-screen bg-gradient-to-br from-midnight via-techBlue to-violetDeep flex items-center justify-center p-4">
+    <div className="min-h-screen bg-gradient-to-br from-midnight via-techBlue to-violetDeep flex items-center justify-center p-2 sm:p-4">
       {/* Compact Modal */}
-      <div className="bg-midnight/98 backdrop-blur-lg rounded-xl w-full max-w-4xl border border-white/10 overflow-hidden shadow-2xl">
+      <div className="bg-midnight/98 backdrop-blur-lg rounded-xl w-full max-w-4xl border border-white/10 overflow-hidden shadow-2xl max-h-[95vh] sm:max-h-none">
         {/* Compact Header */}
-        <div className="bg-midnight/90 border-b border-white/10 px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            <div className="w-8 h-8 bg-goldBright rounded flex items-center justify-center">
-              <svg className="w-5 h-5 text-midnight" fill="currentColor" viewBox="0 0 24 24">
+        <div className="bg-midnight/90 border-b border-white/10 px-3 sm:px-4 py-2 sm:py-3 flex items-center justify-between">
+          <div className="flex items-center space-x-2 min-w-0">
+            <div className="w-6 h-6 sm:w-7 sm:h-7 md:w-8 md:h-8 bg-goldBright rounded flex items-center justify-center flex-shrink-0">
+              <svg className="w-4 h-4 sm:w-4 sm:h-4 md:w-5 md:h-5 text-midnight" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M17 10.5V7a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1v-3.5l4 4v-11l-4 4z"/>
               </svg>
             </div>
-            <h1 className="text-base font-semibold text-cloud truncate max-w-md">{roomName}</h1>
+            <h1 className="text-xs sm:text-xs md:text-sm font-semibold text-cloud truncate">{roomTitle}</h1>
           </div>
+          {/* Hide X button on mobile, show on desktop */}
           <button
             onClick={() => navigate('/home')}
-            className="text-cloud/50 hover:text-cloud transition-colors p-1"
+            className={`text-cloud/50 hover:text-cloud transition-colors p-1 ${isMobile ? 'hidden' : ''}`}
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -744,13 +750,12 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle }) 
           </button>
         </div>
 
-        <div className="flex flex-col lg:flex-row">
+        <div className="flex flex-col lg:flex-row overflow-y-auto max-h-[calc(95vh-60px)] sm:max-h-none">
           {/* Left Panel - Compact Video Preview */}
-          <div className="lg:w-2/3 p-4 flex flex-col">
+          <div className="lg:w-2/3 p-3 sm:p-4 md:p-6 flex flex-col">
             <div 
               ref={containerRef}
-              className="bg-black rounded-lg overflow-hidden mb-3 relative"
-              style={{ height: '280px' }}
+              className="bg-black rounded-lg overflow-hidden mb-2 sm:mb-3 relative aspect-video w-full"
             >
               {!isVideoEnabled && (
                 <div className="absolute inset-0 bg-midnight/80 flex items-center justify-center z-10">
@@ -765,10 +770,10 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle }) 
             </div>
 
             {/* Compact Control Buttons */}
-            <div className="flex space-x-3 justify-center">
+            <div className="flex space-x-2 sm:space-x-3 justify-center">
               <button
                 onClick={handleToggleMic}
-                className={`flex items-center space-x-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                className={`flex items-center space-x-1 sm:space-x-2 px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium transition-all ${
                   isMicEnabled
                     ? 'bg-white/10 text-cloud hover:bg-white/20'
                     : 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
@@ -815,8 +820,8 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle }) 
           </div>
 
           {/* Right Panel - Compact Settings */}
-          <div className="lg:w-1/3 border-t lg:border-t-0 lg:border-l border-white/10 p-4 bg-midnight/50">
-            <div className="space-y-4">
+          <div className="lg:w-1/3 border-t lg:border-t-0 lg:border-l border-white/10 p-3 sm:p-4 bg-midnight/50">
+            <div className="space-y-3 sm:space-y-4">
               {/* Audio Input */}
               <div>
                 <label className="block text-xs font-medium text-cloud/80 mb-1.5">
@@ -937,7 +942,7 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle }) 
       {/* Background Effects Panel */}
           {showBackgroundPanel && (
             <BackgroundEffectsPanel
-              onClose={() => setShowBackgroundPanel(false)}
+              onClose={handleClosePanel}
               onBackgroundChange={handleBackgroundChange}
               videoTrack={videoTrack}
               onDeviceChange={(videoDeviceId, audioDeviceId) => {
@@ -952,7 +957,7 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle }) 
               videoDevices={videoDevices}
               selectedVideoDevice={selectedVideoDevice}
               selectedAudioDevice={selectedAudioDevice}
-              currentSelectedBackground={currentSelected}
+              savedBackground={savedBackground}
             />
           )}
     </div>

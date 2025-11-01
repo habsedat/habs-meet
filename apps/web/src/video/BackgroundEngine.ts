@@ -7,6 +7,12 @@ class BackgroundEngine {
   private track: LocalVideoTrack | null = null;
   private vidEl: HTMLVideoElement | null = null;
   private canvasContexts: CanvasRenderingContext2D[] = [];
+  private updateIntervalId: NodeJS.Timeout | null = null;
+  private playCheckIntervalId: NodeJS.Timeout | null = null;
+  private animationFrameId: number | null = null;
+  private bgVideo?: HTMLVideoElement | null = null;
+  private bgVideoUrl?: string | null = null;
+  private bgImageUrl?: string | null = null;
 
   async init(track: LocalVideoTrack) {
     // Validate track is ready and not ended
@@ -142,6 +148,9 @@ class BackgroundEngine {
       console.warn('[BG] Track is ended, cannot apply blur');
       return;
     }
+
+    // Stop any video updates if switching from video background
+    this.stopVideoUpdates();
 
     // Clear previous processor first
     try {
@@ -300,7 +309,16 @@ class BackgroundEngine {
       return;
     }
     
+    // Stop any video updates if switching from video background
+    this.stopVideoUpdates();
+    
     try {
+      // Clean up previous image blob URL if exists
+      if (this.bgImageUrl) {
+        URL.revokeObjectURL(this.bgImageUrl);
+        this.bgImageUrl = null;
+      }
+      
       const img = new Image();
       img.crossOrigin = 'anonymous';
       img.decoding = 'async';
@@ -350,6 +368,7 @@ class BackgroundEngine {
         });
         
         const imageUrl = URL.createObjectURL(blob);
+        this.bgImageUrl = imageUrl; // Store for cleanup
         
         // Wait for track to be fully stable
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -358,6 +377,7 @@ class BackgroundEngine {
         const currentTracksBefore = this.track.mediaStream?.getVideoTracks();
         if (!currentTracksBefore || currentTracksBefore.length === 0 || currentTracksBefore[0].readyState === 'ended') {
           URL.revokeObjectURL(imageUrl);
+          this.bgImageUrl = null;
           return;
         }
         
@@ -369,11 +389,13 @@ class BackgroundEngine {
           // Validate processor was created
           if (!processor || typeof processor !== 'object') {
             URL.revokeObjectURL(imageUrl);
+            this.bgImageUrl = null;
             throw new Error('Failed to create image background processor');
           }
         } catch (createError: any) {
           console.error('[BG] Error creating image processor:', createError);
           URL.revokeObjectURL(imageUrl);
+          this.bgImageUrl = null;
           return;
         }
         
@@ -381,6 +403,7 @@ class BackgroundEngine {
         const currentTracks = this.track.mediaStream?.getVideoTracks();
         if (!currentTracks || currentTracks.length === 0 || currentTracks[0].readyState === 'ended') {
           URL.revokeObjectURL(imageUrl);
+          this.bgImageUrl = null;
           return;
         }
         
@@ -397,6 +420,7 @@ class BackgroundEngine {
                 if (!this.track) {
                   this.processor = null;
                   URL.revokeObjectURL(imageUrl);
+                  this.bgImageUrl = null;
                   resolve();
                   return;
                 }
@@ -406,6 +430,7 @@ class BackgroundEngine {
                 if (!finalTracks || finalTracks.length === 0 || finalTracks[0].readyState !== 'live') {
                   this.processor = null;
                   URL.revokeObjectURL(imageUrl);
+                  this.bgImageUrl = null;
                   resolve();
                   return;
                 }
@@ -414,6 +439,7 @@ class BackgroundEngine {
                 if (!processor || typeof processor !== 'object') {
                   this.processor = null;
                   URL.revokeObjectURL(imageUrl);
+                  this.bgImageUrl = null;
                   resolve();
                   return;
                 }
@@ -428,6 +454,7 @@ class BackgroundEngine {
                       // Handle promise rejection (init errors happen here)
                       this.processor = null;
                       URL.revokeObjectURL(imageUrl);
+                      this.bgImageUrl = null;
                       // Silently ignore init/undefined errors
                     });
                     await setResult;
@@ -438,6 +465,7 @@ class BackgroundEngine {
                   // Clear processor reference if setting failed
                   this.processor = null;
                   URL.revokeObjectURL(imageUrl);
+                  this.bgImageUrl = null;
                   // Silently handle init/undefined errors
                   if (!setError?.message?.includes('init') && 
                       !setError?.message?.includes('undefined') &&
@@ -453,11 +481,10 @@ class BackgroundEngine {
           console.error('[BG] Unexpected error in setImage:', error);
           this.processor = null;
           URL.revokeObjectURL(imageUrl);
+          this.bgImageUrl = null;
         }
         
-        setTimeout(() => {
-          URL.revokeObjectURL(imageUrl);
-        }, 1000);
+        // Don't revoke URL here - it needs to stay valid while the background is active
       } else {
         // Wait for track to be fully stable
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -580,6 +607,49 @@ class BackgroundEngine {
     }
   }
 
+  private async loadVideoElement(url: string): Promise<HTMLVideoElement> {
+    // Revoke previous object URL if any
+    if (this.bgVideoUrl) {
+      URL.revokeObjectURL(this.bgVideoUrl);
+      this.bgVideoUrl = null;
+    }
+
+    const el = document.createElement('video');
+    el.muted = true;          // required for autoplay
+    el.loop = true;
+    el.playsInline = true;
+    el.preload = 'auto';
+    el.crossOrigin = 'anonymous'; // allow WebGL to sample it
+
+    // Fetch → blob → object URL (avoids taint)
+    const res = await fetch(url, { mode: 'cors' });
+    if (!res.ok) throw new Error(`Video fetch failed: ${res.status}`);
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    el.src = objectUrl;
+    this.bgVideoUrl = objectUrl;
+
+    // Wait for it to be actually decodable
+    await new Promise<void>((resolve, reject) => {
+      const onLoaded = () => resolve();
+      const onError = () => reject(new Error('video load error'));
+      el.addEventListener('loadeddata', onLoaded, { once: true });
+      el.addEventListener('error', onError, { once: true });
+    });
+
+    // Try to start (some browsers return a promise)
+    try { 
+      await el.play(); 
+    } catch { 
+      /* already muted, retry */ 
+      try { 
+        await el.play(); 
+      } catch {} 
+    }
+
+    return el;
+  }
+
   async setVideo(url: string) {
     if (!this.track) {
       console.warn('[BG] No track available for setVideo');
@@ -597,17 +667,27 @@ class BackgroundEngine {
       console.warn('[BG] Track is ended, cannot apply video background');
       return;
     }
-    
-    // Clear previous video element if exists
-    if (this.vidEl) {
+
+    // Clean up previous video background
+    if (this.bgVideo) {
+      if (this.bgVideoUrl) {
+        URL.revokeObjectURL(this.bgVideoUrl);
+        this.bgVideoUrl = null;
+      }
       try {
-        this.vidEl.pause();
-        this.vidEl.src = '';
-        this.vidEl.remove();
+        this.bgVideo.pause();
+        this.bgVideo.src = '';
+        if (this.bgVideo.parentNode) {
+          this.bgVideo.parentNode.removeChild(this.bgVideo);
+        }
       } catch {}
-      this.vidEl = null;
+      this.bgVideo = null;
     }
-    
+
+    // Stop any previous updates
+    this.stopVideoUpdates();
+    this.releaseSources();
+
     try {
       // Clear previous processor first
       try {
@@ -621,131 +701,96 @@ class BackgroundEngine {
           this.processor = null;
         }
       } catch {}
+
+      // Load video element with proper CORS handling
+      const vid = await this.loadVideoElement(url);
+      this.bgVideo = vid;
       
-      this.releaseSources();
+      // Re-validate track is still valid after loading video (may have taken time)
+      if (!this.track || !this.track.mediaStream) {
+        console.warn('[BG] Track lost during video load, aborting');
+        if (this.bgVideo) {
+          try {
+            this.bgVideo.pause();
+            this.bgVideo.src = '';
+            if (this.bgVideo.parentNode) {
+              this.bgVideo.parentNode.removeChild(this.bgVideo);
+            }
+          } catch {}
+          this.bgVideo = null;
+        }
+        if (this.bgVideoUrl) {
+          URL.revokeObjectURL(this.bgVideoUrl);
+          this.bgVideoUrl = null;
+        }
+        return;
+      }
       
+      const trackCheck = this.track.mediaStream.getVideoTracks();
+      if (trackCheck.length === 0 || trackCheck[0].readyState === 'ended') {
+        console.warn('[BG] Track ended during video load, aborting');
+        if (this.bgVideo) {
+          try {
+            this.bgVideo.pause();
+            this.bgVideo.src = '';
+            if (this.bgVideo.parentNode) {
+              this.bgVideo.parentNode.removeChild(this.bgVideo);
+            }
+          } catch {}
+          this.bgVideo = null;
+        }
+        if (this.bgVideoUrl) {
+          URL.revokeObjectURL(this.bgVideoUrl);
+          this.bgVideoUrl = null;
+        }
+        return;
+      }
+      
+      // Hide video element
+      vid.style.display = 'none';
+      vid.style.width = '1px';
+      vid.style.height = '1px';
+      vid.style.opacity = '0';
+      vid.style.position = 'absolute';
+      vid.style.pointerEvents = 'none';
+      
+      // Add to DOM (hidden) to ensure it works properly
+      document.body.appendChild(vid);
+
       // Wait for track to be fully stable
       await new Promise(resolve => setTimeout(resolve, 100));
+
+      // VirtualBackground only accepts URLs, not video elements
+      // We'll use the first frame approach and avoid frequent processor replacements
+      // to prevent VideoFrame garbage collection warnings
       
-      // Create video element for looping background video
-      const v = document.createElement('video');
-      v.crossOrigin = 'anonymous';
-      v.muted = true; // Always muted - no sound
-      v.loop = true; // Loop continuously
-      v.playsInline = true;
-      v.autoplay = true;
-      // Set playsinline attribute for iOS (different from playsInline property)
-      v.setAttribute('playsinline', 'true');
-      
-      // Wait for video to load and be ready
-      const ready = new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          reject(new Error('Video loading timeout'));
-        }, 10000);
-        
-        const onReady = () => {
-          clearTimeout(timeout);
-          v.removeEventListener('canplay', onReady);
-          v.removeEventListener('error', onError);
-          resolve();
-        };
-        
-        const onError = (_e: any) => {
-          clearTimeout(timeout);
-          v.removeEventListener('canplay', onReady);
-          v.removeEventListener('error', onError);
-          reject(new Error('Video failed to load'));
-        };
-        
-        v.addEventListener('canplay', onReady, { once: true });
-        v.addEventListener('error', onError, { once: true });
-      });
-      
-      v.src = url;
-      
-      // Ensure video can play (autoplay policy)
-      try {
-        await v.play();
-      } catch (playError: any) {
-        // If autoplay fails, try after user interaction or wait for ready
-        await ready;
-        try {
-          await v.play();
-        } catch (retryError) {
-          console.warn('[BG] Video autoplay failed, but will play when ready');
-        }
-      }
-      
-      await ready;
-      
-      // Ensure video is playing and looping
-      if (v.paused) {
-        try {
-          await v.play();
-        } catch {}
-      }
-      
-      // Store video element reference
-      this.vidEl = v;
-      
-      // Create canvas for frame capture
+      // Create processor with first frame from video
       const canvas = document.createElement('canvas');
       canvas.width = 1280;
       canvas.height = 720;
       const ctx = canvas.getContext('2d');
-      
       if (!ctx) {
-        throw new Error('Failed to create canvas context');
+        throw new Error('Failed to create canvas context for video processor');
       }
       
-      this.canvasContexts.push(ctx);
-      
-      // Wait for video to be fully loaded and playing
-      await new Promise<void>((resolve, reject) => {
-        if (v.readyState >= 3 && v.videoWidth > 0) {
-          resolve();
-        } else {
-          const timeout = setTimeout(() => {
-            reject(new Error('Video loading timeout'));
-          }, 5000);
-          
-          const onReady = () => {
-            clearTimeout(timeout);
-            v.removeEventListener('loadedmetadata', onReady);
-            v.removeEventListener('canplaythrough', onReady);
-            v.removeEventListener('error', onError);
-            resolve();
-          };
-          
-          const onError = (_e: any) => {
-            clearTimeout(timeout);
-            v.removeEventListener('loadedmetadata', onReady);
-            v.removeEventListener('canplaythrough', onReady);
-            v.removeEventListener('error', onError);
-            reject(new Error('Video failed to load'));
-          };
-          
-          v.addEventListener('loadedmetadata', onReady, { once: true });
-          v.addEventListener('canplaythrough', onReady, { once: true });
-          v.addEventListener('error', onError, { once: true });
-        }
+      // Wait for video to have dimensions
+      await new Promise((resolve) => {
+        const checkReady = () => {
+          if (vid.videoWidth > 0 && vid.videoHeight > 0) {
+            resolve(undefined);
+          } else {
+            setTimeout(checkReady, 50);
+          }
+        };
+        checkReady();
       });
       
-      // Ensure video dimensions are available
-      if (v.videoWidth === 0 || v.videoHeight === 0) {
-        throw new Error('Video has no dimensions');
-      }
+      // Draw first frame to canvas
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
       
-      // Wait a bit more to ensure video is stable
-      await new Promise(resolve => setTimeout(resolve, 200));
-      
-      // Draw initial frame to canvas first
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      
-      // Calculate aspect ratio to fill canvas
-      const videoAspect = v.videoWidth / v.videoHeight;
+      const videoAspect = vid.videoWidth / vid.videoHeight;
       const canvasAspect = canvas.width / canvas.height;
-      
       let drawWidth, drawHeight, drawX, drawY;
       
       if (videoAspect > canvasAspect) {
@@ -760,51 +805,154 @@ class BackgroundEngine {
         drawY = 0;
       }
       
-      ctx.drawImage(v, drawX, drawY, drawWidth, drawHeight);
+      ctx.drawImage(vid, drawX, drawY, drawWidth, drawHeight);
       
-      // Create initial processor with first frame
-      const initialBlob = await new Promise<Blob>((resolve, reject) => {
+      // Create blob from first frame
+      const blob = await new Promise<Blob>((resolve, reject) => {
         canvas.toBlob((b) => {
           if (b) resolve(b);
           else reject(new Error('Failed to create blob'));
         }, 'image/jpeg', 0.95);
       });
       
-      const initialImageUrl = URL.createObjectURL(initialBlob);
+      const initialImageUrl = URL.createObjectURL(blob);
+      const processor = VirtualBackground(initialImageUrl);
       
-      // Wait for track to be fully stable
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      // Validate track is still valid before creating processor
-      const currentTracksBefore = this.track.mediaStream?.getVideoTracks();
-      if (!currentTracksBefore || currentTracksBefore.length === 0 || currentTracksBefore[0].readyState === 'ended') {
+      if (!processor || typeof processor !== 'object') {
         URL.revokeObjectURL(initialImageUrl);
-        return;
-      }
-      
-      // Create processor - ensure it's properly initialized
-      let processor;
-      try {
-        processor = VirtualBackground(initialImageUrl);
-        
-        // Validate processor was created
-        if (!processor || typeof processor !== 'object') {
-          URL.revokeObjectURL(initialImageUrl);
-          throw new Error('Failed to create video background processor');
-        }
-      } catch (createError: any) {
-        console.error('[BG] Error creating video processor:', createError);
-        URL.revokeObjectURL(initialImageUrl);
-        return;
+        throw new Error('Failed to create video background processor');
       }
       
       // Double-check track is still valid before setting processor
       const currentTracks = this.track.mediaStream?.getVideoTracks();
       if (!currentTracks || currentTracks.length === 0 || currentTracks[0].readyState === 'ended') {
         URL.revokeObjectURL(initialImageUrl);
-        return;
+        throw new Error('Track ended before setting video processor');
       }
+
+      // Store canvas reference for frame updates
+      this.canvasContexts.push(ctx);
       
+      // Frame update loop for smooth video playback
+      // Use throttling to prevent VideoFrame GC warnings
+      let lastUpdateTime = 0;
+      const UPDATE_THROTTLE = 200; // Update every 200ms (5fps) to reduce GC issues
+      
+      // Define updateVideoFrame in outer scope so it has access to canvas, vid, ctx, etc
+      const updateVideoFrame = async () => {
+        // Throttle updates
+        const now = Date.now();
+        if (now - lastUpdateTime < UPDATE_THROTTLE) {
+          return;
+        }
+        lastUpdateTime = now;
+        
+        if (!this.track || !vid || !ctx || !this.processor) {
+          return;
+        }
+
+        // Validate track is still valid
+        const currentTracks = this.track.mediaStream?.getVideoTracks();
+        if (!currentTracks || currentTracks.length === 0 || currentTracks[0].readyState === 'ended') {
+          this.stopVideoUpdates();
+          return;
+        }
+
+        // Check if video is ready
+        if (vid.videoWidth === 0 || vid.videoHeight === 0 || vid.readyState < 2) {
+          return;
+        }
+
+        try {
+          // Draw current video frame to canvas
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(vid, drawX, drawY, drawWidth, drawHeight);
+          
+          // Create blob from current frame
+          const blob = await new Promise<Blob>((resolve, reject) => {
+            canvas.toBlob((b) => {
+              if (b) resolve(b);
+              else reject(new Error('Failed to create blob'));
+            }, 'image/jpeg', 0.95);
+          });
+
+          const newImageUrl = URL.createObjectURL(blob);
+
+          // Validate track is still valid
+          const tracksCheck = this.track.mediaStream?.getVideoTracks();
+          if (!tracksCheck || tracksCheck.length === 0 || tracksCheck[0].readyState === 'ended') {
+            URL.revokeObjectURL(newImageUrl);
+            this.stopVideoUpdates();
+            return;
+          }
+
+          // Create new processor with current frame
+          try {
+            const newProcessor = VirtualBackground(newImageUrl);
+
+            if (newProcessor && typeof newProcessor === 'object') {
+              // Validate track one more time
+              const finalTracks = this.track.mediaStream?.getVideoTracks();
+              if (!finalTracks || finalTracks.length === 0 || finalTracks[0].readyState === 'ended') {
+                URL.revokeObjectURL(newImageUrl);
+                return;
+              }
+
+              // Set new processor (replace old one smoothly)
+              try {
+                const setResult = this.track.setProcessor(newProcessor);
+
+                if (setResult && typeof setResult.then === 'function') {
+                  await setResult.catch((_err: any) => {
+                    // Silently handle errors
+                  });
+                }
+
+                this.processor = newProcessor;
+
+                // Revoke old blob URL after short delay
+                setTimeout(() => {
+                  URL.revokeObjectURL(newImageUrl);
+                }, 100);
+              } catch (setError) {
+                URL.revokeObjectURL(newImageUrl);
+                // Silently handle set processor errors
+              }
+            } else {
+              URL.revokeObjectURL(newImageUrl);
+            }
+          } catch (processorError) {
+            URL.revokeObjectURL(newImageUrl);
+            // Silently handle processor creation errors
+          }
+        } catch (error) {
+          // Silently handle errors
+        }
+      };
+
+      // Use requestAnimationFrame for smooth updates
+      const animate = async () => {
+        if (!this.track || !vid) {
+          this.stopVideoUpdates();
+          return;
+        }
+
+        // Only update if video is actually playing and not paused
+        if (vid && !vid.paused && vid.readyState >= 2) {
+          await updateVideoFrame();
+        }
+
+        // Schedule next frame
+        this.animationFrameId = requestAnimationFrame(animate);
+      };
+
+      // Also ensure video keeps playing
+      const ensurePlaying = () => {
+        if (vid && vid.paused && !vid.ended) {
+          vid.play().catch(() => {});
+        }
+      };
+
       // Set processor with comprehensive error handling
       await new Promise<void>((resolve) => {
         requestAnimationFrame(() => {
@@ -814,7 +962,7 @@ class BackgroundEngine {
               resolve();
               return;
             }
-            
+
             // Final comprehensive check
             const finalTracks = this.track.mediaStream?.getVideoTracks();
             if (!finalTracks || finalTracks.length === 0 || finalTracks[0].readyState !== 'live') {
@@ -822,166 +970,47 @@ class BackgroundEngine {
               resolve();
               return;
             }
-            
+
             // Ensure processor is valid
             if (!processor || typeof processor !== 'object') {
               URL.revokeObjectURL(initialImageUrl);
               resolve();
               return;
             }
-            
+
             try {
               // Store processor reference before setting
               this.processor = processor;
-              
+
               // Set processor - it may return a promise that can reject
               const setResult = this.track.setProcessor(processor);
-              
+
               // If setProcessor returns a promise, handle it
               if (setResult && typeof setResult.then === 'function') {
                 setResult.catch((_setError: any) => {
                   // Handle promise rejection (init errors happen here)
                   this.processor = null;
                   URL.revokeObjectURL(initialImageUrl);
-                  // Silently ignore init errors
                 });
                 await setResult;
               }
-              
-              // Use setInterval for smoother updates (less frequent processor recreation)
-              let updateIntervalId: NodeJS.Timeout | null = null;
-              
-              const updateVideoFrame = async () => {
-                if (!this.track || !v || !ctx) {
-                  return;
-                }
-                
-                // Validate track is still valid
-                const currentTracks = this.track.mediaStream?.getVideoTracks();
-                if (!currentTracks || currentTracks.length === 0 || currentTracks[0].readyState === 'ended') {
-                  if (updateIntervalId) {
-                    clearInterval(updateIntervalId);
-                    updateIntervalId = null;
-                  }
-                  return;
-                }
-                
-                // Check if video is ready
-                if (v.videoWidth === 0 || v.videoHeight === 0 || v.readyState < 2) {
-                  return;
-                }
-                
-                try {
-                  // Draw current video frame to canvas
-                  ctx.clearRect(0, 0, canvas.width, canvas.height);
-                  ctx.drawImage(v, drawX, drawY, drawWidth, drawHeight);
-                  
-                  // Convert canvas to blob
-                  const blob = await new Promise<Blob>((resolve, reject) => {
-                    canvas.toBlob((b) => {
-                      if (b) resolve(b);
-                      else reject(new Error('Failed to create blob'));
-                    }, 'image/jpeg', 0.95);
-                  });
-                  
-                  const newImageUrl = URL.createObjectURL(blob);
-                  
-                  // Validate track is still valid
-                  const tracksCheck = this.track.mediaStream?.getVideoTracks();
-                  if (!tracksCheck || tracksCheck.length === 0 || tracksCheck[0].readyState === 'ended') {
-                    URL.revokeObjectURL(newImageUrl);
-                    return;
-                  }
-                  
-                  // Create new processor with current frame
-                  try {
-                    const newProcessor = VirtualBackground(newImageUrl);
-                    
-                    if (newProcessor && typeof newProcessor === 'object') {
-                      // Validate track one more time
-                      const finalTracks = this.track.mediaStream?.getVideoTracks();
-                      if (!finalTracks || finalTracks.length === 0 || finalTracks[0].readyState === 'ended') {
-                        URL.revokeObjectURL(newImageUrl);
-                        return;
-                      }
-                      
-                      // Set new processor (replace old one smoothly)
-                      try {
-                        const setResult = this.track.setProcessor(newProcessor);
-                        
-                        if (setResult && typeof setResult.then === 'function') {
-                          setResult.catch((_err: any) => {
-                            // Silently handle errors
-                          });
-                          await setResult;
-                        }
-                        
-                        // Clean up old processor
-                        if (this.processor) {
-                          // Old processor will be garbage collected
-                        }
-                        
-                        this.processor = newProcessor;
-                        
-                        // Revoke blob URL after delay
-                        setTimeout(() => {
-                          URL.revokeObjectURL(newImageUrl);
-                        }, 1000);
-                      } catch (setError) {
-                        URL.revokeObjectURL(newImageUrl);
-                        // Silently handle set processor errors
-                      }
-                    } else {
-                      URL.revokeObjectURL(newImageUrl);
-                    }
-                  } catch (processorError) {
-                    URL.revokeObjectURL(newImageUrl);
-                    // Silently handle processor creation errors
-                  }
-                } catch (error) {
-                  // Silently handle errors
-                }
-              };
-              
-              // Update processor every 100ms (10fps) - smooth video playback
-              // This ensures video backgrounds play smoothly without causing flicker
-              updateIntervalId = setInterval(() => {
-                // Only update if video is actually playing and not paused
-                if (v && !v.paused && v.readyState >= 2) {
-                  updateVideoFrame();
-                }
-              }, 100);
-              
-              // Also ensure video keeps playing
-              const ensurePlaying = () => {
-                if (v && v.paused && !v.ended) {
-                  v.play().catch(() => {});
-                }
-              };
-              
+
+              // Start animation loop
+              this.animationFrameId = requestAnimationFrame(animate);
+
               // Check every second if video is still playing
-              const playCheckInterval = setInterval(ensurePlaying, 1000);
-              
+              this.playCheckIntervalId = setInterval(ensurePlaying, 1000);
+
               // Clean up intervals when video ends or track is destroyed
-              v.addEventListener('pause', ensurePlaying);
-              v.addEventListener('ended', () => {
-                if (v.loop) {
-                  v.currentTime = 0;
-                  v.play().catch(() => {});
+              vid.addEventListener('pause', ensurePlaying);
+              vid.addEventListener('ended', () => {
+                if (vid.loop) {
+                  vid.currentTime = 0;
+                  vid.play().catch(() => {});
                 }
               });
               
-              // Store cleanup function
-              (this.vidEl as any).__cleanup = () => {
-                if (updateIntervalId) {
-                  clearInterval(updateIntervalId);
-                  updateIntervalId = null;
-                }
-                if (playCheckInterval) {
-                  clearInterval(playCheckInterval);
-                }
-              };
-              
+              console.log('[BG] Video background applied successfully with frame updates');
               resolve();
             } catch (setError: any) {
               // Clear processor reference if setting failed
@@ -998,22 +1027,25 @@ class BackgroundEngine {
           });
         });
       });
-      
-      // Keep video playing and looping - handled in update loop
-      
-      console.log('[BG] Video background applied successfully');
     } catch (error: any) {
       console.error('[BG] Error setting video background:', error);
       
       // Clean up on error
-      if (this.vidEl) {
+      if (this.bgVideo) {
+        if (this.bgVideoUrl) {
+          URL.revokeObjectURL(this.bgVideoUrl);
+          this.bgVideoUrl = null;
+        }
         try {
-          this.vidEl.pause();
-          this.vidEl.src = '';
+          this.bgVideo.pause();
+          this.bgVideo.src = '';
+          if (this.bgVideo.parentNode) {
+            this.bgVideo.parentNode.removeChild(this.bgVideo);
+          }
         } catch {}
-        this.vidEl = null;
+        this.bgVideo = null;
       }
-      
+
       try {
         // Only try to clear processor if track is still valid
         const currentTracks = this.track.mediaStream?.getVideoTracks();
@@ -1023,17 +1055,81 @@ class BackgroundEngine {
       } catch (clearError) {
         // Silently ignore cleanup errors
       }
-      
+
       this.processor = null;
     }
   }
 
-  private releaseSources() {
-    if (this.vidEl) {
-      try { this.vidEl.pause(); this.vidEl.src = ''; } catch {}
+  private stopVideoUpdates() {
+    if (this.updateIntervalId) {
+      clearInterval(this.updateIntervalId);
+      this.updateIntervalId = null;
     }
-    this.vidEl = null;
+    if (this.playCheckIntervalId) {
+      clearInterval(this.playCheckIntervalId);
+      this.playCheckIntervalId = null;
+    }
+    if (this.animationFrameId !== null) {
+      cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = null;
+    }
+  }
+
+  private releaseSources() {
+    // Clear intervals
+    if (this.updateIntervalId) {
+      clearInterval(this.updateIntervalId);
+      this.updateIntervalId = null;
+    }
+    if (this.playCheckIntervalId) {
+      clearInterval(this.playCheckIntervalId);
+      this.playCheckIntervalId = null;
+    }
+    if (this.animationFrameId !== null) {
+      cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = null;
+    }
     
+    // Clean up video element
+    if (this.vidEl) {
+      try {
+        // Call cleanup function if exists
+        if ((this.vidEl as any).__cleanup) {
+          (this.vidEl as any).__cleanup();
+        }
+        this.vidEl.pause();
+        this.vidEl.src = '';
+        // Remove from DOM if it exists
+        if (this.vidEl.parentNode) {
+          this.vidEl.parentNode.removeChild(this.vidEl);
+        }
+      } catch {}
+      this.vidEl = null;
+    }
+    
+    // Clean up background video element
+    if (this.bgVideo) {
+      if (this.bgVideoUrl) {
+        URL.revokeObjectURL(this.bgVideoUrl);
+        this.bgVideoUrl = null;
+      }
+      try {
+        this.bgVideo.pause();
+        this.bgVideo.src = '';
+        if (this.bgVideo.parentNode) {
+          this.bgVideo.parentNode.removeChild(this.bgVideo);
+        }
+      } catch {}
+      this.bgVideo = null;
+    }
+    
+    // Clean up background image blob URL
+    if (this.bgImageUrl) {
+      URL.revokeObjectURL(this.bgImageUrl);
+      this.bgImageUrl = null;
+    }
+    
+    // Clean up canvas contexts
     this.canvasContexts.forEach(ctx => {
       try {
         const canvas = ctx.canvas;
