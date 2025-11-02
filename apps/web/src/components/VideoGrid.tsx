@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useLiveKit } from '../contexts/LiveKitContext';
 import { useAuth } from '../contexts/AuthContext';
-import { RemoteParticipant, LocalParticipant, Track, TrackPublication, ParticipantEvent } from 'livekit-client';
+import { RemoteParticipant, LocalParticipant, Track, TrackPublication, ParticipantEvent, RemoteTrackPublication } from 'livekit-client';
 
 const VideoGrid: React.FC = () => {
   const { participants, localParticipant } = useLiveKit();
@@ -42,7 +42,7 @@ const VideoGrid: React.FC = () => {
   }
 
   return (
-    <div className="video-grid h-full gap-4 p-2 sm:p-4">
+    <div className="video-grid" data-count={allParticipants.length}>
       {allParticipants.map((participant) => (
         <VideoTile key={participant.identity || participant.sid} participant={participant} currentUserUid={user?.uid} />
       ))}
@@ -71,12 +71,14 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid }) =>
 
     // Listen for track published/unpublished events
     const handleTrackPublished = (publication: TrackPublication) => {
+      console.log('[VideoTile] Track published:', publication.kind, 'from', participant.identity);
       if (publication.kind === Track.Kind.Video) {
         setVideoPublication(publication);
       }
     };
 
     const handleTrackUnpublished = (publication: TrackPublication) => {
+      console.log('[VideoTile] Track unpublished:', publication.kind, 'from', participant.identity);
       if (publication.kind === Track.Kind.Video) {
         setVideoPublication(null);
       }
@@ -92,8 +94,9 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid }) =>
   }, [participant, isLocal]);
 
   // Periodic check for video track (in case it's published after initial render)
+  // Also check if track is subscribed for remote participants
   useEffect(() => {
-    if (!isLocal || videoPublication) return; // Only check for local if no track yet
+    if (videoPublication?.track) return; // Skip if we already have a track
     
     const checkInterval = setInterval(() => {
       const vidPub: TrackPublication | null = 
@@ -101,49 +104,91 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid }) =>
         (participant.getTrack(Track.Source.Unknown) as TrackPublication) ||
         null;
       
-      if (vidPub && !videoPublication) {
-        setVideoPublication(vidPub);
+      if (vidPub) {
+        // For remote participants, make sure track is subscribed
+        if (!isLocal) {
+          const remotePub = vidPub as any as RemoteTrackPublication;
+          if (remotePub && !remotePub.isSubscribed && vidPub.track) {
+            console.log('[VideoTile] Found unsubscribed remote track, subscribing...');
+            (async () => {
+              try {
+                await remotePub.setSubscribed(true);
+              } catch (err: any) {
+                console.error('[VideoTile] Failed to subscribe:', err);
+              }
+            })();
+          }
+        }
+        
+        if (vidPub.track && !videoPublication) {
+          setVideoPublication(vidPub);
+        }
       }
     }, 500);
 
     return () => clearInterval(checkInterval);
-  }, [participant, isLocal, videoPublication]);
+  }, [participant, videoPublication, isLocal]);
 
-  // Attach video track when publication changes
+  // Attach video track when publication changes - for BOTH local AND remote participants
   useEffect(() => {
     if (!containerRef.current) return;
+    if (!videoPublication?.track) return;
     
-    if (videoPublication && videoPublication.track) {
-      const element = videoPublication.track.attach();
-      element.autoplay = true;
-      element.setAttribute('playsInline', 'true');
-      element.muted = isLocal; // Mute local video to prevent feedback
-      element.style.width = '100%';
-      element.style.height = '100%';
-      element.style.objectFit = 'cover';
+    console.log('[VideoTile] Attaching video track for', isLocal ? 'local' : 'remote', 'participant:', participant.identity);
+    
+    // Attach video for BOTH local and remote participants
+    const element = videoPublication.track.attach() as HTMLVideoElement;
+    element.autoplay = true;
+    element.setAttribute('playsInline', 'true');
+    element.setAttribute('playsinline', 'true');
+    element.muted = isLocal; // Local is muted, remote is not
+    element.controls = false;
+    element.style.width = '100%';
+    element.style.height = '100%';
+    element.style.objectFit = 'cover';
 
-      // Clear existing content and append video element
-      if (containerRef.current) {
-        containerRef.current.innerHTML = '';
-        containerRef.current.appendChild(element);
+    // Clear existing content and append video element
+    if (containerRef.current) {
+      containerRef.current.innerHTML = '';
+      containerRef.current.appendChild(element);
+      
+      // Try to play (for remote tracks)
+      if (!isLocal) {
+        element.play().catch((err) => {
+          console.warn('[VideoTile] Autoplay blocked for remote video:', err);
+          // Will play on user interaction
+        });
       }
     }
 
     return () => {
-      if (videoPublication?.track && containerRef.current) {
+      if (videoPublication?.track) {
+        console.log('[VideoTile] Detaching video track for', isLocal ? 'local' : 'remote');
         videoPublication.track.detach();
       }
     };
-  }, [videoPublication, isLocal]);
+  }, [videoPublication, isLocal, participant.identity]);
 
-  // Determine display name
+  // Determine display name - log for debugging
   const displayName = participant.name || participant.identity || 'Unknown';
   const isCurrentUser = currentUserUid && (participant.identity === currentUserUid || isLocal);
+  
+  // Debug logging for missing names
+  useEffect(() => {
+    if (!participant.name && !isLocal) {
+      console.warn('[VideoTile] Participant missing name:', {
+        identity: participant.identity,
+        name: participant.name,
+        sid: participant.sid,
+        metadata: (participant as any).metadata
+      });
+    }
+  }, [participant, isLocal]);
 
   return (
-    <div className="video-container w-full h-full bg-gray-900 rounded-lg overflow-hidden relative" style={{ aspectRatio: '16/9' }}>
-      {/* Video element container */}
-      <div ref={containerRef} className="w-full h-full bg-gradient-to-br from-techBlue to-violetDeep flex items-center justify-center">
+    <div className="video-container w-full h-full bg-gray-900 rounded-lg overflow-hidden relative" id={`participant-${participant.sid}`}>
+      {/* Video element container - add data attribute for easy finding */}
+      <div ref={containerRef} data-video-container="true" className="w-full h-full bg-gradient-to-br from-techBlue to-violetDeep flex items-center justify-center">
         {/* Placeholder when no video */}
         <div className="text-center text-cloud">
           <div className="w-12 h-12 sm:w-16 sm:h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-2">

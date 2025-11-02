@@ -38,11 +38,12 @@ const InvitePage: React.FC = () => {
       const result = await api.redeemInvite(token);
       setInviteInfo(result);
       
-      // Get meeting token and join room
-      const { token: meetingToken } = await api.getMeetingToken(result.roomId, result.joinGrant);
+      // Store room ID in session for pre-meeting page
+      sessionStorage.setItem('currentRoomId', result.roomId);
+      sessionStorage.setItem('isParticipant', 'true');
       
       toast.success('Successfully joined the meeting!');
-      navigate(`/room/${result.roomId}?token=${meetingToken}`);
+      navigate('/pre-meeting');
     } catch (error: any) {
       toast.error('Failed to join meeting: ' + error.message);
       navigate('/');

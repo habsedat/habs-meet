@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useLiveKit } from '../contexts/LiveKitContext';
 import { api } from '../lib/api';
-import { doc, onSnapshot, collection, query, orderBy, addDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, onSnapshot, collection, query, orderBy, addDoc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import toast from 'react-hot-toast';
 import MeetingControls from '../components/MeetingControls';
@@ -40,6 +40,13 @@ const RoomPage: React.FC = () => {
         const roomData = { id: doc.id, ...doc.data() } as any;
         setRoomData(roomData);
         setIsLocked(roomData.status === 'locked');
+        
+        // If room is ended, disconnect and leave
+        if (roomData.status === 'ended') {
+          toast('Meeting has ended', { icon: 'ℹ️' });
+          disconnect();
+          setTimeout(() => navigate('/'), 2000);
+        }
       } else {
         toast.error('Room not found');
         navigate('/');
@@ -47,7 +54,7 @@ const RoomPage: React.FC = () => {
     });
 
     return unsubscribe;
-  }, [roomId, user, navigate]);
+  }, [roomId, user, navigate, disconnect]);
 
   // Check if user is host
   useEffect(() => {
@@ -180,10 +187,24 @@ const RoomPage: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyPress);
   }, []);
 
-  const handleLeave = useCallback(() => {
+  const handleLeave = useCallback(async () => {
+    // If host is leaving, end the room
+    if (isHost && roomId) {
+      try {
+        const roomRef = doc(db, 'rooms', roomId);
+        await updateDoc(roomRef, {
+          status: 'ended',
+          endedAt: serverTimestamp()
+        });
+        toast.success('Meeting ended');
+      } catch (error: any) {
+        console.error('Failed to end room:', error);
+      }
+    }
+    
     disconnect();
     navigate('/');
-  }, [disconnect, navigate]);
+  }, [disconnect, navigate, isHost, roomId]);
 
   const handleRecord = async () => {
     if (!isHost) return;
