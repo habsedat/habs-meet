@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useLiveKit, RemoteControlEvent } from '../contexts/LiveKitContext';
 import { useAuth } from '../contexts/AuthContext';
 import { RemoteParticipant, LocalParticipant, Track, TrackPublication, ParticipantEvent, RemoteTrackPublication } from 'livekit-client';
@@ -698,6 +698,181 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid }) =>
   const displayName = participant.name || participant.identity || 'Unknown';
   const isCurrentUser = currentUserUid && (participant.identity === currentUserUid || isLocal);
   
+  // ✅ Reactive state for mic/camera status - updates in real-time
+  const [isMicrophoneEnabled, setIsMicrophoneEnabled] = useState(false);
+  const [isCameraEnabled, setIsCameraEnabled] = useState(false);
+  
+  // ✅ Function to check and update mic/camera status - improved for remote participants
+  const updateMicCameraStatus = useCallback(() => {
+    if (isLocal) {
+      // For local participant, use getTrack
+      const micPub = (participant as LocalParticipant).getTrack(Track.Source.Microphone);
+      const cameraPub = (participant as LocalParticipant).getTrack(Track.Source.Camera);
+      const micEnabled = (micPub !== null && micPub !== undefined) && micPub.isMuted === false;
+      const camEnabled = (cameraPub !== null && cameraPub !== undefined) && cameraPub.track !== null;
+      
+      setIsMicrophoneEnabled(micEnabled);
+      setIsCameraEnabled(camEnabled);
+      
+      console.log('[VideoTile] Local status updated:', { mic: micEnabled, cam: camEnabled, micPub: !!micPub, camPub: !!cameraPub });
+    } else {
+      // For remote participant, use getTrackPublication and check multiple conditions
+      const micPub = (participant as RemoteParticipant).getTrackPublication(Track.Source.Microphone) as RemoteTrackPublication | null;
+      const cameraPub = (participant as RemoteParticipant).getTrackPublication(Track.Source.Camera) as RemoteTrackPublication | null;
+      
+      // ✅ For mic: publication exists AND is not muted
+      // The publication's isMuted property should be available even without subscription
+      // If track exists and is subscribed, use that; otherwise use publication metadata
+      let micEnabled = false;
+      if (micPub !== null && micPub !== undefined) {
+        // Check publication's mute state (available even without subscription)
+        micEnabled = micPub.isMuted === false;
+        
+        // Also verify: if track exists, it should not be muted
+        if (micPub.track) {
+          micEnabled = micEnabled && micPub.isMuted === false;
+        }
+      }
+      
+      // ✅ For camera: check if publication exists and has a track (subscribed)
+      const camEnabled = cameraPub !== null && 
+                        cameraPub !== undefined && 
+                        cameraPub.track !== null;
+      
+      setIsMicrophoneEnabled(micEnabled);
+      setIsCameraEnabled(camEnabled);
+      
+      console.log('[VideoTile] Remote status updated:', {
+        participant: participant.identity || participant.name,
+        mic: micEnabled, 
+        cam: camEnabled,
+        micPubExists: !!micPub,
+        micPubIsMuted: micPub?.isMuted,
+        micPubTrack: !!micPub?.track,
+        micPubIsSubscribed: micPub?.isSubscribed,
+        camPubExists: !!cameraPub,
+        camPubTrack: !!cameraPub?.track
+      });
+    }
+  }, [participant, isLocal]);
+  
+  // ✅ Listen to track publication/unpublication events and update status
+  useEffect(() => {
+    // Initial check
+    updateMicCameraStatus();
+    
+    const cleanupFunctions: (() => void)[] = [];
+    
+    // ✅ Function to setup mute listeners for current tracks
+    const setupTrackMuteListeners = () => {
+      // Clear existing listeners first
+      cleanupFunctions.forEach(fn => fn());
+      cleanupFunctions.length = 0;
+      
+      if (isLocal) {
+        // For local participant, listen to track events
+        const micPub = (participant as LocalParticipant).getTrack(Track.Source.Microphone);
+        if (micPub?.track) {
+          const handleMute = () => {
+            console.log('[VideoTile] Local mic mute state changed');
+            updateMicCameraStatus();
+          };
+          micPub.track.on('muted', handleMute);
+          micPub.track.on('unmuted', handleMute);
+          cleanupFunctions.push(() => {
+            micPub.track?.off('muted', handleMute);
+            micPub.track?.off('unmuted', handleMute);
+          });
+        }
+      } else {
+        // For remote participant, listen to publication mute state and track events
+        const micPub = (participant as RemoteParticipant).getTrackPublication(Track.Source.Microphone) as RemoteTrackPublication | null;
+        
+        // ✅ Listen to mic track mute/unmute events
+        if (micPub?.track) {
+          const handleMicMute = () => {
+            console.log('[VideoTile] Remote mic mute state changed - track event:', micPub.isMuted);
+            updateMicCameraStatus();
+          };
+          micPub.track.on('muted', handleMicMute);
+          micPub.track.on('unmuted', handleMicMute);
+          cleanupFunctions.push(() => {
+            micPub.track?.off('muted', handleMicMute);
+            micPub.track?.off('unmuted', handleMicMute);
+          });
+        }
+        
+        // ✅ Also check for publication metadata changes (mute state can be in metadata)
+        // Poll the publication's isMuted state periodically to catch changes
+        if (micPub) {
+          const publicationPollInterval = setInterval(() => {
+            // Re-check publication mute state
+            updateMicCameraStatus();
+          }, 500);
+          cleanupFunctions.push(() => clearInterval(publicationPollInterval));
+        }
+      }
+    };
+    
+    // Setup initial listeners
+    setupTrackMuteListeners();
+    
+    // Listen for track published/unpublished events - re-setup listeners when tracks change
+    const handleTrackPublished = (publication: TrackPublication) => {
+      if (publication.source === Track.Source.Microphone || publication.source === Track.Source.Camera) {
+        console.log('[VideoTile] Track published, updating status:', publication.source);
+        updateMicCameraStatus();
+        // Re-setup mute listeners when new tracks are published
+        setTimeout(() => setupTrackMuteListeners(), 100);
+      }
+    };
+    
+    const handleTrackUnpublished = (publication: TrackPublication) => {
+      if (publication.source === Track.Source.Microphone || publication.source === Track.Source.Camera) {
+        console.log('[VideoTile] Track unpublished, updating status:', publication.source);
+        updateMicCameraStatus();
+        // Clean up listeners when tracks are unpublished
+        cleanupFunctions.forEach(fn => fn());
+        cleanupFunctions.length = 0;
+        setupTrackMuteListeners();
+      }
+    };
+    
+    participant.on(ParticipantEvent.TrackPublished, handleTrackPublished);
+    participant.on(ParticipantEvent.TrackUnpublished, handleTrackUnpublished);
+    
+    return () => {
+      participant.off(ParticipantEvent.TrackPublished, handleTrackPublished);
+      participant.off(ParticipantEvent.TrackUnpublished, handleTrackUnpublished);
+      cleanupFunctions.forEach(fn => fn());
+    };
+  }, [participant, isLocal, updateMicCameraStatus]);
+  
+  // ✅ Periodic check to ensure status stays accurate (fallback)
+  useEffect(() => {
+    const statusInterval = setInterval(() => {
+      updateMicCameraStatus();
+    }, 1000); // Check every second
+    
+    return () => clearInterval(statusInterval);
+  }, [updateMicCameraStatus]);
+  
+  // Generate consistent color index for animated background (different per participant)
+  const colorIndex = React.useMemo(() => {
+    if (isCurrentUser) return -1; // Special color for current user
+    const sid = participant.sid || participant.identity || '0';
+    return parseInt(sid.slice(-2) || '0', 36) % 5;
+  }, [participant.sid, participant.identity, isCurrentUser]);
+  
+  // Color palette for animated backgrounds
+  const colorPalettes = [
+    { start: '#10b981', mid: '#3b82f6', end: '#10b981' }, // Green-Blue-Green
+    { start: '#f59e0b', mid: '#f97316', end: '#f59e0b' }, // Amber-Orange-Amber
+    { start: '#ef4444', mid: '#dc2626', end: '#ef4444' }, // Red-Red-Red
+    { start: '#8b5cf6', mid: '#6366f1', end: '#8b5cf6' }, // Purple-Indigo-Purple
+    { start: '#ec4899', mid: '#be185d', end: '#ec4899' }, // Pink-Rose-Pink
+  ];
+  
   // Debug logging for missing names
   useEffect(() => {
     if (!participant.name && !isLocal) {
@@ -725,50 +900,68 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid }) =>
         </div>
       </div>
       
-      {/* Participant info overlay */}
-      {isCurrentUser && (
-        <div className="absolute top-2 left-2 sm:top-4 sm:left-4 z-10">
-          <div className="relative bg-gradient-to-r from-techBlue via-violetDeep to-techBlue bg-[length:200%_100%] animate-[gradient_3s_ease_infinite] px-2 py-1 sm:px-4 sm:py-2 rounded-lg shadow-lg">
-            <style>
-              {`
-                @keyframes gradient {
-                  0%, 100% { background-position: 0% 50%; }
-                  50% { background-position: 100% 50%; }
-                }
-              `}
-            </style>
-            <span className="font-semibold text-xs sm:text-sm text-cloud drop-shadow-md">
-              {displayName}
-            </span>
-          </div>
-        </div>
-      )}
-      {!isCurrentUser && (
-        <div className="participant-info absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-2">
-              <span className="font-medium text-sm text-white">
+      {/* Participant info overlay - Professional styling with animated backgrounds */}
+      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-2 z-10">
+        <div className="flex items-center justify-between gap-2">
+          {/* Name badge with animated background */}
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            <div className="relative px-2 py-0.5 rounded-md shadow-lg overflow-hidden">
+              {/* Animated gradient background - different colors for different participants */}
+              <div 
+                className="absolute inset-0 opacity-90"
+                style={{
+                  background: isCurrentUser 
+                    ? 'linear-gradient(90deg, #3b82f6, #8b5cf6, #3b82f6)'
+                    : `linear-gradient(90deg, ${colorPalettes[colorIndex].start}, ${colorPalettes[colorIndex].mid}, ${colorPalettes[colorIndex].end})`,
+                  backgroundSize: '200% 100%',
+                  animation: 'gradient-shift 3s ease infinite'
+                }}
+              />
+              <style>
+                {`
+                  @keyframes gradient-shift {
+                    0%, 100% { background-position: 0% 50%; }
+                    50% { background-position: 100% 50%; }
+                  }
+                `}
+              </style>
+              <span className="relative font-medium text-[10px] sm:text-xs text-white drop-shadow-md whitespace-nowrap">
                 {displayName}
               </span>
             </div>
-            
-            <div className="flex items-center space-x-1">
-              {/* Mic status */}
-              {participant.isMicrophoneEnabled ? (
-                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+          </div>
+          
+          {/* Mic and Camera status icons - visible to everyone */}
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            {/* Microphone status */}
+            <div className="flex items-center justify-center w-5 h-5 rounded-full bg-black/50 backdrop-blur-sm">
+              {isMicrophoneEnabled ? (
+                <svg className="w-3 h-3 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                </svg>
               ) : (
-                <div className="w-2 h-2 bg-red-500 rounded-full"></div>
+                <svg className="w-3 h-3 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+                </svg>
               )}
-              {/* Camera status */}
-              {participant.isCameraEnabled ? (
-                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+            </div>
+            
+            {/* Camera status */}
+            <div className="flex items-center justify-center w-5 h-5 rounded-full bg-black/50 backdrop-blur-sm">
+              {isCameraEnabled ? (
+                <svg className="w-3 h-3 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
               ) : (
-                <div className="w-2 h-2 bg-red-500 rounded-full"></div>
+                <svg className="w-3 h-3 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                </svg>
               )}
             </div>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 };

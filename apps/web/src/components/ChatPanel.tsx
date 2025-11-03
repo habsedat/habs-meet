@@ -44,7 +44,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage }) => {
   return (
     <div className="flex flex-col h-full">
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-3">
+      <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gradient-to-br from-techBlue to-violetDeep/20">
         {messages.length === 0 ? (
           <div className="text-center text-gray-500 py-8">
             <svg
@@ -60,8 +60,8 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage }) => {
                 d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
               />
             </svg>
-            <p>No messages yet</p>
-            <p className="text-sm">Start the conversation!</p>
+            <p className="font-medium">No messages yet</p>
+            <p className="text-sm text-gray-400">Start the conversation!</p>
           </div>
         ) : (
           messages.map((message) => {
@@ -69,20 +69,22 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage }) => {
             return (
               <div
                 key={message.id}
-                className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'}`}
+                className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'} animate-in fade-in duration-200`}
               >
-                <div className={`max-w-xs ${isOwnMessage ? 'order-2' : 'order-1'}`}>
+                <div className={`max-w-xs sm:max-w-md ${isOwnMessage ? 'order-2' : 'order-1'}`}>
                   {!isOwnMessage && (
-                    <p className="text-xs text-gray-600 mb-1 px-2">
-                      {message.displayName}
+                    <p className="text-xs font-medium text-gray-700 mb-1 px-2">
+                      {message.displayName || 'Unknown User'}
                     </p>
                   )}
                   <div
-                    className={`chat-message ${
-                      isOwnMessage ? 'own' : 'other'
+                    className={`rounded-lg px-3 py-2 ${
+                      isOwnMessage 
+                        ? 'bg-techBlue text-white' 
+                        : 'bg-white text-gray-800 border border-gray-200 shadow-sm'
                     }`}
                   >
-                    <p className="text-sm">{message.text}</p>
+                    <p className="text-base whitespace-pre-wrap break-words">{message.text}</p>
                   </div>
                   <p className={`text-xs text-gray-500 mt-1 px-2 ${
                     isOwnMessage ? 'text-right' : 'text-left'

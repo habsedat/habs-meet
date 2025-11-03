@@ -29,6 +29,8 @@ const RoomPage: React.FC = () => {
   const [shareLink, setShareLink] = useState('');
   const [isGeneratingLink, setIsGeneratingLink] = useState(false);
   const [showBottomControls, setShowBottomControls] = useState(true);
+  const [unreadChatCount, setUnreadChatCount] = useState(0);
+  const [lastSeenMessageId, setLastSeenMessageId] = useState<string | null>(null);
 
   // Load room data
   useEffect(() => {
@@ -89,7 +91,7 @@ const RoomPage: React.FC = () => {
     return unsubscribe;
   }, [roomId]);
 
-  // Load chat messages
+  // Load chat messages and track unread count
   useEffect(() => {
     if (!roomId) return;
 
@@ -102,10 +104,38 @@ const RoomPage: React.FC = () => {
         ...doc.data()
       }));
       setChatMessages(messages);
+      
+      // ✅ Calculate unread messages (messages after the last seen message or if chat panel is closed)
+      if (activePanel !== 'chat') {
+        if (lastSeenMessageId) {
+          const lastSeenIndex = messages.findIndex(m => m.id === lastSeenMessageId);
+          const unread = lastSeenIndex >= 0 
+            ? messages.length - lastSeenIndex - 1 
+            : messages.length;
+          setUnreadChatCount(unread);
+        } else if (messages.length > 0) {
+          // First time loading - don't count as unread if we're just joining
+          setUnreadChatCount(0);
+          setLastSeenMessageId(messages[messages.length - 1].id);
+        }
+      }
     });
 
     return unsubscribe;
-  }, [roomId]);
+  }, [roomId, activePanel, lastSeenMessageId]);
+  
+  // ✅ Clear unread count when chat panel is opened
+  useEffect(() => {
+    if (activePanel === 'chat' && chatMessages.length > 0) {
+      // Mark all messages as read
+      setUnreadChatCount(0);
+      // Update last seen message to the most recent one
+      const lastMessage = chatMessages[chatMessages.length - 1];
+      if (lastMessage) {
+        setLastSeenMessageId(lastMessage.id);
+      }
+    }
+  }, [activePanel, chatMessages]);
 
   // Connect to LiveKit room
   useEffect(() => {
@@ -178,6 +208,7 @@ const RoomPage: React.FC = () => {
           // Toggle screen share
           break;
         case 'escape':
+          // ESC leaves the meeting (not ends it, even for host)
           handleLeave();
           break;
       }
@@ -188,22 +219,35 @@ const RoomPage: React.FC = () => {
   }, []);
 
   const handleLeave = useCallback(async () => {
-    // If host is leaving, end the room
-    if (isHost && roomId) {
-      try {
-        const roomRef = doc(db, 'rooms', roomId);
-        await updateDoc(roomRef, {
-          status: 'ended',
-          endedAt: serverTimestamp()
-        });
-        toast.success('Meeting ended');
-      } catch (error: any) {
-        console.error('Failed to end room:', error);
-      }
-    }
-    
+    // For non-hosts or host choosing to leave (not end), just disconnect
     disconnect();
     navigate('/');
+  }, [disconnect, navigate]);
+
+  const handleEndMeeting = useCallback(async () => {
+    // Only hosts can end meetings
+    if (!isHost || !roomId) {
+      toast.error('Only the host can end the meeting');
+      return;
+    }
+
+    try {
+      const roomRef = doc(db, 'rooms', roomId);
+      await updateDoc(roomRef, {
+        status: 'ended',
+        endedAt: serverTimestamp()
+      });
+      toast.success('Meeting ended for all participants');
+      
+      // Give a moment for the update to propagate, then disconnect
+      setTimeout(() => {
+        disconnect();
+        navigate('/');
+      }, 500);
+    } catch (error: any) {
+      console.error('Failed to end room:', error);
+      toast.error('Failed to end meeting: ' + error.message);
+    }
   }, [disconnect, navigate, isHost, roomId]);
 
   const handleRecord = async () => {
@@ -231,17 +275,24 @@ const RoomPage: React.FC = () => {
   };
 
   const sendChatMessage = async (text: string) => {
-    if (!user || !userProfile || !text.trim()) return;
+    if (!user || !userProfile || !text.trim() || !roomId) {
+      toast.error('Cannot send message: Missing user info or room ID');
+      return;
+    }
 
     try {
-      await addDoc(collection(db, 'rooms', roomId!, 'chat'), {
+      // ✅ Save message to Firestore - all participants can see it via real-time listener
+      await addDoc(collection(db, 'rooms', roomId, 'chat'), {
         uid: user.uid,
-        displayName: userProfile.displayName,
+        displayName: userProfile.displayName || user.email || 'Anonymous',
         text: text.trim(),
         createdAt: serverTimestamp(),
       });
+      // Message will appear automatically via the onSnapshot listener above
+      console.log('[Chat] Message sent successfully');
     } catch (error: any) {
-      toast.error('Failed to send message: ' + error.message);
+      console.error('[Chat] Failed to send message:', error);
+      toast.error('Failed to send message: ' + (error.message || 'Unknown error'));
     }
   };
 
@@ -279,7 +330,7 @@ const RoomPage: React.FC = () => {
   }
 
   return (
-    <div className="h-screen bg-midnight flex flex-col overflow-hidden relative">
+    <div className="h-screen bg-gradient-to-br from-midnight via-techBlue to-violetDeep flex flex-col overflow-hidden relative">
       {/* Top bar - always visible, thin */}
       <header className="h-12 bg-gray-900/90 backdrop-blur-sm border-b border-gray-700 px-2 sm:px-4 flex items-center justify-between z-20">
         <div className="flex items-center space-x-2 sm:space-x-3">
@@ -385,14 +436,20 @@ const RoomPage: React.FC = () => {
 
           <button
             onClick={() => setActivePanel(activePanel === 'chat' ? null : 'chat')}
-            className={`p-1.5 sm:p-2 hover:bg-gray-700 rounded transition-colors ${
+            className={`relative p-1.5 sm:p-2 hover:bg-gray-700 rounded transition-colors ${
               activePanel === 'chat' ? 'text-techBlue' : 'text-gray-400 hover:text-white'
             }`}
-            title="Chat"
+            title={unreadChatCount > 0 ? `Chat (${unreadChatCount} new message${unreadChatCount > 1 ? 's' : ''})` : 'Chat'}
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
             </svg>
+            {/* ✅ Unread message badge */}
+            {unreadChatCount > 0 && (
+              <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center animate-pulse">
+                {unreadChatCount > 99 ? '99+' : unreadChatCount}
+              </span>
+            )}
           </button>
 
           {isHost && (
@@ -412,13 +469,34 @@ const RoomPage: React.FC = () => {
 
           <div className="w-px h-8 bg-gray-600 mx-2"></div>
 
-          {/* Right side - end/leave button */}
-          <button
-            onClick={handleLeave}
-            className="bg-red-600 hover:bg-red-700 text-white px-4 sm:px-6 py-2 rounded-lg font-medium transition-colors text-sm sm:text-base"
-          >
-            {isHost ? 'End' : 'Leave'}
-          </button>
+          {/* Right side - leave/end buttons */}
+          {isHost ? (
+            // Host has two options: Leave or End Meeting
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleLeave}
+                className="bg-gray-600 hover:bg-gray-700 text-white px-3 sm:px-5 py-2 rounded-lg font-medium transition-colors text-xs sm:text-sm"
+                title="Leave meeting (others can continue)"
+              >
+                Leave
+              </button>
+              <button
+                onClick={handleEndMeeting}
+                className="bg-red-600 hover:bg-red-700 text-white px-3 sm:px-5 py-2 rounded-lg font-medium transition-colors text-xs sm:text-sm"
+                title="End meeting for everyone"
+              >
+                End Meeting
+              </button>
+            </div>
+          ) : (
+            // Non-hosts only have Leave option
+            <button
+              onClick={handleLeave}
+              className="bg-red-600 hover:bg-red-700 text-white px-4 sm:px-6 py-2 rounded-lg font-medium transition-colors text-sm sm:text-base"
+            >
+              Leave
+            </button>
+          )}
         </div>
       </div>
 
