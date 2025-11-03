@@ -221,6 +221,144 @@ body {
   aspect-ratio: 16 / 9; /* Maintain aspect ratio like Zoom */
 }
 
+/* ✅ Screen Share Mode - Professional Camera Layout */
+.video-grid-cameras-wrapper {
+  flex-shrink: 0;
+  position: relative;
+  background: rgba(0, 0, 0, 0.3);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.video-grid-cameras-container {
+  position: relative;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem 3rem; /* Space for navigation buttons */
+}
+
+.video-grid-cameras-content {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  height: 100%;
+}
+
+.video-grid[data-screen-share="true"] {
+  /* Professional camera tiles - show max 3, centered */
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: 1fr;
+  gap: 0.5rem;
+  padding: 0;
+  max-width: 600px; /* Professional width limit */
+  width: 100%;
+  height: 100%;
+}
+
+.video-grid[data-screen-share="true"] > div {
+  /* Professional camera tile dimensions */
+  aspect-ratio: 16 / 9;
+  max-width: 190px; /* Professional size */
+  max-height: 107px; /* Maintain aspect ratio */
+  min-height: auto;
+  width: 100%;
+  height: 100%;
+}
+
+/* Camera navigation buttons */
+.camera-nav-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 10;
+  background: rgba(0, 0, 0, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+  width: 2.5rem;
+  height: 2.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.camera-nav-btn:hover {
+  background: rgba(59, 130, 246, 0.8);
+  border-color: rgba(59, 130, 246, 1);
+  transform: translateY(-50%) scale(1.1);
+}
+
+.camera-nav-left {
+  left: 0.5rem;
+}
+
+.camera-nav-right {
+  right: 0.5rem;
+}
+
+/* Page indicator */
+.camera-page-indicator {
+  position: absolute;
+  bottom: 0.25rem;
+  right: 0.5rem;
+  background: rgba(0, 0, 0, 0.7);
+  color: white;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  z-index: 10;
+}
+
+/* ✅ Professional Screen Share Display - Centered, not full width */
+.screen-share-container {
+  display: flex;
+  gap: 1rem;
+  width: 100%;
+  max-width: 90%; /* Not full width - more professional */
+  height: 100%;
+  margin: 0 auto; /* Centered */
+  overflow: visible; /* Allow full content to show */
+}
+
+.screen-share-container > div {
+  /* Single screen share - centered */
+  width: 100%;
+  height: 100%;
+  max-width: 1400px; /* Professional max width */
+  margin: 0 auto;
+  overflow: visible; /* Show full content */
+  display: flex;
+  flex-direction: column;
+}
+
+.screen-share-container.flex-row > div {
+  /* Two screen shares - side by side, equal width */
+  flex: 1;
+  max-width: 50%;
+}
+
+/* ✅ Screen Share Tile - Show full content without cutting off */
+.screen-share-tile {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: visible; /* Allow full content to be visible */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.screen-share-tile video {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important; /* Show full screen content, don't crop */
+  max-width: 100%;
+  max-height: 100%;
+}
+
 @media (max-width: 768px) {
   /* Mobile: always single column */
   .video-grid {
@@ -230,6 +368,11 @@ body {
   
   .video-grid > div {
     grid-column: 1 !important;
+  }
+
+  /* Mobile screen share layout */
+  .video-grid-cameras {
+    height: 25% !important; /* Slightly larger on mobile */
   }
 }
 

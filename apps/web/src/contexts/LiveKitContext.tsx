@@ -1,5 +1,18 @@
 import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
-import { Room, RoomEvent, Track, RemoteParticipant, LocalParticipant, LocalTrackPublication, LocalVideoTrack, createLocalVideoTrack, createLocalAudioTrack, ParticipantEvent, TrackPublication, RemoteTrackPublication } from 'livekit-client';
+import { Room, RoomEvent, Track, RemoteParticipant, LocalParticipant, LocalTrackPublication, LocalVideoTrack, createLocalVideoTrack, createLocalAudioTrack, ParticipantEvent, TrackPublication, RemoteTrackPublication, DataPacket_Kind } from 'livekit-client';
+
+// ✅ Remote control event types
+export interface RemoteControlEvent {
+  type: 'mousemove' | 'mousedown' | 'mouseup' | 'click' | 'wheel' | 'keydown' | 'keyup';
+  x: number; // Normalized coordinate (0-1) relative to screen size
+  y: number; // Normalized coordinate (0-1) relative to screen size
+  button?: number; // Mouse button (0 = left, 1 = middle, 2 = right)
+  key?: string; // Keyboard key
+  deltaY?: number; // For wheel events
+  ctrlKey?: boolean;
+  shiftKey?: boolean;
+  altKey?: boolean;
+}
 import { LIVEKIT_CONFIG } from '../lib/livekitConfig';
 import { backgroundEngine } from '../video/BackgroundEngine';
 
@@ -41,6 +54,9 @@ interface LiveKitContextType {
   
   // Publish from saved settings
   publishFromSavedSettings: () => Promise<void>;
+  
+  // Remote control for screen sharing
+  sendRemoteControlEvent: (targetParticipantId: string, event: RemoteControlEvent) => Promise<void>;
 }
 
 const LiveKitContext = createContext<LiveKitContextType | undefined>(undefined);
@@ -109,8 +125,9 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
             for (const [, pub] of trackPublications.entries()) {
               if (!pub) continue;
               
-              // Only subscribe to video and audio
+              // ✅ Subscribe to video, audio, AND screen share tracks
               if (pub.kind !== Track.Kind.Video && pub.kind !== Track.Kind.Audio) continue;
+              // Note: ScreenShare tracks are also Track.Kind.Video with source ScreenShare
               
               // Skip if already subscribed
               if (pub.isSubscribed) {
@@ -216,14 +233,16 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
             console.log('[LiveKit] Participant', participant.identity, 'has', trackPublications.length, 'publications');
             
             trackPublications.forEach((pub: any) => {
-              if (pub && (pub.kind === Track.Kind.Video || pub.kind === Track.Kind.Audio)) {
+              // ✅ Subscribe to video, audio, AND screen share tracks
+              if (pub && ((pub.kind === Track.Kind.Video || pub.kind === Track.Kind.Audio) || 
+                          (pub.kind === Track.Kind.Video && pub.source === Track.Source.ScreenShare))) {
                 if (!pub.isSubscribed) {
-                  console.log('[LiveKit] ⚡ SUBSCRIBING to', pub.kind, 'from', participant.identity);
+                  console.log('[LiveKit] ⚡ SUBSCRIBING to', pub.kind, pub.source === Track.Source.ScreenShare ? '(ScreenShare)' : '', 'from', participant.identity);
                   pub.setSubscribed(true).catch((err: any) => {
                     console.error('[LiveKit] Subscription error:', err);
                   });
                 } else {
-                  console.log('[LiveKit] Already subscribed to', pub.kind, 'from', participant.identity);
+                  console.log('[LiveKit] Already subscribed to', pub.kind, pub.source === Track.Source.ScreenShare ? '(ScreenShare)' : '', 'from', participant.identity);
                 }
               }
             });
@@ -270,9 +289,11 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
             
             const tracks = Array.from((existing as any).trackPublications?.values() || []);
             tracks.forEach((pub: any) => {
-              if (pub && (pub.kind === Track.Kind.Video || pub.kind === Track.Kind.Audio)) {
+              // ✅ Subscribe to video, audio, AND screen share tracks
+              if (pub && ((pub.kind === Track.Kind.Video || pub.kind === Track.Kind.Audio) || 
+                          (pub.kind === Track.Kind.Video && pub.source === Track.Source.ScreenShare))) {
                 if (!pub.isSubscribed) {
-                  console.log('[LiveKit] ⚡ New joiner subscribing to', pub.kind, 'from', existing.identity);
+                  console.log('[LiveKit] ⚡ New joiner subscribing to', pub.kind, pub.source === Track.Source.ScreenShare ? '(ScreenShare)' : '', 'from', existing.identity);
                   pub.setSubscribed(true).catch((err: any) => console.error('Subscribe error:', err));
                 }
               }
@@ -325,13 +346,15 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
         if (participant instanceof RemoteParticipant) {
           const remotePub = publication as RemoteTrackPublication;
           
-          if ((publication.kind === Track.Kind.Video || publication.kind === Track.Kind.Audio)) {
+          // ✅ Subscribe to video, audio, AND screen share tracks
+          if (publication.kind === Track.Kind.Video || publication.kind === Track.Kind.Audio) {
             if (!remotePub.isSubscribed) {
-              console.log('[LiveKit] ⚡ AUTO-SUBSCRIBING to newly published', publication.kind, 'from', participant.identity);
+              const sourceInfo = publication.source === Track.Source.ScreenShare ? ' (ScreenShare)' : '';
+              console.log('[LiveKit] ⚡ AUTO-SUBSCRIBING to newly published', publication.kind + sourceInfo, 'from', participant.identity);
               (async () => {
                 try {
                   await remotePub.setSubscribed(true);
-                  console.log('[LiveKit] ✅✅✅ AUTO-SUBSCRIBED to', publication.kind, 'from', participant.identity);
+                  console.log('[LiveKit] ✅✅✅ AUTO-SUBSCRIBED to', publication.kind, publication.source === Track.Source.ScreenShare ? '(ScreenShare)' : '', 'from', participant.identity);
                 } catch (err: any) {
                   console.error('[LiveKit] ❌ Auto-subscribe failed:', err);
                   // Retry after delay
@@ -345,7 +368,7 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
                 }
               })();
             } else {
-              console.log('[LiveKit] Already subscribed to', publication.kind, 'from', participant.identity);
+              console.log('[LiveKit] Already subscribed to', publication.kind, publication.source === Track.Source.ScreenShare ? '(ScreenShare)' : '', 'from', participant.identity);
             }
           }
         }
@@ -459,6 +482,18 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
 
       newRoom.on(RoomEvent.ConnectionStateChanged, () => {
         // Connection state changed
+      });
+
+      // ✅ Listen for remote control data packets (for screen share control)
+      newRoom.on(RoomEvent.DataReceived, (payload, participant) => {
+        if (participant) {
+          try {
+            const event: RemoteControlEvent = JSON.parse(new TextDecoder().decode(payload));
+            handleRemoteControlEvent(event, participant.identity);
+          } catch (err) {
+            // Not a remote control event, ignore
+          }
+        }
       });
 
       // Connect to room with autoSubscribe enabled
@@ -662,6 +697,46 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
     return track ?? null;
   }, [localParticipant]);
 
+  // ✅ Handle incoming remote control events (when someone controls your shared screen)
+  const handleRemoteControlEvent = useCallback((event: RemoteControlEvent, senderId: string) => {
+    // Only handle if we're the one sharing the screen
+    if (!isScreenSharing || !roomRef.current) return;
+    
+    console.log('[LiveKit] Remote control event received from', senderId, event.type);
+    
+    // Find the shared screen window and simulate the event
+    // Note: This requires the shared window to be accessible
+    // We'll use a custom event that the shared window can listen to
+    window.dispatchEvent(new CustomEvent('remoteControlInput', {
+      detail: { event, senderId }
+    }));
+  }, [isScreenSharing]);
+
+  // ✅ Send remote control event to the person sharing their screen
+  const sendRemoteControlEvent = useCallback(async (targetParticipantId: string, event: RemoteControlEvent) => {
+    if (!roomRef.current || !roomRef.current.localParticipant) {
+      console.warn('[LiveKit] Cannot send remote control event: not connected');
+      return;
+    }
+
+    try {
+      // Find the target participant
+      const targetParticipant = Array.from(roomRef.current.participants.values())
+        .find(p => p.identity === targetParticipantId);
+      
+      if (!targetParticipant) {
+        console.warn('[LiveKit] Target participant not found:', targetParticipantId);
+        return;
+      }
+
+      const payload = new TextEncoder().encode(JSON.stringify(event));
+      await roomRef.current.localParticipant.publishData(payload, DataPacket_Kind.RELIABLE, [targetParticipant]);
+      console.log('[LiveKit] Remote control event sent to', targetParticipantId, event.type);
+    } catch (error: any) {
+      console.error('[LiveKit] Failed to send remote control event:', error);
+    }
+  }, []);
+
   const publishFromSavedSettings = useCallback(async () => {
     if (hasPublishedRef.current) {
       return;
@@ -817,6 +892,9 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
     
     // Publish from saved settings
     publishFromSavedSettings,
+    
+    // Remote control
+    sendRemoteControlEvent,
   };
 
   return <LiveKitContext.Provider value={value}>{children}</LiveKitContext.Provider>;
