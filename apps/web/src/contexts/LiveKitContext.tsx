@@ -429,7 +429,9 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
           (el as any).disablePictureInPicture = true;
           el.style.width = '100%';
           el.style.height = '100%';
-          el.style.objectFit = 'cover';
+          // Use 'contain' to show full video without cropping - ensures everyone sees the same thing
+          el.style.objectFit = 'contain';
+          el.style.objectPosition = 'center';
 
           // ✅ mobile-safe auto play: retry once if blocked
           const tryPlay = () => {
@@ -506,17 +508,46 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
         track.detach().forEach((el) => el.remove());
       });
 
-      newRoom.on(RoomEvent.TrackMuted, () => {
-        // Track muted
+      newRoom.on(RoomEvent.TrackMuted, (publication, participant) => {
+        // Track muted - force update to reflect mute status changes
+        console.log('[LiveKit] Track muted:', publication.kind, 'from', participant.identity);
+        if (publication.kind === Track.Kind.Audio) {
+          // Force re-render to update mic status indicators
+          forceUpdate({});
+        }
       });
 
-      newRoom.on(RoomEvent.TrackUnmuted, () => {
-        // Track unmuted
+      newRoom.on(RoomEvent.TrackUnmuted, (publication, participant) => {
+        // Track unmuted - force update to reflect mute status changes
+        console.log('[LiveKit] Track unmuted:', publication.kind, 'from', participant.identity);
+        if (publication.kind === Track.Kind.Audio) {
+          // Force re-render to update mic status indicators
+          forceUpdate({});
+        }
       });
 
-      newRoom.on(RoomEvent.LocalTrackPublished, () => {
+      newRoom.on(RoomEvent.LocalTrackPublished, (publication) => {
         // Force re-render by setting a new object
+        console.log('[LiveKit] Local track published:', publication.kind, publication.source);
         forceUpdate({});
+      });
+
+      // ✅ CRITICAL: Listen for local participant track mute/unmute events
+      // This ensures immediate updates when user mutes/unmutes via bottom bar
+      newRoom.localParticipant.on(ParticipantEvent.TrackMuted, (publication) => {
+        if (publication.source === Track.Source.Microphone) {
+          console.log('[LiveKit] Local mic muted - updating state');
+          setIsMicrophoneEnabled(false);
+          forceUpdate({});
+        }
+      });
+
+      newRoom.localParticipant.on(ParticipantEvent.TrackUnmuted, (publication) => {
+        if (publication.source === Track.Source.Microphone) {
+          console.log('[LiveKit] Local mic unmuted - updating state');
+          setIsMicrophoneEnabled(true);
+          forceUpdate({});
+        }
       });
 
       newRoom.on(RoomEvent.ConnectionStateChanged, () => {
@@ -654,11 +685,23 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
         await roomRef.current.localParticipant.publishTrack(aTrack);
         console.log('[LiveKit] ✅ Audio track created with echo cancellation');
       } else if (audioTrack) {
-        // Just enable/disable existing track
+        // CRITICAL: Enable/disable existing track - this broadcasts mute state to all participants
         await roomRef.current.localParticipant.setMicrophoneEnabled(enabled);
+        setIsMicrophoneEnabled(enabled);
+        // Force update to ensure all VideoTiles see the change immediately
+        forceUpdate({});
+        console.log('[LiveKit] ✅ Microphone', enabled ? 'unmuted' : 'muted', '- state broadcasted to all participants');
+      } else {
+        // Track doesn't exist and we're trying to disable - just update local state
+        setIsMicrophoneEnabled(false);
+        forceUpdate({});
       }
       
-      setIsMicrophoneEnabled(enabled);
+      // Also update state for enabled case (when creating new track)
+      if (enabled && !audioTrack) {
+        setIsMicrophoneEnabled(true);
+        forceUpdate({});
+      }
     } catch (error) {
       console.error('Failed to set microphone:', error);
       setError('Failed to toggle microphone');

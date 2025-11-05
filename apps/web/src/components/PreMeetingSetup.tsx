@@ -201,7 +201,9 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
       const element = videoTrack.attach();
       element.style.width = '100%';
       element.style.height = '100%';
-      element.style.objectFit = 'cover';
+      element.style.objectFit = 'contain'; // Show full video without cropping
+      element.style.objectPosition = 'center';
+      element.style.backgroundColor = '#000';
       containerRef.current.appendChild(element);
     }
     

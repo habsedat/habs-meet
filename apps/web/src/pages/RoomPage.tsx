@@ -8,11 +8,13 @@ import { db } from '../lib/firebase';
 import { MeetingService } from '../lib/meetingService';
 import toast from 'react-hot-toast';
 import MeetingControls from '../components/MeetingControls';
-import VideoGrid from '../components/VideoGrid';
+import MeetingShell from '../meeting/MeetingShell';
+import ViewMenu from '../components/ViewMenu';
 import ChatPanel from '../components/ChatPanel';
 import ParticipantsPanel from '../components/ParticipantsPanel';
 import SettingsPanel from '../components/SettingsPanel';
 import { recordingService, RecordingService } from '../lib/recordingService';
+import { ViewMode } from '../types/viewModes';
 
 const RoomPage: React.FC = () => {
   const { roomId } = useParams<{ roomId: string }>();
@@ -34,6 +36,7 @@ const RoomPage: React.FC = () => {
   const [showBottomControls, setShowBottomControls] = useState(true);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [lastSeenMessageId, setLastSeenMessageId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>('speaker');
 
   // Load room data
   useEffect(() => {
@@ -416,6 +419,9 @@ const RoomPage: React.FC = () => {
           <span className="text-cloud font-medium text-xs sm:text-sm truncate max-w-[200px] sm:max-w-none">{roomData.title}</span>
         </div>
         <div className="flex items-center space-x-2">
+          {/* View Mode Menu */}
+          <ViewMenu currentMode={viewMode} onModeChange={setViewMode} />
+          
           {/* Recording indicator */}
           {isRecording && (
             <div className="flex items-center space-x-2 bg-red-600/20 px-3 py-1 rounded-full border border-red-600/50">
@@ -443,7 +449,7 @@ const RoomPage: React.FC = () => {
         {/* Main video area */}
         <div className={`flex-1 flex flex-col overflow-hidden transition-all duration-300 ${activePanel ? 'mr-0 sm:mr-80' : ''}`}>
           <div className="flex-1 overflow-hidden">
-            <VideoGrid />
+            <MeetingShell viewMode={viewMode} />
           </div>
         </div>
 

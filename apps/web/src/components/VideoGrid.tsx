@@ -515,9 +515,12 @@ interface VideoTileProps {
   participant: LocalParticipant | RemoteParticipant;
   currentUserUid?: string;
   isScreenShareMode?: boolean; // When true, cameras are shown smaller at top
+  isPrimary?: boolean; // When true, this is the primary/active speaker
+  onPin?: (participantId: string | null) => void; // Pin/unpin callback
+  pinnedId?: string | null; // Currently pinned participant ID
 }
 
-const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid }) => {
+const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPrimary, onPin, pinnedId }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const isLocal = participant instanceof LocalParticipant;
   const [videoPublication, setVideoPublication] = useState<TrackPublication | null>(null);
@@ -623,7 +626,10 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid }) =>
     element.controls = false;
     element.style.width = '100%';
     element.style.height = '100%';
-    element.style.objectFit = 'cover';
+    // Use 'contain' to show full video without cropping - ensures everyone sees the same thing
+    element.style.objectFit = 'contain';
+    element.style.objectPosition = 'center';
+    element.style.backgroundColor = '#000'; // Black background for letterboxing
 
     // ✅ Safe DOM manipulation - clear and append video element
     const container = containerRef.current;
@@ -698,60 +704,76 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid }) =>
   const displayName = participant.name || participant.identity || 'Unknown';
   const isCurrentUser = currentUserUid && (participant.identity === currentUserUid || isLocal);
   
-  // ✅ Reactive state for mic/camera status - updates in real-time
+  // ✅ Reactive state for mic status - updates in real-time
   const [isMicrophoneEnabled, setIsMicrophoneEnabled] = useState(false);
-  const [isCameraEnabled, setIsCameraEnabled] = useState(false);
+  // Camera status removed - no longer displaying camera icon
   
   // ✅ Function to check and update mic/camera status - improved for remote participants
   const updateMicCameraStatus = useCallback(() => {
     if (isLocal) {
       // For local participant, use getTrack
       const micPub = (participant as LocalParticipant).getTrack(Track.Source.Microphone);
-      const cameraPub = (participant as LocalParticipant).getTrack(Track.Source.Camera);
       const micEnabled = (micPub !== null && micPub !== undefined) && micPub.isMuted === false;
-      const camEnabled = (cameraPub !== null && cameraPub !== undefined) && cameraPub.track !== null;
       
       setIsMicrophoneEnabled(micEnabled);
-      setIsCameraEnabled(camEnabled);
       
-      console.log('[VideoTile] Local status updated:', { mic: micEnabled, cam: camEnabled, micPub: !!micPub, camPub: !!cameraPub });
+      console.log('[VideoTile] Local status updated:', { mic: micEnabled, micPub: !!micPub });
     } else {
-      // For remote participant, use getTrackPublication and check multiple conditions
+      // For remote participant, use getTrackPublication
       const micPub = (participant as RemoteParticipant).getTrackPublication(Track.Source.Microphone) as RemoteTrackPublication | null;
-      const cameraPub = (participant as RemoteParticipant).getTrackPublication(Track.Source.Camera) as RemoteTrackPublication | null;
       
-      // ✅ For mic: publication exists AND is not muted
-      // The publication's isMuted property should be available even without subscription
-      // If track exists and is subscribed, use that; otherwise use publication metadata
-      let micEnabled = false;
-      if (micPub !== null && micPub !== undefined) {
-        // Check publication's mute state (available even without subscription)
-        micEnabled = micPub.isMuted === false;
-        
-        // Also verify: if track exists, it should not be muted
+      // ✅ CRITICAL FIX: Check mute state from multiple sources for accuracy
+      // LiveKit broadcasts mute state via track, not just publication
+      let micEnabled = true; // Default to enabled (unmuted)
+      
+      if (micPub) {
+        // Priority 1: Check track's muted property directly (most reliable)
         if (micPub.track) {
-          micEnabled = micEnabled && micPub.isMuted === false;
+          const track = micPub.track;
+          // Track's muted property is the source of truth
+          if (track.isMuted !== undefined && track.isMuted !== null) {
+            micEnabled = !track.isMuted;
+          } else {
+            // Fallback to publication's isMuted
+            if (micPub.isMuted !== undefined && micPub.isMuted !== null) {
+              micEnabled = !micPub.isMuted;
+            }
+          }
+        } else {
+          // Track not subscribed yet - check publication's isMuted
+          // NOTE: We should subscribe to audio tracks to get accurate mute state
+          if (micPub.isMuted !== undefined && micPub.isMuted !== null) {
+            micEnabled = !micPub.isMuted;
+          } else {
+            // Can't determine - assume enabled (better UX)
+            micEnabled = true;
+          }
         }
       }
       
-      // ✅ For camera: check if publication exists and has a track (subscribed)
-      const camEnabled = cameraPub !== null && 
-                        cameraPub !== undefined && 
-                        cameraPub.track !== null;
-      
       setIsMicrophoneEnabled(micEnabled);
-      setIsCameraEnabled(camEnabled);
+      
+      // ✅ CRITICAL: Ensure audio track is subscribed to get accurate mute state
+      // Mute state is only available when track is subscribed
+      if (micPub && !micPub.isSubscribed && !micPub.track) {
+        // Subscribe to audio track to receive mute state updates
+        console.log('[VideoTile] Auto-subscribing to audio track for mute state:', participant.identity);
+        try {
+          micPub.setSubscribed(true);
+        } catch (err: any) {
+          console.error('[VideoTile] Failed to subscribe to audio for mute state:', err);
+        }
+      }
       
       console.log('[VideoTile] Remote status updated:', {
         participant: participant.identity || participant.name,
-        mic: micEnabled, 
-        cam: camEnabled,
+        mic: micEnabled,
         micPubExists: !!micPub,
         micPubIsMuted: micPub?.isMuted,
+        trackIsMuted: micPub?.track?.isMuted,
+        micEnabledResult: micEnabled,
         micPubTrack: !!micPub?.track,
-        micPubIsSubscribed: micPub?.isSubscribed,
-        camPubExists: !!cameraPub,
-        camPubTrack: !!cameraPub?.track
+        micPubIsSubscribed: micPub?.isSubscribed
       });
     }
   }, [participant, isLocal]);
@@ -788,29 +810,115 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid }) =>
         // For remote participant, listen to publication mute state and track events
         const micPub = (participant as RemoteParticipant).getTrackPublication(Track.Source.Microphone) as RemoteTrackPublication | null;
         
-        // ✅ Listen to mic track mute/unmute events
-        if (micPub?.track) {
-          const handleMicMute = () => {
-            console.log('[VideoTile] Remote mic mute state changed - track event:', micPub.isMuted);
+        // ✅ CRITICAL: Listen to Participant-level TrackMuted/TrackUnmuted events
+        // These fire when ANY track on the participant is muted/unmuted
+        const handleTrackMuted = (publication: TrackPublication) => {
+          if (publication.source === Track.Source.Microphone) {
+            console.log('[VideoTile] Participant mic muted event:', participant.identity, 'isMuted:', (publication as RemoteTrackPublication).isMuted);
+            // Update immediately
             updateMicCameraStatus();
+            // Update again after a brief delay to ensure state is synced
+            setTimeout(() => updateMicCameraStatus(), 50);
+          }
+        };
+        
+        const handleTrackUnmuted = (publication: TrackPublication) => {
+          if (publication.source === Track.Source.Microphone) {
+            console.log('[VideoTile] Participant mic unmuted event:', participant.identity, 'isMuted:', (publication as RemoteTrackPublication).isMuted);
+            // Update immediately
+            updateMicCameraStatus();
+            // Update again after a brief delay to ensure state is synced
+            setTimeout(() => updateMicCameraStatus(), 50);
+          }
+        };
+        
+        participant.on(ParticipantEvent.TrackMuted, handleTrackMuted);
+        participant.on(ParticipantEvent.TrackUnmuted, handleTrackUnmuted);
+        
+        cleanupFunctions.push(() => {
+          participant.off(ParticipantEvent.TrackMuted, handleTrackMuted);
+          participant.off(ParticipantEvent.TrackUnmuted, handleTrackUnmuted);
+        });
+        
+        // ✅ CRITICAL: Listen to track-level mute events - this is the most reliable source
+        // The track's muted property updates immediately when remote participant mutes/unmutes
+        if (micPub?.track) {
+          const handleTrackMuted = () => {
+            console.log('[VideoTile] Track-level mic MUTED:', participant.identity);
+            updateMicCameraStatus();
+            // Double-check after a brief delay
+            setTimeout(() => updateMicCameraStatus(), 50);
           };
-          micPub.track.on('muted', handleMicMute);
-          micPub.track.on('unmuted', handleMicMute);
+          
+          const handleTrackUnmuted = () => {
+            console.log('[VideoTile] Track-level mic UNMUTED:', participant.identity);
+            updateMicCameraStatus();
+            // Double-check after a brief delay
+            setTimeout(() => updateMicCameraStatus(), 50);
+          };
+          
+          micPub.track.on('muted', handleTrackMuted);
+          micPub.track.on('unmuted', handleTrackUnmuted);
+          
           cleanupFunctions.push(() => {
-            micPub.track?.off('muted', handleMicMute);
-            micPub.track?.off('unmuted', handleMicMute);
+            micPub.track?.off('muted', handleTrackMuted);
+            micPub.track?.off('unmuted', handleTrackUnmuted);
           });
+        } else {
+          // ✅ CRITICAL: If track doesn't exist, we need to subscribe to get mute state
+          // Subscribe to audio track to receive mute state updates
+          if (micPub && !micPub.isSubscribed) {
+            console.log('[VideoTile] Subscribing to audio track to get mute state:', participant.identity);
+            try {
+              micPub.setSubscribed(true);
+              // Re-check mute state after a brief delay
+              setTimeout(() => updateMicCameraStatus(), 100);
+            } catch (err: any) {
+              console.error('[VideoTile] Failed to subscribe to audio track:', err);
+            }
+          }
         }
         
-        // ✅ Also check for publication metadata changes (mute state can be in metadata)
-        // Poll the publication's isMuted state periodically to catch changes
-        if (micPub) {
-          const publicationPollInterval = setInterval(() => {
-            // Re-check publication mute state
+        // ✅ Also listen to TrackSubscribed event - when audio track becomes available
+        const handleTrackSubscribed = (track: any, publication: TrackPublication) => {
+          if (publication.source === Track.Source.Microphone && publication.kind === Track.Kind.Audio) {
+            console.log('[VideoTile] Audio track subscribed, updating mute state:', participant.identity);
             updateMicCameraStatus();
-          }, 500);
-          cleanupFunctions.push(() => clearInterval(publicationPollInterval));
-        }
+            
+            // Set up track-level listeners now that track is available
+            if (track) {
+              const handleSubscribedMuted = () => {
+                console.log('[VideoTile] Subscribed track muted:', participant.identity);
+                updateMicCameraStatus();
+              };
+              const handleSubscribedUnmuted = () => {
+                console.log('[VideoTile] Subscribed track unmuted:', participant.identity);
+                updateMicCameraStatus();
+              };
+              
+              track.on('muted', handleSubscribedMuted);
+              track.on('unmuted', handleSubscribedUnmuted);
+              
+              cleanupFunctions.push(() => {
+                track?.off('muted', handleSubscribedMuted);
+                track?.off('unmuted', handleSubscribedUnmuted);
+              });
+            }
+          }
+        };
+        
+        participant.on(ParticipantEvent.TrackSubscribed, handleTrackSubscribed);
+        cleanupFunctions.push(() => {
+          participant.off(ParticipantEvent.TrackSubscribed, handleTrackSubscribed);
+        });
+        
+        // ✅ Poll the publication's isMuted state periodically as fallback
+        // This catches any changes that might not trigger events
+        // Always poll, even if publication doesn't exist yet (it might appear later)
+        const publicationPollInterval = setInterval(() => {
+          updateMicCameraStatus();
+        }, 200); // Very frequent polling (200ms) for immediate updates
+        cleanupFunctions.push(() => clearInterval(publicationPollInterval));
       }
     };
     
@@ -819,16 +927,20 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid }) =>
     
     // Listen for track published/unpublished events - re-setup listeners when tracks change
     const handleTrackPublished = (publication: TrackPublication) => {
-      if (publication.source === Track.Source.Microphone || publication.source === Track.Source.Camera) {
-        console.log('[VideoTile] Track published, updating status:', publication.source);
+      if (publication.source === Track.Source.Microphone) {
+        console.log('[VideoTile] Track published, updating status:', publication.source, 'isMuted:', (publication as RemoteTrackPublication).isMuted);
+        // CRITICAL: Update status immediately when track is published
         updateMicCameraStatus();
         // Re-setup mute listeners when new tracks are published
-        setTimeout(() => setupTrackMuteListeners(), 100);
+        setTimeout(() => {
+          updateMicCameraStatus(); // Update again after a brief delay
+          setupTrackMuteListeners();
+        }, 100);
       }
     };
     
     const handleTrackUnpublished = (publication: TrackPublication) => {
-      if (publication.source === Track.Source.Microphone || publication.source === Track.Source.Camera) {
+      if (publication.source === Track.Source.Microphone) {
         console.log('[VideoTile] Track unpublished, updating status:', publication.source);
         updateMicCameraStatus();
         // Clean up listeners when tracks are unpublished
@@ -852,7 +964,7 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid }) =>
   useEffect(() => {
     const statusInterval = setInterval(() => {
       updateMicCameraStatus();
-    }, 1000); // Check every second
+    }, 200); // Check every 200ms for very responsive updates
     
     return () => clearInterval(statusInterval);
   }, [updateMicCameraStatus]);
@@ -888,7 +1000,7 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid }) =>
   return (
     <div className="video-container w-full h-full bg-gray-900 rounded-lg overflow-hidden relative" id={`participant-${participant.sid}`}>
       {/* Video element container - add data attribute for easy finding */}
-      <div ref={containerRef} data-video-container="true" className="w-full h-full bg-gradient-to-br from-techBlue to-violetDeep flex items-center justify-center">
+      <div ref={containerRef} data-video-container="true" className="w-full h-full bg-black flex items-center justify-center">
         {/* Placeholder when no video */}
         <div className="text-center text-cloud">
           <div className="w-12 h-12 sm:w-16 sm:h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-2">
@@ -933,37 +1045,56 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid }) =>
           
           {/* Mic and Camera status icons - visible to everyone */}
           <div className="flex items-center gap-1.5 flex-shrink-0">
-            {/* Microphone status */}
-            <div className="flex items-center justify-center w-5 h-5 rounded-full bg-black/50 backdrop-blur-sm">
-              {isMicrophoneEnabled ? (
-                <svg className="w-3 h-3 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+            {/* Pin button */}
+            {onPin && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const isPinned = pinnedId === participant.identity;
+                  onPin(isPinned ? null : participant.identity);
+                }}
+                className={`flex items-center justify-center w-6 h-6 rounded-full backdrop-blur-sm transition-colors ${
+                  pinnedId === participant.identity
+                    ? 'bg-techBlue text-white'
+                    : 'bg-black/50 text-gray-300 hover:bg-black/70 hover:text-white'
+                }`}
+                title={pinnedId === participant.identity ? 'Unpin' : 'Pin'}
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
                 </svg>
-              ) : (
-                <svg className="w-3 h-3 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
-                </svg>
-              )}
-            </div>
+              </button>
+            )}
             
-            {/* Camera status */}
-            <div className="flex items-center justify-center w-5 h-5 rounded-full bg-black/50 backdrop-blur-sm">
-              {isCameraEnabled ? (
-                <svg className="w-3 h-3 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+            {/* Microphone status - LARGER, MORE VISIBLE icon */}
+            <div className="flex items-center justify-center w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-black/70 backdrop-blur-sm border border-white/20">
+              {isMicrophoneEnabled ? (
+                <svg className="w-5 h-5 sm:w-6 sm:h-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
                 </svg>
               ) : (
-                <svg className="w-3 h-3 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                <svg className="w-5 h-5 sm:w-6 sm:h-6 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
                 </svg>
               )}
             </div>
           </div>
         </div>
       </div>
+      
+      {/* Primary speaker indicator */}
+      {isPrimary && (
+        <div className="absolute top-2 right-2 bg-techBlue text-white px-2 py-1 rounded-full text-xs font-medium flex items-center gap-1 z-20">
+          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+          </svg>
+          Speaking
+        </div>
+      )}
     </div>
   );
 };
 
+export { VideoTile };
 export default VideoGrid;
