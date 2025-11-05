@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useState, useCallback, useRef, useMemo } from 'react';
 import { Room, RoomEvent, Track, RemoteParticipant, LocalParticipant, LocalTrackPublication, LocalVideoTrack, createLocalVideoTrack, createLocalAudioTrack, ParticipantEvent, TrackPublication, RemoteTrackPublication, DataPacket_Kind } from 'livekit-client';
 
 // ✅ Remote control event types
@@ -36,6 +36,7 @@ interface LiveKitContextType {
   isCameraEnabled: boolean;
   isScreenSharing: boolean;
   isConnectingToRoom: boolean;
+  isScreenShareSupported: boolean;
   
   // Participants
   participants: Map<string, RemoteParticipant>;
@@ -87,6 +88,8 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
   
   const roomRef = useRef<Room | null>(null);
   const hasPublishedRef = useRef(false);
+  const screenShareStreamRef = useRef<MediaStream | null>(null);
+  const screenShareTrackRef = useRef<LocalVideoTrack | null>(null);
   const [, forceUpdate] = useState({});
 
   const connect = async (token: string) => {
@@ -101,9 +104,13 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
       return;
     }
 
-    setIsConnecting(true);
-    setIsConnectingToRoom(true);
-    setError(null);
+      setIsConnecting(true);
+      setIsConnectingToRoom(true);
+      setError(null);
+      
+      // ✅ Clear participants map to prevent duplicates from previous connections
+      setParticipants(new Map());
+      setLocalParticipant(null);
     
     try {
       const newRoom = new Room(LIVEKIT_CONFIG.roomConfig);
@@ -216,13 +223,22 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
           }
         });
         
-        setIsConnected(true);
-        setIsConnecting(false);
-        setIsConnectingToRoom(false);
-        setRoomName(newRoom.name);
-        setLocalParticipant(newRoom.localParticipant);
-        setParticipantCount(newRoom.participants.size + 1);
-        setParticipants(new Map(newRoom.participants));
+          setIsConnected(true);
+          setIsConnecting(false);
+          setIsConnectingToRoom(false);
+          setRoomName(newRoom.name);
+          setLocalParticipant(newRoom.localParticipant);
+          
+          // ✅ Filter out local participant and only include RemoteParticipants
+          const remoteParticipantsMap = new Map<string, RemoteParticipant>();
+          newRoom.participants.forEach((participant) => {
+            // Only add RemoteParticipants, exclude LocalParticipant
+            if (participant instanceof RemoteParticipant) {
+              remoteParticipantsMap.set(participant.identity, participant);
+            }
+          });
+          setParticipants(remoteParticipantsMap);
+          setParticipantCount(newRoom.participants.size + 1);
 
         // ✅ SIMPLIFIED AND DIRECT: Subscribe to ALL tracks from ALL participants
         const subscribeToAll = () => {
@@ -271,13 +287,36 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
         setParticipants(new Map());
         setLocalParticipant(null);
         setParticipantCount(0);
+        
+        // Clean up screen share resources
+        if (screenShareStreamRef.current) {
+          screenShareStreamRef.current.getTracks().forEach(track => track.stop());
+          screenShareStreamRef.current = null;
+        }
+        if (screenShareTrackRef.current) {
+          screenShareTrackRef.current.stop();
+          screenShareTrackRef.current = null;
+        }
+        setIsScreenSharing(false);
+        
         roomRef.current = null;
         hasPublishedRef.current = false;
       });
 
       newRoom.on(RoomEvent.ParticipantConnected, (participant) => {
         console.log('[LiveKit] ✅✅✅ NEW PARTICIPANT CONNECTED:', participant.identity, 'Name:', participant.name);
-        setParticipants(prev => new Map(prev.set(participant.identity, participant)));
+        
+        // ✅ Only add RemoteParticipants, exclude LocalParticipant
+        // ✅ Replace if exists (handles refresh scenarios where same identity reconnects)
+        if (participant instanceof RemoteParticipant) {
+          setParticipants(prev => {
+            const newMap = new Map(prev);
+            // Replace if exists to handle refresh scenarios
+            newMap.set(participant.identity, participant);
+            return newMap;
+          });
+        }
+        
         setParticipantCount(newRoom.participants.size + 1);
 
         // ✅ SIMPLIFIED: Make NEW participant subscribe to ALL EXISTING participants
@@ -573,6 +612,17 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const disconnect = useCallback(() => {
+    // Clean up screen share resources
+    if (screenShareStreamRef.current) {
+      screenShareStreamRef.current.getTracks().forEach(track => track.stop());
+      screenShareStreamRef.current = null;
+    }
+    if (screenShareTrackRef.current) {
+      screenShareTrackRef.current.stop();
+      screenShareTrackRef.current = null;
+    }
+    setIsScreenSharing(false);
+
     if (roomRef.current) {
       roomRef.current.disconnect();
     }
@@ -662,17 +712,245 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   }, []);
 
+    // Helper function to detect mobile devices
+  const isMobileDevice = useCallback(() => {
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
+           (typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches);
+  }, []);
+
+  // Helper function to detect if screen sharing is supported
+  // Computed once using useMemo since device type won't change during session
+  const isScreenShareSupported = useMemo(() => {
+    // Check if the browser API exists
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+      return false;
+    }
+
+    // Check if it's a mobile device (phone or tablet)
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    
+    // Check screen size for tablets
+    const isTablet = typeof window !== 'undefined' && 
+                     window.matchMedia('(max-width: 1024px)').matches && 
+                     !window.matchMedia('(max-width: 768px)').matches;
+    
+    // Check if it's specifically a tablet (iPad detection)
+    const isiPad = /iPad/.test(navigator.userAgent) || 
+                   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+    // Screen sharing is not reliably supported on phones and tablets
+    // Only enable on desktop/laptop devices
+    if (isMobile || isTablet || isiPad) {
+      return false;
+    }
+
+    // Desktop/laptop devices should support screen sharing
+    return true;
+  }, []);
+
   const setScreenShareEnabled = useCallback(async (enabled: boolean) => {
     if (!roomRef.current) return;
-    
+
     try {
-      await roomRef.current.localParticipant.setScreenShareEnabled(enabled);
-      setIsScreenSharing(enabled);
-    } catch (error) {
-      console.error('Failed to set screen share:', error);
-      setError('Failed to toggle screen share');
-    }
-  }, []);
+      if (enabled) {
+        // Starting screen share
+        // Check if screen sharing is supported
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+          throw new Error('Screen sharing is not supported in this browser. Please use a modern browser like Chrome, Firefox, or Safari.');
+        }
+
+        // Prepare constraints - optimized for mobile devices
+        const isMobile = isMobileDevice();
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+        const isAndroid = /Android/.test(navigator.userAgent);
+        
+        console.log('[ScreenShare] Device detection - Mobile:', isMobile, 'iOS:', isIOS, 'Android:', isAndroid);
+
+        // For mobile devices, use simpler constraints and try without audio first
+        // Many mobile browsers don't support audio with screen sharing
+        let constraints: MediaStreamConstraints;
+        
+        if (isMobile) {
+          // Mobile-friendly constraints - minimal requirements
+          constraints = {
+            video: true, // Let browser choose the best settings
+          };
+        } else {
+          // Desktop constraints
+          constraints = {
+            video: {
+              width: { ideal: 1920 },
+              height: { ideal: 1080 },
+              frameRate: { ideal: 30 },
+            } as MediaTrackConstraints,
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            } as MediaTrackConstraints,
+          };
+        }
+
+        // Request screen share with enhanced options
+        console.log('[ScreenShare] Requesting display media with constraints:', constraints);
+        let stream: MediaStream;
+        
+        try {
+          stream = await navigator.mediaDevices.getDisplayMedia(constraints);
+        } catch (initialError: any) {
+          // If it fails on mobile, try with even simpler constraints
+          if (isMobile && initialError.name !== 'NotAllowedError' && initialError.name !== 'NotFoundError') {
+            console.log('[ScreenShare] First attempt failed, trying with minimal constraints:', initialError);
+            constraints = {
+              video: true,
+            };
+            stream = await navigator.mediaDevices.getDisplayMedia(constraints);
+          } else {
+            throw initialError;
+          }
+        }
+        
+        // Store the stream for cleanup
+        screenShareStreamRef.current = stream;
+
+        // Handle when user stops sharing via browser UI
+        stream.getVideoTracks()[0].addEventListener('ended', () => {
+          console.log('[ScreenShare] User stopped sharing via browser UI');
+          setScreenShareEnabled(false).catch(err => {
+            console.error('[ScreenShare] Error stopping screen share:', err);
+          });
+        });
+
+                // Create video track from the stream
+        const videoTrack = stream.getVideoTracks()[0];
+        if (!videoTrack) {
+          throw new Error('No video track found in screen share stream');
+        }
+
+        console.log('[ScreenShare] Video track obtained:', {
+          id: videoTrack.id,
+          label: videoTrack.label,
+          enabled: videoTrack.enabled,
+          readyState: videoTrack.readyState,
+          settings: videoTrack.getSettings(),
+        });
+
+        // Create LiveKit LocalVideoTrack from the MediaStreamTrack
+        let localVideoTrack: LocalVideoTrack;
+        try {
+          localVideoTrack = new LocalVideoTrack(videoTrack);
+          console.log('[ScreenShare] LocalVideoTrack created successfully');
+        } catch (trackError: any) {
+          console.error('[ScreenShare] Failed to create LocalVideoTrack:', trackError);
+          throw new Error(`Failed to create video track: ${trackError.message || trackError}`);
+        }
+
+        // Store the track for cleanup
+        screenShareTrackRef.current = localVideoTrack;
+
+        // Publish the track to the room
+        try {
+          await roomRef.current.localParticipant.publishTrack(localVideoTrack, {
+            source: Track.Source.ScreenShare,
+          });
+          console.log('[ScreenShare] Track published successfully to room');
+        } catch (publishError: any) {
+          console.error('[ScreenShare] Failed to publish track:', publishError);
+          // Clean up the track if publishing fails
+          localVideoTrack.stop();
+          screenShareTrackRef.current = null;
+          throw new Error(`Failed to publish screen share: ${publishError.message || publishError}`);
+        }
+
+        console.log('[ScreenShare] Screen share started successfully');
+        setIsScreenSharing(true);
+
+        // Show success message based on device type
+        if (isMobile) {
+          console.log('[ScreenShare] ✅ Mobile device - Screen sharing active. User can share entire screen or specific apps/tabs.');
+        }
+      } else {
+        // Stopping screen share
+        const existingTrack = roomRef.current.localParticipant.getTrack(Track.Source.ScreenShare);
+        
+        if (existingTrack) {
+          // Unpublish the track
+          await roomRef.current.localParticipant.unpublishTrack(existingTrack.track as LocalVideoTrack);
+          console.log('[ScreenShare] Unpublished screen share track');
+        }
+
+        // Stop all tracks in the stream
+        if (screenShareStreamRef.current) {
+          screenShareStreamRef.current.getTracks().forEach(track => {
+            track.stop();
+          });
+          screenShareStreamRef.current = null;
+        }
+
+        // Clean up the track reference
+        if (screenShareTrackRef.current) {
+          screenShareTrackRef.current.stop();
+          screenShareTrackRef.current = null;
+        }
+
+                            setIsScreenSharing(false);
+          console.log('[ScreenShare] Screen share stopped successfully');
+        }
+      } catch (error: any) {
+        console.error('[ScreenShare] Failed to toggle screen share:', error);
+        console.error('[ScreenShare] Error details:', {
+          name: error.name,
+          message: error.message,
+          stack: error.stack,
+        });
+        
+        // Clean up on error
+        if (screenShareStreamRef.current) {
+          screenShareStreamRef.current.getTracks().forEach(track => track.stop());
+          screenShareStreamRef.current = null;
+        }
+        if (screenShareTrackRef.current) {
+          screenShareTrackRef.current.stop();
+          screenShareTrackRef.current = null;
+        }
+        setIsScreenSharing(false);
+
+        // Provide user-friendly error messages
+        const isMobile = isMobileDevice();
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+        const isAndroid = /Android/.test(navigator.userAgent);
+        
+        let errorMessage = 'Failed to toggle screen share';
+        if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+          if (isMobile) {
+            errorMessage = 'Screen sharing permission was denied. Please allow screen sharing when prompted. On mobile, you may need to enable it in your browser settings.';
+          } else {
+            errorMessage = 'Screen sharing permission was denied. Please allow screen sharing in your browser settings.';
+          }
+        } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+          if (isMobile) {
+            errorMessage = 'No screen sharing source found. Please select "Screen" or a specific app/tab to share.';
+          } else {
+            errorMessage = 'No screen sharing source found. Please select a screen, window, or tab to share.';
+          }
+        } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
+          errorMessage = 'Screen sharing failed. Another application may be using your screen.';
+        } else if (error.name === 'NotSupportedError') {
+          if (isIOS) {
+            errorMessage = 'Screen sharing may not be fully supported on iOS Safari. Please try using Chrome or another supported browser.';
+          } else if (isAndroid) {
+            errorMessage = 'Screen sharing requires Android Chrome or a supported browser. Please ensure you are using a recent version.';
+          } else {
+            errorMessage = 'Screen sharing is not supported in this browser. Please use Chrome, Firefox, or Safari.';
+          }
+        } else if (error.message) {
+          errorMessage = error.message;
+        }
+        
+        setError(errorMessage);
+        throw error;
+      }
+  }, [isMobileDevice]);
 
   const toggleMicrophone = useCallback(async () => {
     await setMicrophoneEnabled(!isMicrophoneEnabled);
@@ -874,6 +1152,7 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
     isCameraEnabled,
     isScreenSharing,
     isConnectingToRoom,
+    isScreenShareSupported: isScreenShareSupported,
     
     // Participants
     participants,

@@ -5,18 +5,20 @@ import { useLiveKit } from '../contexts/LiveKitContext';
 import { api } from '../lib/api';
 import { doc, onSnapshot, collection, query, orderBy, addDoc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
+import { MeetingService } from '../lib/meetingService';
 import toast from 'react-hot-toast';
 import MeetingControls from '../components/MeetingControls';
 import VideoGrid from '../components/VideoGrid';
 import ChatPanel from '../components/ChatPanel';
 import ParticipantsPanel from '../components/ParticipantsPanel';
 import SettingsPanel from '../components/SettingsPanel';
+import { recordingService, RecordingService } from '../lib/recordingService';
 
 const RoomPage: React.FC = () => {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
   const { user, userProfile } = useAuth();
-  const { connect, disconnect, isConnected, isConnecting, publishFromSavedSettings } = useLiveKit();
+  const { connect, disconnect, isConnected, isConnecting, publishFromSavedSettings, room } = useLiveKit();
   
   const [roomData, setRoomData] = useState<any>(null);
   const [participants, setParticipants] = useState<any[]>([]);
@@ -24,6 +26,7 @@ const RoomPage: React.FC = () => {
   const [activePanel, setActivePanel] = useState<'chat' | 'participants' | 'settings' | null>(null);
   const [isHost, setIsHost] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [recordingDuration, setRecordingDuration] = useState(0);
   const [isLocked, setIsLocked] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
   const [shareLink, setShareLink] = useState('');
@@ -162,16 +165,16 @@ const RoomPage: React.FC = () => {
     );
   }, [isConnected, publishFromSavedSettings]);
 
-  // Auto-hide bottom controls after 15 seconds of inactivity
+    // Auto-hide bottom controls after 5 seconds of inactivity
   useEffect(() => {
     let inactivityTimer: NodeJS.Timeout;
-    
+
     const resetTimer = () => {
       setShowBottomControls(true);
       clearTimeout(inactivityTimer);
       inactivityTimer = setTimeout(() => {
         setShowBottomControls(false);
-      }, 15000); // 15 seconds
+      }, 5000); // 5 seconds
     };
     
     // Initial timer
@@ -250,26 +253,95 @@ const RoomPage: React.FC = () => {
     }
   }, [disconnect, navigate, isHost, roomId]);
 
+  // Subscribe to recording state changes
+  useEffect(() => {
+    const handleRecordingStateChange = (state: any) => {
+      setIsRecording(state.isRecording);
+      setRecordingDuration(state.duration);
+    };
+
+    const handleSaveComplete = (result: { success: boolean; message: string; filename?: string; location?: string }) => {
+      if (result.success) {
+        // Show detailed success message with location
+        const message = result.location || result.message;
+        toast.success(
+          <div>
+            <div className="font-semibold">Recording Saved!</div>
+            <div className="text-sm mt-1">{message}</div>
+            {result.filename && (
+              <div className="text-xs mt-1 text-gray-300">Filename: {result.filename}</div>
+            )}
+          </div>,
+          { 
+            duration: 8000,
+            icon: '✅'
+          }
+        );
+      } else {
+        toast.error(result.message, { duration: 5000 });
+      }
+    };
+
+    recordingService.onStateChange(handleRecordingStateChange);
+    recordingService.onSaveComplete(handleSaveComplete);
+
+    return () => {
+      // Cleanup on unmount
+      if (recordingService.getState().isRecording) {
+        recordingService.stopRecording();
+      }
+    };
+  }, []);
+
   const handleRecord = async () => {
-    if (!isHost) return;
-    
+    // If already recording, stop it
+    if (isRecording) {
+      try {
+        recordingService.stopRecording();
+        // Don't show message here - wait for save complete callback
+      } catch (error: any) {
+        console.error('Error stopping recording:', error);
+        toast.error('Failed to stop recording: ' + error.message);
+      }
+      return;
+    }
+
+    // Check if recording is supported
+    if (!RecordingService.isSupported()) {
+      toast.error('Recording is not supported on this device');
+      return;
+    }
+
+    if (!room) {
+      toast.error('Not connected to meeting room. Please wait...');
+      return;
+    }
+
+    // Start recording immediately - no options, just record everything
     try {
-      // TODO: Implement recording start/stop via API
-      setIsRecording(!isRecording);
-      toast.success(isRecording ? 'Recording stopped' : 'Recording started');
+      await recordingService.startRecording({
+        room: room,
+      });
+      toast.success('Recording started - capturing entire meeting room');
     } catch (error: any) {
-      toast.error('Failed to toggle recording: ' + error.message);
+      console.error('Error starting recording:', error);
+      toast.error('Failed to start recording: ' + error.message);
     }
   };
 
   const handleLock = async () => {
-    if (!isHost) return;
+    if (!isHost || !roomId) return;
     
     try {
-      // TODO: Implement room lock/unlock via API
+      const newStatus = isLocked ? 'open' : 'locked';
+      await MeetingService.updateRoom(roomId, {
+        status: newStatus,
+      });
+      // The status will be updated via the onSnapshot listener, but we can also update local state immediately
       setIsLocked(!isLocked);
       toast.success(isLocked ? 'Room unlocked' : 'Room locked');
     } catch (error: any) {
+      console.error('Failed to toggle room lock:', error);
       toast.error('Failed to toggle room lock: ' + error.message);
     }
   };
@@ -297,7 +369,11 @@ const RoomPage: React.FC = () => {
   };
 
   const handleShareLink = async () => {
-    if (!isHost || !roomId) return;
+    // Don't allow sharing if room is locked
+    if (isLocked || !roomId) {
+      toast.error('Cannot share link: Meeting is locked');
+      return;
+    }
     
     setIsGeneratingLink(true);
     try {
@@ -340,6 +416,15 @@ const RoomPage: React.FC = () => {
           <span className="text-cloud font-medium text-xs sm:text-sm truncate max-w-[200px] sm:max-w-none">{roomData.title}</span>
         </div>
         <div className="flex items-center space-x-2">
+          {/* Recording indicator */}
+          {isRecording && (
+            <div className="flex items-center space-x-2 bg-red-600/20 px-3 py-1 rounded-full border border-red-600/50">
+              <div className="w-2 h-2 bg-red-600 rounded-full animate-pulse"></div>
+              <span className="text-red-400 text-xs font-mono font-semibold">
+                {RecordingService.formatDuration(recordingDuration)}
+              </span>
+            </div>
+          )}
           {activePanel && (
             <button
               onClick={() => setActivePanel(null)}
@@ -405,84 +490,87 @@ const RoomPage: React.FC = () => {
         )}
       </div>
 
-      {/* Bottom controls bar - auto-hide */}
-      <div className={`h-14 bg-gray-900/95 backdrop-blur-sm border-t border-gray-700 flex items-center justify-center px-2 sm:px-4 z-20 transition-transform duration-300 ${showBottomControls ? 'translate-y-0' : 'translate-y-full'}`}>
-        {/* Center - main controls */}
-        <div className="flex items-center space-x-1 sm:space-x-2">
-          <MeetingControls
-            isHost={isHost}
-            onRecord={handleRecord}
-            onLock={handleLock}
-            isRecording={isRecording}
-            isLocked={isLocked}
-          />
-          
-          <div className="w-px h-8 bg-gray-600 mx-2"></div>
-          
+            {/* Bottom controls bar - auto-hide */}
+      <div className={`h-14 bg-gray-900/95 backdrop-blur-sm border-t border-gray-700 flex items-center justify-center px-2 sm:px-4 z-20 transition-transform duration-300 ${showBottomControls ? 'translate-y-0' : 'translate-y-full'}`}>                                           
+                {/* Center - main controls - scrollable on smaller screens */}
+        <div className="flex items-center space-x-1 sm:space-x-2 overflow-x-auto w-full lg:w-auto lg:justify-center flex-nowrap scrollbar-hide" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none', WebkitOverflowScrolling: 'touch' }}>
+          <div className="flex items-center space-x-1 sm:space-x-2 flex-shrink-0">
+            <MeetingControls
+              isHost={isHost}
+              onRecord={handleRecord}
+              onLock={handleLock}
+              isRecording={isRecording}
+              isLocked={isLocked}
+            />
+          </div>
+
+          <div className="w-px h-8 bg-gray-600 mx-2 flex-shrink-0"></div>
+
           <button
-            onClick={() => setActivePanel(activePanel === 'participants' ? null : 'participants')}
-            className={`relative p-1.5 sm:p-2 hover:bg-gray-700 rounded transition-colors ${
-              activePanel === 'participants' ? 'text-techBlue' : 'text-gray-400 hover:text-white'
+            onClick={() => setActivePanel(activePanel === 'participants' ? null : 'participants')}                                                                                      
+            className={`relative p-1.5 sm:p-2 hover:bg-gray-700 rounded transition-colors flex-shrink-0 ${
+              activePanel === 'participants' ? 'text-techBlue' : 'text-gray-400 hover:text-white'                                                                                       
             }`}
             title="Participants"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"> 
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />                                                                               
             </svg>
-            <span className="absolute -top-0.5 -right-0.5 bg-techBlue text-white text-xs rounded-full w-4 h-4 flex items-center justify-center">
+            <span className="absolute -top-0.5 -right-0.5 bg-techBlue text-white text-xs rounded-full w-4 h-4 flex items-center justify-center">                                        
               {participants.length}
             </span>
           </button>
 
           <button
             onClick={() => setActivePanel(activePanel === 'chat' ? null : 'chat')}
-            className={`relative p-1.5 sm:p-2 hover:bg-gray-700 rounded transition-colors ${
-              activePanel === 'chat' ? 'text-techBlue' : 'text-gray-400 hover:text-white'
+            className={`relative p-1.5 sm:p-2 hover:bg-gray-700 rounded transition-colors flex-shrink-0 ${
+              activePanel === 'chat' ? 'text-techBlue' : 'text-gray-400 hover:text-white'   
             }`}
-            title={unreadChatCount > 0 ? `Chat (${unreadChatCount} new message${unreadChatCount > 1 ? 's' : ''})` : 'Chat'}
+            title={unreadChatCount > 0 ? `Chat (${unreadChatCount} new message${unreadChatCount > 1 ? 's' : ''})` : 'Chat'}                                                             
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"> 
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />                               
             </svg>
             {/* ✅ Unread message badge */}
             {unreadChatCount > 0 && (
-              <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center animate-pulse">
+              <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center animate-pulse">                   
                 {unreadChatCount > 99 ? '99+' : unreadChatCount}
               </span>
             )}
           </button>
 
-          {isHost && (
+          {/* Share link button - visible to everyone when room is not locked */}
+          {!isLocked && (
             <button
               onClick={handleShareLink}
-              className={`p-1.5 sm:p-2 hover:bg-gray-700 rounded transition-colors ${
-                isGeneratingLink ? 'opacity-50 cursor-not-allowed' : 'text-gray-400 hover:text-white'
+              className={`p-1.5 sm:p-2 hover:bg-gray-700 rounded transition-colors flex-shrink-0 ${       
+                isGeneratingLink ? 'opacity-50 cursor-not-allowed' : 'text-gray-400 hover:text-white'                                                                                   
               }`}
               title="Share meeting link"
               disabled={isGeneratingLink}
             >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">                                                                                           
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />                                                 
               </svg>
             </button>
           )}
 
-          <div className="w-px h-8 bg-gray-600 mx-2"></div>
+          <div className="w-px h-8 bg-gray-600 mx-2 flex-shrink-0"></div>
 
           {/* Right side - leave/end buttons */}
           {isHost ? (
             // Host has two options: Leave or End Meeting
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-shrink-0">
               <button
                 onClick={handleLeave}
-                className="bg-gray-600 hover:bg-gray-700 text-white px-3 sm:px-5 py-2 rounded-lg font-medium transition-colors text-xs sm:text-sm"
+                className="bg-gray-600 hover:bg-gray-700 text-white px-3 sm:px-5 py-2 rounded-lg font-medium transition-colors text-xs sm:text-sm"                                      
                 title="Leave meeting (others can continue)"
               >
                 Leave
               </button>
               <button
                 onClick={handleEndMeeting}
-                className="bg-red-600 hover:bg-red-700 text-white px-3 sm:px-5 py-2 rounded-lg font-medium transition-colors text-xs sm:text-sm"
+                className="bg-red-600 hover:bg-red-700 text-white px-3 sm:px-5 py-2 rounded-lg font-medium transition-colors text-xs sm:text-sm"                                        
                 title="End meeting for everyone"
               >
                 End Meeting
@@ -492,7 +580,7 @@ const RoomPage: React.FC = () => {
             // Non-hosts only have Leave option
             <button
               onClick={handleLeave}
-              className="bg-red-600 hover:bg-red-700 text-white px-4 sm:px-6 py-2 rounded-lg font-medium transition-colors text-sm sm:text-base"
+              className="bg-red-600 hover:bg-red-700 text-white px-4 sm:px-6 py-2 rounded-lg font-medium transition-colors text-sm sm:text-base flex-shrink-0"                                        
             >
               Leave
             </button>
@@ -500,18 +588,19 @@ const RoomPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Share Link Modal */}
+            {/* Share Link Modal */}
       {showShareModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowShareModal(false)}>
-          <div className="bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4 overflow-y-auto" onClick={() => setShowShareModal(false)}>                                                      
+          <div className="bg-gray-800 rounded-lg p-4 sm:p-6 max-w-md w-full shadow-xl my-auto" onClick={(e) => e.stopPropagation()}>                                                              
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-xl font-semibold text-cloud">Share Meeting Link</h3>
+              <h3 className="text-lg sm:text-xl font-semibold text-cloud pr-2">Share Meeting Link</h3>      
               <button
                 onClick={() => setShowShareModal(false)}
-                className="text-gray-400 hover:text-white transition-colors"
+                className="text-gray-400 hover:text-white transition-colors flex-shrink-0"
+                aria-label="Close"
               >
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                <svg className="w-5 h-5 sm:w-6 sm:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">                                                                                         
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />                                                                        
                 </svg>
               </button>
             </div>
@@ -520,16 +609,16 @@ const RoomPage: React.FC = () => {
               <label className="block text-sm font-medium text-gray-300 mb-2">
                 Invite participants to join this meeting
               </label>
-              <div className="flex items-center space-x-2">
+              <div className="flex flex-col sm:flex-row gap-2 sm:gap-2">
                 <input
                   type="text"
                   value={shareLink}
                   readOnly
-                  className="flex-1 bg-gray-700 text-cloud px-4 py-2 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-techBlue focus:border-transparent"
+                  className="flex-1 bg-gray-700 text-cloud px-3 sm:px-4 py-2 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-techBlue focus:border-transparent text-sm sm:text-base min-w-0"    
                 />
                 <button
                   onClick={copyToClipboard}
-                  className="bg-techBlue hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition-colors font-medium"
+                  className="bg-techBlue hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition-colors font-medium text-sm sm:text-base whitespace-nowrap flex-shrink-0 w-full sm:w-auto"
                   title="Copy link"
                 >
                   Copy
@@ -537,12 +626,13 @@ const RoomPage: React.FC = () => {
               </div>
             </div>
 
-            <div className="text-sm text-gray-400">
-              <p>This link will expire in 7 days and can be used up to 100 times.</p>
+            <div className="text-xs sm:text-sm text-gray-400">
+              <p>This link will expire in 7 days and can be used up to 2500 times.</p>       
             </div>
           </div>
         </div>
       )}
+
     </div>
   );
 };

@@ -6,7 +6,7 @@ import toast from 'react-hot-toast';
 import Header from '../components/Header';
 import CalendarInterface from '../components/CalendarInterface';
 import ShareScreen from '../components/ShareScreen';
-import { collection, query, getDocs, orderBy, limit, getDoc, doc } from 'firebase/firestore';
+import { collection, query, getDocs, orderBy, limit, getDoc, doc, setDoc, updateDoc, arrayUnion, serverTimestamp } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 
 const HomePage: React.FC = () => {
@@ -19,6 +19,16 @@ const HomePage: React.FC = () => {
   const [recentMeetingsWithMessages, setRecentMeetingsWithMessages] = useState<any[]>([]);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [isMessageSystemOpen, setIsMessageSystemOpen] = useState(false);
+  // Track which meetings are expanded (collapsible functionality)
+  const [expandedMeetings, setExpandedMeetings] = useState<Set<string>>(new Set());
+  // Track which meetings have been opened (to hide message counts)
+  const [openedMeetings, setOpenedMeetings] = useState<Set<string>>(new Set());
+  // Track last seen message count per meeting (to detect new messages)
+  const [lastSeenMessageCounts, setLastSeenMessageCounts] = useState<Record<string, number>>({});
+  // Track deleted messages per user (per-user deletion)
+  const [_deletedMessages, setDeletedMessages] = useState<Record<string, Set<string>>>({});
+  // Track if persisted data has been loaded
+  const [persistedDataLoaded, setPersistedDataLoaded] = useState(false);
 
   const handleCreateRoom = async () => {
     if (!user || !userProfile) return;
@@ -133,15 +143,38 @@ const HomePage: React.FC = () => {
             })).reverse(); // Reverse to show oldest first
 
             if (messages.length > 0) {
-              rooms.push({
-                roomId,
-                title: roomData.title || 'Untitled Meeting',
-                createdAt: roomData.createdAt,
-                endedAt: roomData.endedAt,
-                status: roomData.status || 'open',
-                messages,
-                participantData: participantSnap.data()
+              // Load user's deleted messages for this room
+              const deletedMessagesRef = doc(db, 'users', user.uid, 'deletedMessages', roomId);
+              const deletedMessagesSnap = await getDoc(deletedMessagesRef);
+              const messageIds = deletedMessagesSnap.exists() 
+                ? (deletedMessagesSnap.data().messageIds || [])
+                : [];
+              const userDeletedMessageIds = new Set<string>(messageIds);
+              
+              // Filter out deleted messages for this user
+              const visibleMessages = messages.filter((msg: any) => !userDeletedMessageIds.has(msg.id));
+              
+              // Store deleted messages in state for quick access
+              setDeletedMessages(prev => {
+                const newState = { ...prev };
+                newState[roomId] = userDeletedMessageIds;
+                return newState;
               });
+              
+              // Only show meetings that have visible messages for this user
+              if (visibleMessages.length > 0) {
+                rooms.push({
+                  roomId,
+                  title: roomData.title || 'Untitled Meeting',
+                  createdAt: roomData.createdAt,
+                  endedAt: roomData.endedAt,
+                  status: roomData.status || 'open',
+                  messages: visibleMessages, // Only show non-deleted messages
+                  allMessages: messages, // Keep all messages for total count calculation
+                  participantData: participantSnap.data(),
+                  totalMessageCount: messages.length
+                });
+              }
             }
           }
         }
@@ -163,8 +196,170 @@ const HomePage: React.FC = () => {
       }
     };
 
-    loadRecentMeetingsWithMessages();
+    if (user) {
+      loadPersistedMeetingViews();
+      loadRecentMeetingsWithMessages();
+    }
   }, [user]);
+
+  // Load persisted meeting views (opened meetings and last seen counts)
+  const loadPersistedMeetingViews = async () => {
+    if (!user) return;
+    
+    try {
+      const meetingViewsRef = collection(db, 'users', user.uid, 'meetingViews');
+      const meetingViewsSnapshot = await getDocs(meetingViewsRef);
+      
+      const loadedOpenedMeetings = new Set<string>();
+      const loadedLastSeenCounts: Record<string, number> = {};
+      
+      meetingViewsSnapshot.docs.forEach(doc => {
+        const data = doc.data();
+        const roomId = doc.id;
+        if (data.openedAt) {
+          loadedOpenedMeetings.add(roomId);
+        }
+        if (data.lastSeenMessageCount !== undefined) {
+          loadedLastSeenCounts[roomId] = data.lastSeenMessageCount;
+        }
+      });
+      
+      setOpenedMeetings(loadedOpenedMeetings);
+      setLastSeenMessageCounts(loadedLastSeenCounts);
+      setPersistedDataLoaded(true);
+    } catch (error: any) {
+      console.error('Error loading persisted meeting views:', error);
+      setPersistedDataLoaded(true); // Still mark as loaded to continue
+    }
+  };
+
+  // Handle meeting header click - toggle expand/collapse
+  const handleMeetingToggle = (roomId: string) => {
+    setExpandedMeetings(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(roomId)) {
+        newSet.delete(roomId);
+      } else {
+        newSet.add(roomId);
+        // Mark as opened when user expands it
+        handleMeetingOpened(roomId);
+      }
+      return newSet;
+    });
+  };
+
+  // Mark meeting as opened (hide message count) - persist to Firestore
+  const handleMeetingOpened = async (roomId: string) => {
+    if (!user) return;
+    
+    setOpenedMeetings(prev => new Set(prev).add(roomId));
+    
+    // Store the current TOTAL message count as last seen (all messages, not just visible)
+    const meeting = recentMeetingsWithMessages.find(m => m.roomId === roomId);
+    if (meeting) {
+      // Use totalMessageCount (total in Firestore) or allMessages.length, not just visible messages.length
+      const currentTotalCount = meeting.totalMessageCount || (meeting.allMessages?.length || meeting.messages.length);
+      setLastSeenMessageCounts(prev => ({
+        ...prev,
+        [roomId]: currentTotalCount
+      }));
+      
+      // Persist to Firestore
+      try {
+        const meetingViewRef = doc(db, 'users', user.uid, 'meetingViews', roomId);
+        await setDoc(meetingViewRef, {
+          roomId,
+          openedAt: serverTimestamp(),
+          lastSeenMessageCount: currentTotalCount,
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+      } catch (error: any) {
+        console.error('Error persisting meeting view:', error);
+      }
+    }
+  };
+
+  // Calculate unread message count for a meeting (based on visible messages)
+  const getUnreadCount = (meeting: any): number => {
+    // Only show unread count if persisted data has been loaded
+    if (!persistedDataLoaded) {
+      return 0; // Don't show counts until we know what was previously seen
+    }
+    
+    const hasBeenOpened = openedMeetings.has(meeting.roomId);
+    const visibleCount = meeting.messages.length;
+    
+    if (!hasBeenOpened) {
+      // Not opened yet - show all visible messages as unread
+      return visibleCount;
+    }
+    
+    // Has been opened - only show count if there are NEW messages since last seen
+    const lastSeenCount = lastSeenMessageCounts[meeting.roomId] || 0;
+    const currentTotalCount = meeting.totalMessageCount || visibleCount;
+    const newMessages = Math.max(0, currentTotalCount - lastSeenCount);
+    return newMessages;
+  };
+
+  // Get total unread count across all meetings
+  const getTotalUnreadCount = (): number => {
+    return recentMeetingsWithMessages.reduce((sum, meeting) => {
+      return sum + getUnreadCount(meeting);
+    }, 0);
+  };
+
+  // Delete a single message (per-user deletion - only hides for this user)
+  const handleDeleteMessage = async (roomId: string, messageId: string) => {
+    if (!user) return;
+    
+    try {
+      // Add message ID to user's deleted messages for this room
+      const deletedMessagesRef = doc(db, 'users', user.uid, 'deletedMessages', roomId);
+      const deletedMessagesSnap = await getDoc(deletedMessagesRef);
+      
+      if (deletedMessagesSnap.exists()) {
+        // Update existing document
+        await updateDoc(deletedMessagesRef, {
+          messageIds: arrayUnion(messageId)
+        });
+      } else {
+        // Create new document
+        await setDoc(deletedMessagesRef, {
+          messageIds: [messageId],
+          roomId,
+          updatedAt: new Date()
+        });
+      }
+      
+      // Update local state - remove from visible messages
+      setRecentMeetingsWithMessages(prev => 
+        prev.map(meeting => {
+          if (meeting.roomId === roomId) {
+            return {
+              ...meeting,
+              messages: meeting.messages.filter((msg: any) => msg.id !== messageId)
+            };
+          }
+          return meeting;
+        }).filter(meeting => meeting.messages.length > 0 || meeting.totalMessageCount > 0)
+      );
+      
+      // Update deleted messages state
+      setDeletedMessages(prev => {
+        const roomDeleted = prev[roomId] || new Set<string>();
+        roomDeleted.add(messageId);
+        return {
+          ...prev,
+          [roomId]: roomDeleted
+        };
+      });
+      
+      toast.success('Message deleted for you');
+    } catch (error: any) {
+      console.error('Error deleting message:', error);
+      toast.error('Failed to delete message: ' + error.message);
+    }
+  };
 
   const formatTime = (timestamp: any) => {
     if (!timestamp) return '';
@@ -503,204 +698,251 @@ const HomePage: React.FC = () => {
                     <svg className="w-5 h-5 text-techBlue" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                     </svg>
-                    <h3 className="text-lg font-semibold text-midnight">Message System</h3>
-                    {recentMeetingsWithMessages.length > 0 && (
-                      <span className="bg-techBlue text-white text-xs font-bold rounded-full px-2 py-0.5">
-                        {recentMeetingsWithMessages.reduce((sum, m) => sum + m.messages.length, 0)}
-                      </span>
-                    )}
-                  </div>
-                  <svg 
-                    className={`w-5 h-5 text-gray-600 transition-transform ${isMessageSystemOpen ? 'rotate-180' : ''}`}
-                    fill="none" 
-                    stroke="currentColor" 
-                    viewBox="0 0 24 24"
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
-                
-                {/* ✅ Collapsible Content */}
-                {isMessageSystemOpen && (
-                  <div className="px-4 sm:px-6 pb-4 sm:pb-6 max-h-[600px] overflow-y-auto bg-gradient-to-br from-techBlue to-violetDeep/20">
-                    {isLoadingMessages ? (
-                      <div className="text-center py-8">
-                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-techBlue mx-auto mb-2"></div>
-                        <p className="text-sm text-gray-500">Loading messages...</p>
-                      </div>
-                    ) : recentMeetingsWithMessages.length === 0 ? (
-                      <div className="text-sm text-gray-500 text-center py-8">
-                        <svg className="w-12 h-12 mx-auto mb-2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                        </svg>
-                        <p>No messages yet</p>
-                        <p className="text-xs mt-1">Chat messages from your meetings will appear here</p>
-                      </div>
-                    ) : (
-                      <div className="space-y-4">
-                        {recentMeetingsWithMessages.map((meeting) => (
-                          <div key={meeting.roomId} className="border border-gray-200 rounded-lg p-3 bg-white">
-                            {/* Meeting Header */}
-                            <div className="flex items-start justify-between mb-2">
+                                         <h3 className="text-lg font-semibold text-midnight">Message System</h3>
+                     {(() => {
+                       const totalUnread = getTotalUnreadCount();
+                       return totalUnread > 0 ? (
+                         <span className="bg-techBlue text-white text-xs font-bold rounded-full px-2 py-0.5">
+                           {totalUnread}
+                         </span>
+                       ) : null;
+                     })()}
+                   </div>
+                   <svg 
+                     className={`w-5 h-5 text-gray-600 transition-transform ${isMessageSystemOpen ? 'rotate-180' : ''}`}
+                     fill="none" 
+                     stroke="currentColor" 
+                     viewBox="0 0 24 24"
+                   >
+                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                   </svg>
+                 </button>
+                 
+                 {/* ✅ Collapsible Content */}
+                 {isMessageSystemOpen && (
+                   <div className="px-4 sm:px-6 pb-4 sm:pb-6 max-h-[600px] overflow-y-auto bg-gradient-to-br from-techBlue to-violetDeep/20">
+                     {isLoadingMessages ? (
+                       <div className="text-center py-8">
+                         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-techBlue mx-auto mb-2"></div>
+                         <p className="text-sm text-gray-500">Loading messages...</p>
+                       </div>
+                     ) : recentMeetingsWithMessages.length === 0 ? (
+                       <div className="text-sm text-gray-500 text-center py-8">
+                         <svg className="w-12 h-12 mx-auto mb-2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                         </svg>
+                         <p>No messages yet</p>
+                         <p className="text-xs mt-1">Chat messages from your meetings will appear here</p>
+                       </div>
+                     ) : (
+                       <div className="space-y-4">
+                         {recentMeetingsWithMessages.map((meeting) => (
+                           <div key={meeting.roomId} className="border border-gray-200 rounded-lg p-3 bg-white">
+                                                        {/* Meeting Header */}
+                            <div 
+                              className="flex items-start justify-between mb-2 cursor-pointer hover:bg-gray-50 p-2 rounded -mx-2"
+                              onClick={() => handleMeetingToggle(meeting.roomId)}
+                            >
                               <div className="flex-1 min-w-0">
-                                <h4 className="font-semibold text-midnight text-sm truncate">{meeting.title}</h4>
+                                <div className="flex items-center gap-2">
+                                  <h4 className="font-semibold text-midnight text-sm truncate">{meeting.title}</h4>
+                                  {expandedMeetings.has(meeting.roomId) ? (
+                                    <svg className="w-4 h-4 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                    </svg>
+                                  ) : (
+                                    <svg className="w-4 h-4 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                    </svg>
+                                  )}
+                                </div>
                                 <p className="text-xs text-gray-500 mt-0.5">
-                                  {formatDate(meeting.createdAt)} • {meeting.messages.length} message{meeting.messages.length !== 1 ? 's' : ''}
+                                  {formatDate(meeting.createdAt)}
+                                  {(() => {
+                                    const unreadCount = getUnreadCount(meeting);
+                                    return unreadCount > 0 ? (
+                                      <span className="ml-2 bg-techBlue text-white px-2 py-0.5 rounded-full text-xs font-semibold">
+                                        {unreadCount} new
+                                      </span>
+                                    ) : null;
+                                  })()}
                                 </p>
                               </div>
-                              {meeting.status === 'ended' && (
-                                <span className="text-xs bg-red-100 text-red-600 px-2 py-1 rounded ml-2">Ended</span>
-                              )}
+                                {meeting.status === 'ended' && (
+                                  <span className="text-xs bg-red-100 text-red-600 px-2 py-1 rounded ml-2">Ended</span>
+                                )}
+                                                           </div>
+
+                                                          {/* Messages Preview - WhatsApp Style */}
+                             {expandedMeetings.has(meeting.roomId) && (
+                             <div className="space-y-0.5 max-h-96 overflow-y-auto mt-3 border-t border-gray-100 pt-3">
+                                                               {meeting.messages.map((message: any) => {
+                                   const isOwnMessage = message.uid === user?.uid;
+                                   return (
+                                     <div
+                                       key={message.id}
+                                       className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'} group`}
+                                     >
+                                       <div className={`max-w-[95%] ${isOwnMessage ? 'order-2' : 'order-1'} relative`}>
+                                         {!isOwnMessage && (
+                                           <p className="text-xs sm:text-sm font-semibold text-white/90 mb-0.5 px-1">
+                                             {message.displayName || 'Unknown'}
+                                           </p>
+                                         )}
+                                         <div
+                                           className={`rounded-lg px-3 py-2 relative ${  
+                                             isOwnMessage
+                                               ? 'bg-gradient-to-br from-techBlue to-techBlue/90 text-white'
+                                               : 'bg-white/95 text-gray-800'
+                                           }`}
+                                         >
+                                           <p className="text-sm sm:text-base break-words">{message.text}</p>
+                                           <div className="flex items-center justify-end gap-2 mt-1">
+                                             <p className={`text-xs ${
+                                               isOwnMessage ? 'text-white/70' : 'text-gray-500'
+                                             }`}>
+                                               {formatTime(message.createdAt)}
+                                             </p>
+                                             {/* Delete button */}
+                                             <button
+                                               onClick={(e) => {
+                                                 e.stopPropagation();
+                                                 handleDeleteMessage(meeting.roomId, message.id);
+                                               }}
+                                               className="opacity-0 group-hover:opacity-70 hover:opacity-100 transition-opacity"
+                                               title="Delete message for you"
+                                             >
+                                               <svg className={`w-3.5 h-3.5 ${
+                                                 isOwnMessage ? 'text-white/70' : 'text-gray-500'
+                                               }`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                               </svg>
+                                             </button>
+                                           </div>
+                                         </div>
+                                       </div>
+                                     </div>
+                                   );
+                                 })}
+                                {meeting.messages.length > 5 && (
+                                  <p className="text-xs text-techBlue text-center pt-1">
+                                    +{meeting.messages.length - 5} more messages
+                                  </p>
+                                )}
+                                                        </div>
+                             )}
                             </div>
-                            
-                            {/* Messages Preview - WhatsApp Style */}
-                            <div className="space-y-2 max-h-48 overflow-y-auto mt-3 border-t border-gray-100 pt-3">
-                              {meeting.messages.slice(-5).map((message: any) => {
-                                const isOwnMessage = message.uid === user?.uid;
-                                return (
-                                  <div 
-                                    key={message.id} 
-                                    className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'}`}
-                                  >
-                                    <div className={`max-w-[75%] ${isOwnMessage ? 'order-2' : 'order-1'}`}>
-                                      {!isOwnMessage && (
-                                        <p className="text-xs font-medium text-gray-700 mb-1 px-1">
-                                          {message.displayName || 'Unknown'}
-                                        </p>
-                                      )}
-                                      <div
-                                        className={`rounded-lg px-3 py-2 ${
-                                          isOwnMessage
-                                            ? 'bg-techBlue text-white'
-                                            : 'bg-gray-100 text-gray-800'
-                                        }`}
-                                      >
-                                        <p className="text-xs break-words">{message.text}</p>
-                                      </div>
-                                      <p className={`text-xs text-gray-400 mt-0.5 px-1 ${
-                                        isOwnMessage ? 'text-right' : 'text-left'
-                                      }`}>
-                                        {formatTime(message.createdAt)}
-                                      </p>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                              {meeting.messages.length > 5 && (
-                                <p className="text-xs text-techBlue text-center pt-1">
-                                  +{meeting.messages.length - 5} more messages
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Mobile & Tablet content when panel is closed */}
-          <div className={`lg:hidden ${isMobilePanelOpen ? 'hidden' : 'block'}`}>
-            {/* Quick Actions Cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
-              {/* Create Meeting Card */}
-              <div className="bg-gradient-to-b from-purple-500 to-blue-600 rounded-lg p-3 text-white">
-                <div className="text-center">
-                  {/* Icon */}
-                  <div className="w-10 h-10 bg-yellow-400 rounded-full flex items-center justify-center mx-auto mb-2">
-                    <svg className="w-5 h-5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                    </svg>
-                  </div>
-                  
-                  {/* Title */}
-                  <h3 className="text-base font-bold mb-1">Create Meeting</h3>
-                  
-                  {/* Description */}
-                  <p className="text-xs text-white/90 mb-3">
-                    Start a new meeting and invite participants with secure links.
-                  </p>
-                  
-                  {/* Button */}
-                  <button
-                    onClick={handleCreateRoom}
-                    disabled={isCreatingRoom}
-                    className="w-full bg-yellow-400 text-black py-2 px-3 rounded-lg text-sm font-medium hover:bg-yellow-300 transition-colors disabled:opacity-50"
-                  >
-                    {isCreatingRoom ? 'Creating...' : 'Create Room'}
-                  </button>
-                </div>
-              </div>
-
-              {/* Join Meeting Card */}
-              <div className="bg-gradient-to-b from-purple-500 to-blue-600 rounded-lg p-3 text-white">
-                <div className="text-center">
-                  {/* Icon */}
-                  <div className="w-10 h-10 bg-purple-400 rounded-full flex items-center justify-center mx-auto mb-2">
-                    <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                    </svg>
-            </div>
-
-                  {/* Title */}
-                  <h3 className="text-base font-bold mb-1">Join Meeting</h3>
-                  
-                  {/* Description */}
-                  <p className="text-xs text-white/90 mb-3">
-                    Enter an invite link to join an existing meeting.
-                  </p>
-                  
-                  {/* Input Field */}
-                  <input
-                    type="url"
-                    placeholder="Paste invite link here..."
-                    value={inviteLink}
-                    onChange={(e) => setInviteLink(e.target.value)}
-                    className="w-full px-2 py-1.5 border border-gray-300 rounded-lg text-xs focus:ring-2 focus:ring-yellow-400 focus:border-transparent text-gray-900 placeholder-gray-500 mb-3"
-                    style={{color: '#111827', backgroundColor: 'white'}}
-                  />
-                  
-                  {/* Button */}
-                  <button
-                    onClick={handleJoinWithInvite}
-                    className="w-full bg-purple-400 text-white py-2 px-3 rounded-lg text-sm font-medium hover:bg-purple-300 transition-colors"
-                  >
-                    Join Meeting
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Recent Meetings with Messages - Collapsible */}
-            <div className="bg-cloud rounded-lg overflow-hidden">
-              {/* ✅ Clickable Button Header */}
-              <button
-                onClick={() => setIsMessageSystemOpen(!isMessageSystemOpen)}
-                className="w-full p-4 sm:p-6 flex items-center justify-between hover:bg-gray-50 transition-colors"
-              >
-                <div className="flex items-center gap-2">
-                  <svg className="w-5 h-5 text-techBlue" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                  </svg>
-                  <h3 className="text-lg font-semibold text-midnight">Message System</h3>
-                  {recentMeetingsWithMessages.length > 0 && (
-                    <span className="bg-techBlue text-white text-xs font-bold rounded-full px-2 py-0.5">
-                      {recentMeetingsWithMessages.reduce((sum, m) => sum + m.messages.length, 0)}
-                    </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   )}
-                </div>
-                <svg 
-                  className={`w-5 h-5 text-gray-600 transition-transform ${isMessageSystemOpen ? 'rotate-180' : ''}`}
-                  fill="none" 
-                  stroke="currentColor" 
-                  viewBox="0 0 24 24"
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                </svg>
-              </button>
+               </div>
+             </div>
+           </div>
+
+           {/* Mobile & Tablet content when panel is closed */}
+           <div className={`lg:hidden ${isMobilePanelOpen ? 'hidden' : 'block'}`}>
+             {/* Quick Actions Cards */}
+             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
+               {/* Create Meeting Card */}
+               <div className="bg-gradient-to-b from-purple-500 to-blue-600 rounded-lg p-3 text-white">
+                 <div className="text-center">
+                   {/* Icon */}
+                   <div className="w-10 h-10 bg-yellow-400 rounded-full flex items-center justify-center mx-auto mb-2">
+                     <svg className="w-5 h-5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                     </svg>
+                   </div>
+                   
+                   {/* Title */}
+                   <h3 className="text-base font-bold mb-1">Create Meeting</h3>
+                   
+                   {/* Description */}
+                   <p className="text-xs text-white/90 mb-3">
+                     Start a new meeting and invite participants with secure links.
+                   </p>
+                   
+                   {/* Button */}
+                   <button
+                     onClick={handleCreateRoom}
+                     disabled={isCreatingRoom}
+                     className="w-full bg-yellow-400 text-black py-2 px-3 rounded-lg text-sm font-medium hover:bg-yellow-300 transition-colors disabled:opacity-50"
+                   >
+                     {isCreatingRoom ? 'Creating...' : 'Create Room'}
+                   </button>
+                 </div>
+               </div>
+
+               {/* Join Meeting Card */}
+               <div className="bg-gradient-to-b from-purple-500 to-blue-600 rounded-lg p-3 text-white">
+                 <div className="text-center">
+                   {/* Icon */}
+                   <div className="w-10 h-10 bg-purple-400 rounded-full flex items-center justify-center mx-auto mb-2">
+                     <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                     </svg>
+             </div>
+
+                   {/* Title */}
+                   <h3 className="text-base font-bold mb-1">Join Meeting</h3>
+                   
+                   {/* Description */}
+                   <p className="text-xs text-white/90 mb-3">
+                     Enter an invite link to join an existing meeting.
+                   </p>
+                   
+                   {/* Input Field */}
+                   <input
+                     type="url"
+                     placeholder="Paste invite link here..."
+                     value={inviteLink}
+                     onChange={(e) => setInviteLink(e.target.value)}
+                     className="w-full px-2 py-1.5 border border-gray-300 rounded-lg text-xs focus:ring-2 focus:ring-yellow-400 focus:border-transparent text-gray-900 placeholder-gray-500 mb-3"
+                     style={{color: '#111827', backgroundColor: 'white'}}
+                   />
+                   
+                   {/* Button */}
+                   <button
+                     onClick={handleJoinWithInvite}
+                     className="w-full bg-purple-400 text-white py-2 px-3 rounded-lg text-sm font-medium hover:bg-purple-300 transition-colors"
+                   >
+                     Join Meeting
+                   </button>
+                 </div>
+               </div>
+             </div>
+
+             {/* Recent Meetings with Messages - Collapsible */}
+             <div className="bg-cloud rounded-lg overflow-hidden">
+               {/* ✅ Clickable Button Header */}
+               <button
+                 onClick={() => setIsMessageSystemOpen(!isMessageSystemOpen)}
+                 className="w-full p-4 sm:p-6 flex items-center justify-between hover:bg-gray-50 transition-colors"
+               >
+                 <div className="flex items-center gap-2">
+                   <svg className="w-5 h-5 text-techBlue" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                   </svg>
+                   <h3 className="text-lg font-semibold text-midnight">Message System</h3>
+                   {(() => {
+                     const totalUnread = getTotalUnreadCount();
+                     return totalUnread > 0 ? (
+                       <span className="bg-techBlue text-white text-xs font-bold rounded-full px-2 py-0.5">
+                         {totalUnread}
+                       </span>
+                     ) : null;
+                   })()}
+                 </div>
+                 <svg 
+                   className={`w-5 h-5 text-gray-600 transition-transform ${isMessageSystemOpen ? 'rotate-180' : ''}`}
+                   fill="none" 
+                   stroke="currentColor" 
+                   viewBox="0 0 24 24"
+                 >
+                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                 </svg>
+               </button>
               
               {/* ✅ Collapsible Content */}
               {isMessageSystemOpen && (
@@ -722,67 +964,103 @@ const HomePage: React.FC = () => {
                     <div className="space-y-4">
                       {recentMeetingsWithMessages.map((meeting) => (
                         <div key={meeting.roomId} className="border border-gray-200 rounded-lg p-3 bg-white">
-                          {/* Meeting Header */}
-                          <div className="flex items-start justify-between mb-2">
-                            <div className="flex-1 min-w-0">
-                              <h4 className="font-semibold text-midnight text-sm truncate">{meeting.title}</h4>
-                              <p className="text-xs text-gray-500 mt-0.5">
-                                {formatDate(meeting.createdAt)} • {meeting.messages.length} message{meeting.messages.length !== 1 ? 's' : ''}
-                              </p>
-                            </div>
-                            {meeting.status === 'ended' && (
-                              <span className="text-xs bg-red-100 text-red-600 px-2 py-1 rounded ml-2">Ended</span>
-                            )}
-                          </div>
-                          
-                          {/* Messages Preview - WhatsApp Style */}
-                          <div className="space-y-2 max-h-48 overflow-y-auto mt-3 border-t border-gray-100 pt-3">
-                            {meeting.messages.slice(-5).map((message: any) => {
-                              const isOwnMessage = message.uid === user?.uid;
-                              return (
-                                <div 
-                                  key={message.id} 
-                                  className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'}`}
-                                >
-                                  <div className={`max-w-[75%] ${isOwnMessage ? 'order-2' : 'order-1'}`}>
-                                    {!isOwnMessage && (
-                                      <p className="text-xs font-medium text-gray-700 mb-1 px-1">
-                                        {message.displayName || 'Unknown'}
-                                      </p>
-                                    )}
-                                    <div
-                                      className={`rounded-lg px-3 py-2 ${
-                                        isOwnMessage
-                                          ? 'bg-techBlue text-white'
-                                          : 'bg-gray-100 text-gray-800'
-                                      }`}
-                                    >
-                                      <p className="text-sm break-words">{message.text}</p>
+                                                     {/* Meeting Header */}
+                           <div 
+                             className="flex items-start justify-between mb-2 cursor-pointer hover:bg-gray-50 p-2 rounded -mx-2"
+                             onClick={() => handleMeetingToggle(meeting.roomId)}
+                           >
+                             <div className="flex-1 min-w-0">
+                               <div className="flex items-center gap-2">
+                                 <h4 className="font-semibold text-midnight text-sm truncate">{meeting.title}</h4>
+                                 {expandedMeetings.has(meeting.roomId) ? (
+                                   <svg className="w-4 h-4 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                   </svg>
+                                 ) : (
+                                   <svg className="w-4 h-4 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                   </svg>
+                                 )}
+                               </div>
+                               <p className="text-xs text-gray-500 mt-0.5">
+                                 {formatDate(meeting.createdAt)}
+                                 {(() => {
+                                   const unreadCount = getUnreadCount(meeting);
+                                   return unreadCount > 0 ? (
+                                     <span className="ml-2 bg-techBlue text-white px-2 py-0.5 rounded-full text-xs font-semibold">
+                                       {unreadCount} new
+                                     </span>
+                                   ) : null;
+                                 })()}
+                               </p>
+                             </div>
+                             {meeting.status === 'ended' && (
+                               <span className="text-xs bg-red-100 text-red-600 px-2 py-1 rounded ml-2">Ended</span>
+                             )}
+                           </div>
+
+                                                       {/* Messages Preview - WhatsApp Style - Only show when expanded */}
+                            {expandedMeetings.has(meeting.roomId) && (
+                            <div className="space-y-0.5 max-h-96 overflow-y-auto mt-3 border-t border-gray-100 pt-3">
+                                                                {meeting.messages.map((message: any) => {                                                                             
+                                   const isOwnMessage = message.uid === user?.uid;
+                                   return (
+                                     <div
+                                       key={message.id}
+                                       className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'} group`}                                                                      
+                                     >
+                                       <div className={`max-w-[95%] ${isOwnMessage ? 'order-2' : 'order-1'} relative`}>                                                                
+                                        {!isOwnMessage && (
+                                          <p className="text-xs sm:text-sm font-semibold text-white/90 mb-0.5 px-1">                                                                
+                                            {message.displayName || 'Unknown'}
+                                          </p>
+                                        )}
+                                        <div
+                                          className={`rounded-lg px-3 py-2 relative ${  
+                                            isOwnMessage
+                                              ? 'bg-gradient-to-br from-techBlue to-techBlue/90 text-white'                                                                         
+                                              : 'bg-white/95 text-gray-800'
+                                          }`}
+                                        >
+                                          <p className="text-sm sm:text-base break-words">{message.text}</p>                                                                        
+                                          <div className="flex items-center justify-end gap-2 mt-1">                                                                                
+                                            <p className={`text-xs ${
+                                              isOwnMessage ? 'text-white/70' : 'text-gray-500'                                                                                      
+                                            }`}>
+                                              {formatTime(message.createdAt)}
+                                            </p>
+                                            {/* Delete button */}
+                                            <button
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleDeleteMessage(meeting.roomId, message.id);                                                                                    
+                                              }}
+                                              className="opacity-0 group-hover:opacity-70 hover:opacity-100 transition-opacity"                                                     
+                                              title="Delete message for you"
+                                            >
+                                              <svg className={`w-3.5 h-3.5 ${
+                                                isOwnMessage ? 'text-white/70' : 'text-gray-500'                                                                                    
+                                              }`} fill="none" stroke="currentColor" viewBox="0 0 24 24">                                                                            
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />                          
+                                              </svg>
+                                            </button>
+                                          </div>
+                                        </div>
+                                      </div>
                                     </div>
-                                    <p className={`text-xs text-gray-400 mt-0.5 px-1 ${
-                                      isOwnMessage ? 'text-right' : 'text-left'
-                                    }`}>
-                                      {formatTime(message.createdAt)}
-                                    </p>
-                                  </div>
+                                  );
+                                                                                                                                                                                                                                                                       })}
                                 </div>
-                              );
-                            })}
-                            {meeting.messages.length > 5 && (
-                              <p className="text-xs text-techBlue text-center pt-1">
-                                +{meeting.messages.length - 5} more messages
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+                              )}
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+           </div>
+         </div>
       </main>
     </div>
   );

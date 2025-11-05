@@ -16,6 +16,28 @@
   box-sizing: border-box;
 }
 
+html {
+  /* Base font size - will scale with system preferences */
+  font-size: 16px;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* Increase base font size on mobile/tablet for better readability */
+/* This ensures text is larger on smaller screens and respects system font size settings */
+@media (max-width: 768px) {
+  html {
+    font-size: clamp(18px, 4vw + 1rem, 20px); /* Larger on mobile, scales with system preferences */
+  }
+}
+
+/* For tablets and medium screens */
+@media (min-width: 769px) and (max-width: 1024px) {
+  html {
+    font-size: clamp(16px, 2vw + 0.5rem, 18px);
+  }
+}
+
 html, body {
   min-height: 100%;
   margin: 0;
@@ -38,6 +60,16 @@ body {
   min-height: 100%;
   overflow-x: hidden;
   overflow-y: auto;
+}
+
+/* Scrollbar Hide Utility */
+.scrollbar-hide {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;  /* Chrome, Safari, Opera */
 }
 
 /* Custom Component Styles */

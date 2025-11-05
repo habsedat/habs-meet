@@ -23,7 +23,25 @@ const MeetingControls: React.FC<MeetingControlsProps> = ({
     isMicrophoneEnabled,
     isCameraEnabled,
     isScreenSharing,
+    isScreenShareSupported,
   } = useLiveKit();
+
+  // Check if recording is supported (desktop/laptop only)
+  const isRecordingSupported = React.useMemo(() => {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+      return false;
+    }
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    const isTablet = typeof window !== 'undefined' &&
+                     window.matchMedia('(max-width: 1024px)').matches &&
+                     !window.matchMedia('(max-width: 768px)').matches;
+    const isiPad = /iPad/.test(navigator.userAgent) ||
+                   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    if (isMobile || isTablet || isiPad) {
+      return false;
+    }
+    return true;
+  }, []);
 
   return (
     <>
@@ -95,7 +113,8 @@ const MeetingControls: React.FC<MeetingControlsProps> = ({
         </svg>
       </button>
 
-      {/* Screen share toggle */}
+      {/* Screen share toggle - only show if supported */}
+      {isScreenShareSupported && (
       <button
         onClick={toggleScreenShare}
         className={`p-1.5 sm:p-2 rounded-full transition-colors ${
@@ -119,31 +138,34 @@ const MeetingControls: React.FC<MeetingControlsProps> = ({
           />
         </svg>
       </button>
+      )}
+
+      {/* Record button - only show on desktop/laptop (screen recording requires getDisplayMedia) */}
+      {isRecordingSupported && (
+        <button
+          onClick={onRecord}
+          className={`p-1.5 sm:p-2 rounded-full transition-colors ${
+            isRecording
+              ? 'bg-red-600 text-cloud hover:bg-red-700 animate-pulse'
+              : 'bg-cloud text-midnight hover:bg-gray-200'
+          }`}
+          title={isRecording ? 'Stop recording' : 'Start recording'}
+        >
+          <svg
+            className="w-5 h-5"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <circle cx="12" cy="12" r="10" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+        </button>
+      )}
 
       {/* Host controls */}
       {isHost && (
         <>
-          {/* Record button */}
-          <button
-            onClick={onRecord}
-            className={`p-1.5 sm:p-2 rounded-full transition-colors ${
-              isRecording
-                ? 'bg-red-600 text-cloud hover:bg-red-700'
-                : 'bg-cloud text-midnight hover:bg-gray-200'
-            }`}
-            title={isRecording ? 'Stop recording' : 'Start recording'}
-          >
-            <svg
-              className="w-5 h-5"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <circle cx="12" cy="12" r="10" />
-              <circle cx="12" cy="12" r="3" />
-            </svg>
-          </button>
-
           {/* Lock/Unlock button */}
           <button
             onClick={onLock}

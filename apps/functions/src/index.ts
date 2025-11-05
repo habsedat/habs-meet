@@ -361,7 +361,21 @@ export const getRoomGuard = functions.https.onRequest(async (req, res) => {
         .get();
 
       const isParticipant = participantDoc.exists;
-      const canJoin = roomData.status === 'open' || isParticipant;
+      
+      // If room is locked, only existing participants can join
+      // If room is open, anyone can join
+      // If room is ended, no one can join
+      let canJoin = false;
+      if (roomData.status === 'ended') {
+        canJoin = false;
+      } else if (roomData.status === 'locked') {
+        // Locked: only existing participants can join
+        canJoin = isParticipant;
+      } else {
+        // Open: anyone can join
+        canJoin = true;
+      }
+      
       const needsAdmission = roomData.waitingRoom && !isParticipant;
 
       return res.json({

@@ -2,6 +2,8 @@ import React, { useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { MeetingService } from '../lib/meetingService';
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 import toast from 'react-hot-toast';
 
 const JoinPage: React.FC = () => {
@@ -38,7 +40,22 @@ const JoinPage: React.FC = () => {
           return;
         }
 
-        // Add participant to meeting
+        // Check if room is locked
+        if (room.status === 'locked') {
+          // Check if user is already a participant
+          const participantRef = doc(db, 'rooms', roomId, 'participants', user!.uid);
+          const participantSnap = await getDoc(participantRef);
+          
+          if (!participantSnap.exists()) {
+            // User is not a participant and room is locked - deny access
+            toast.error('This meeting is locked. Only existing participants can join.');
+            navigate('/home');
+            return;
+          }
+          // User is already a participant - allow them to rejoin
+        }
+
+        // Add participant to meeting (will update existing if already present)
         if (user && userProfile) {
           await MeetingService.addParticipant(roomId, {
             uid: user.uid,

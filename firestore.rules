@@ -36,12 +36,14 @@ service cloud.firestore {
         allow delete: if isHost(roomId);
       }
       
-      // Chat subcollection
+            // Chat subcollection
       match /chat/{msgId} {
         allow read: if isAuthenticated();
-        allow create: if isAuthenticated() && 
+        allow create: if isAuthenticated() &&
           (request.auth.uid == request.resource.data.uid || request.resource.data.isSystemMessage == true);
-        allow update, delete: if false; // Chat messages are immutable
+        allow update: if false; // Chat messages cannot be edited
+        allow delete: if isAuthenticated() && 
+          (isHost(roomId) || request.auth.uid == resource.data.uid); // Allow host or message owner to delete
       }
     }
     
@@ -62,12 +64,28 @@ service cloud.firestore {
       allow update, delete: if false; // Recordings are immutable
     }
     
-    // Users collection - CRITICAL for user authentication and profiles
+        // Users collection - CRITICAL for user authentication and profiles
     match /users/{userId} {
-      allow read: if isAuthenticated(); // Allow reading all users for admin checking
+      allow read: if isAuthenticated(); // Allow reading all users for admin checking       
       allow create: if isAuthenticated() && request.auth.uid == userId;
       allow update: if isAuthenticated() && request.auth.uid == userId;
       allow delete: if false; // Users cannot delete their own profiles
+      
+      // Deleted messages subcollection - per-user message deletion tracking
+      match /deletedMessages/{roomId} {
+        allow read: if isAuthenticated() && request.auth.uid == userId;
+        allow create: if isAuthenticated() && request.auth.uid == userId;
+        allow update: if isAuthenticated() && request.auth.uid == userId;
+        allow delete: if isAuthenticated() && request.auth.uid == userId;
+      }
+      
+      // Meeting views subcollection - track opened meetings and last seen message counts
+      match /meetingViews/{roomId} {
+        allow read: if isAuthenticated() && request.auth.uid == userId;
+        allow create: if isAuthenticated() && request.auth.uid == userId;
+        allow update: if isAuthenticated() && request.auth.uid == userId;
+        allow delete: if isAuthenticated() && request.auth.uid == userId;
+      }
     }
     
     // User uploads collection - for file storage metadata
