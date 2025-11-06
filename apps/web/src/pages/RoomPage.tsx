@@ -149,8 +149,25 @@ const RoomPage: React.FC = () => {
 
     const connectToRoom = async () => {
       try {
-      const { token } = await api.getMeetingToken(roomId);
-      await connect(token);
+        // Check if this is a scheduled meeting with a pre-generated token
+        const isScheduledMeeting = sessionStorage.getItem('isScheduledMeeting') === 'true';
+        const preGeneratedToken = sessionStorage.getItem('meetingToken');
+        
+        let token: string;
+        
+        if (isScheduledMeeting && preGeneratedToken) {
+          // Use the pre-generated token from scheduled meeting
+          token = preGeneratedToken;
+          // Clear it from sessionStorage after use
+          sessionStorage.removeItem('meetingToken');
+          sessionStorage.removeItem('isScheduledMeeting');
+        } else {
+          // Regular meeting - get token from API
+          const response = await api.getMeetingToken(roomId);
+          token = response.token;
+        }
+        
+        await connect(token);
       } catch (error: any) {
         toast.error('Failed to join room: ' + error.message);
         navigate('/');

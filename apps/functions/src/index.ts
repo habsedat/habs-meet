@@ -451,6 +451,472 @@ export const livekitWebhook = functions.https.onRequest(async (req, res) => {
   });
 });
 
+// ============================================
+// SCHEDULED MEETING FUNCTIONS
+// ============================================
+
+// Generate random secure key
+const generateSecureKey = (): string => {
+  return crypto.randomBytes(32).toString('base64url');
+};
+
+// Hash passcode
+const hashPasscode = (passcode: string): string => {
+  return crypto.createHash('sha256').update(passcode).digest('hex');
+};
+
+// Verify passcode
+const verifyPasscode = (passcode: string, hash: string): boolean => {
+  return hashPasscode(passcode) === hash;
+};
+
+// Helper to generate ICS content
+function generateICSContent(data: {
+  uid: string;
+  title: string;
+  description: string;
+  startTime: Date;
+  endTime: Date;
+  timezone: string;
+  organizer: { name: string; email: string };
+  url?: string;
+  passcode?: string;
+}): string {
+  const formatDate = (date: Date): string => {
+    return date.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+  };
+
+  const escape = (text: string): string => {
+    return text.replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\n/g, '\\n');
+  };
+
+  const lines: string[] = [];
+  lines.push('BEGIN:VCALENDAR');
+  lines.push('VERSION:2.0');
+  lines.push('PRODID:-//Habs Meet//Meeting Scheduler//EN');
+  lines.push('CALSCALE:GREGORIAN');
+  lines.push('METHOD:REQUEST');
+  lines.push('BEGIN:VEVENT');
+  lines.push(`UID:${data.uid}@habs-meet.com`);
+  lines.push(`DTSTAMP:${formatDate(new Date())}`);
+  lines.push(`DTSTART;TZID=${data.timezone}:${formatDate(data.startTime).replace('Z', '')}`);
+  lines.push(`DTEND;TZID=${data.timezone}:${formatDate(data.endTime).replace('Z', '')}`);
+  lines.push(`SUMMARY:${escape(data.title)}`);
+
+  let fullDescription = data.description;
+  if (data.url) {
+    fullDescription += `\n\nJoin Link: ${data.url}`;
+  }
+  if (data.passcode) {
+    fullDescription += `\nPasscode: ${data.passcode}`;
+  }
+  lines.push(`DESCRIPTION:${escape(fullDescription)}`);
+
+  if (data.url) {
+    lines.push(`URL:${data.url}`);
+  }
+
+  lines.push(`ORGANIZER;CN=${escape(data.organizer.name)}:mailto:${escape(data.organizer.email)}`);
+  lines.push('STATUS:CONFIRMED');
+  lines.push('SEQUENCE:0');
+  lines.push('END:VEVENT');
+  lines.push('END:VCALENDAR');
+
+  return lines.join('\r\n');
+}
+
+// POST /api/schedule/create
+export const createScheduledMeeting = functions.https.onRequest(async (req, res) => {
+  return corsHandler(req, res, async () => {
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
+    }
+
+    try {
+      const user = await verifyAuth(req);
+      const {
+        title,
+        description,
+        startAt,
+        durationMin,
+        timezone,
+        allowEarlyJoinMin = 10,
+        requirePasscode = false,
+        passcode,
+        lobbyEnabled = true,
+        attendees = [],
+      } = req.body;
+
+      // Validation
+      if (!title || !startAt || !durationMin || !timezone) {
+        return res.status(400).json({ error: 'Missing required fields' });
+      }
+
+      const startDate = new Date(startAt);
+      if (isNaN(startDate.getTime())) {
+        return res.status(400).json({ error: 'Invalid start date' });
+      }
+
+      if (startDate < new Date()) {
+        return res.status(400).json({ error: 'Cannot schedule meetings in the past' });
+      }
+
+      if (durationMin < 1 || durationMin > 1440) {
+        return res.status(400).json({ error: 'Duration must be between 1 and 1440 minutes' });
+      }
+
+      // Validate passcode if required
+      if (requirePasscode && passcode) {
+        const passcodeRegex = /^\d{6}$/;
+        if (!passcodeRegex.test(passcode)) {
+          return res.status(400).json({ error: 'Passcode must be exactly 6 digits (numbers only)' });
+        }
+      }
+
+      // Generate meeting ID
+      const meetingId = crypto.randomBytes(16).toString('base64url');
+
+      // Generate join keys
+      const hostJoinKey = generateSecureKey();
+      const participantJoinKey = generateSecureKey();
+
+      // Hash passcode if provided
+      let passcodeHash: string | null = null;
+      if (requirePasscode && passcode) {
+        passcodeHash = hashPasscode(passcode);
+      }
+
+      // Calculate end time
+      const endDate = new Date(startDate.getTime() + durationMin * 60 * 1000);
+
+      // Create meeting document
+      const meetingData = {
+        ownerUid: user.uid,
+        status: 'scheduled' as const,
+        title,
+        description: description || '',
+        startAt: admin.firestore.Timestamp.fromDate(startDate),
+        durationMin,
+        endAt: admin.firestore.Timestamp.fromDate(endDate),
+        timezone,
+        allowEarlyJoinMin,
+        requirePasscode,
+        passcodeHash,
+        lobbyEnabled,
+        roomName: meetingId,
+        hostJoinKey,
+        participantJoinKey,
+        expiresAt: null,
+        attendees,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      await admin.firestore().collection('meetings').doc(meetingId).set(meetingData);
+
+      // Log creation
+      await admin.firestore().collection('meetings').doc(meetingId).collection('logs').add({
+        type: 'created',
+        at: admin.firestore.FieldValue.serverTimestamp(),
+        byUid: user.uid,
+        meta: { title, startAt: startDate.toISOString() },
+      });
+
+      // Generate links
+      const baseUrl = req.headers.origin || 'https://habs-meet-dev.web.app';
+      const hostLink = `${baseUrl}/join/${meetingId}?k=${hostJoinKey}`;
+      const participantLink = `${baseUrl}/join/${meetingId}?k=${participantJoinKey}`;
+
+      // Generate ICS data
+      const icsContent = generateICSContent({
+        uid: meetingId,
+        title,
+        description: description || '',
+        startTime: startDate,
+        endTime: endDate,
+        timezone,
+        organizer: {
+          name: user.name || user.email || 'Organizer',
+          email: user.email || '',
+        },
+        url: participantLink,
+        passcode: requirePasscode && passcode ? passcode : undefined,
+      });
+
+      return res.json({
+        meetingId,
+        hostLink,
+        participantLink,
+        icsData: icsContent,
+      });
+    } catch (error: any) {
+      console.error('Error creating scheduled meeting:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  });
+});
+
+// POST /api/schedule/token
+export const getJoinToken = functions.https.onRequest(async (req, res) => {
+  return corsHandler(req, res, async () => {
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
+    }
+
+    try {
+      const { meetingId, key, displayName, passcode } = req.body;
+
+      if (!meetingId || !key || !displayName) {
+        return res.status(400).json({ error: 'Missing required fields' });
+      }
+
+      // Load meeting
+      const meetingDoc = await admin.firestore().collection('meetings').doc(meetingId).get();
+
+      if (!meetingDoc.exists) {
+        return res.status(404).json({ status: 'denied', message: 'Meeting not found' });
+      }
+
+      const meeting = meetingDoc.data()!;
+      const now = new Date();
+      const startAt = meeting.startAt.toDate();
+      const endAt = meeting.endAt.toDate();
+      const expiresAt = meeting.expiresAt ? meeting.expiresAt.toDate() : null;
+
+      // Check if meeting is ended/canceled
+      if (meeting.status === 'ended' || meeting.status === 'canceled') {
+        await admin.firestore().collection('meetings').doc(meetingId).collection('logs').add({
+          type: 'denied',
+          at: admin.firestore.FieldValue.serverTimestamp(),
+          meta: { reason: `Meeting ${meeting.status}` },
+        });
+        return res.status(403).json({ status: 'denied', message: `Meeting has been ${meeting.status}` });
+      }
+
+      // Check expiry
+      if (expiresAt && now > expiresAt) {
+        return res.status(403).json({ status: 'expired', message: 'Meeting link has expired' });
+      }
+
+      // Check if past end time + grace period (15 min)
+      const gracePeriod = new Date(endAt.getTime() + 15 * 60 * 1000);
+      if (now > gracePeriod) {
+        return res.status(403).json({ status: 'expired', message: 'Meeting has ended' });
+      }
+
+      // Determine role
+      let role: 'host' | 'participant' = 'participant';
+      if (key === meeting.hostJoinKey) {
+        role = 'host';
+      } else if (key !== meeting.participantJoinKey) {
+        return res.status(403).json({ status: 'denied', message: 'Invalid join key' });
+      }
+
+      // Check passcode for participants
+      if (meeting.requirePasscode && role === 'participant') {
+        if (!passcode) {
+          return res.status(400).json({ status: 'denied', message: 'Passcode required' });
+        }
+        if (!meeting.passcodeHash || !verifyPasscode(passcode, meeting.passcodeHash)) {
+          await admin.firestore().collection('meetings').doc(meetingId).collection('logs').add({
+            type: 'denied',
+            at: admin.firestore.FieldValue.serverTimestamp(),
+            meta: { reason: 'Invalid passcode' },
+          });
+          return res.status(403).json({ status: 'denied', message: 'Invalid passcode' });
+        }
+      }
+
+      // Check time window
+      const earlyJoinTime = new Date(startAt.getTime() - meeting.allowEarlyJoinMin * 60 * 1000);
+      if (now < earlyJoinTime) {
+        const remainingMs = earlyJoinTime.getTime() - now.getTime();
+        return res.json({
+          status: 'waiting',
+          remainingMs,
+          message: `Meeting starts in ${Math.ceil(remainingMs / 60000)} minutes`,
+        });
+      }
+
+      // If host joins and status is scheduled, set to live
+      if (role === 'host' && meeting.status === 'scheduled') {
+        await admin.firestore().collection('meetings').doc(meetingId).update({
+          status: 'live',
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+        await admin.firestore().collection('meetings').doc(meetingId).collection('logs').add({
+          type: 'started',
+          at: admin.firestore.FieldValue.serverTimestamp(),
+          byUid: meeting.ownerUid,
+        });
+      }
+
+      // Generate LiveKit token
+      const config = getConfig();
+      const identity = `${role}:${crypto.randomBytes(8).toString('hex')}-${displayName}`;
+      const at = new AccessToken(config.livekitApiKey!, config.livekitApiSecret!, {
+        identity,
+        name: displayName,
+        metadata: JSON.stringify({
+          meetingId,
+          role,
+          ownerUid: meeting.ownerUid,
+        }),
+      });
+
+      const grant = {
+        room: meeting.roomName,
+        roomJoin: true,
+        canPublish: true,
+        canSubscribe: true,
+        canPublishData: true,
+        canUpdateOwnMetadata: true,
+      };
+
+      if (role === 'host') {
+        (grant as any).roomAdmin = true;
+      }
+
+      at.addGrant(grant);
+
+      const token = await at.toJwt();
+
+      // Log token issuance
+      await admin.firestore().collection('meetings').doc(meetingId).collection('logs').add({
+        type: 'tokenIssued',
+        at: admin.firestore.FieldValue.serverTimestamp(),
+        meta: { role, displayName },
+      });
+
+      return res.json({
+        status: 'ok',
+        role,
+        token,
+        roomName: meeting.roomName,
+        meeting: {
+          ...meeting,
+          id: meetingId,
+        },
+      });
+    } catch (error: any) {
+      console.error('Error getting join token:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  });
+});
+
+// POST /api/schedule/end
+export const endMeeting = functions.https.onRequest(async (req, res) => {
+  return corsHandler(req, res, async () => {
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
+    }
+
+    try {
+      const user = await verifyAuth(req);
+      const { meetingId, key } = req.body;
+
+      if (!meetingId) {
+        return res.status(400).json({ error: 'Missing meetingId' });
+      }
+
+      const meetingDoc = await admin.firestore().collection('meetings').doc(meetingId).get();
+
+      if (!meetingDoc.exists) {
+        return res.status(404).json({ error: 'Meeting not found' });
+      }
+
+      const meeting = meetingDoc.data()!;
+
+      // Verify authorization: must be owner or have host key
+      const isOwner = meeting.ownerUid === user.uid;
+      const hasHostKey = key && key === meeting.hostJoinKey;
+
+      if (!isOwner && !hasHostKey) {
+        return res.status(403).json({ error: 'Only host can end meeting' });
+      }
+
+      const now = admin.firestore.Timestamp.now();
+
+      // Update meeting
+      await admin.firestore().collection('meetings').doc(meetingId).update({
+        status: 'ended',
+        expiresAt: now,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      // Log
+      await admin.firestore().collection('meetings').doc(meetingId).collection('logs').add({
+        type: 'ended',
+        at: admin.firestore.FieldValue.serverTimestamp(),
+        byUid: user.uid,
+      });
+
+      return res.json({ success: true, message: 'Meeting ended' });
+    } catch (error: any) {
+      console.error('Error ending meeting:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  });
+});
+
+// POST /api/schedule/cancel
+export const cancelMeeting = functions.https.onRequest(async (req, res) => {
+  return corsHandler(req, res, async () => {
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
+    }
+
+    try {
+      const user = await verifyAuth(req);
+      const { meetingId } = req.body;
+
+      if (!meetingId) {
+        return res.status(400).json({ error: 'Missing meetingId' });
+      }
+
+      const meetingDoc = await admin.firestore().collection('meetings').doc(meetingId).get();
+
+      if (!meetingDoc.exists) {
+        return res.status(404).json({ error: 'Meeting not found' });
+      }
+
+      const meeting = meetingDoc.data()!;
+
+      // Only owner can cancel
+      if (meeting.ownerUid !== user.uid) {
+        return res.status(403).json({ error: 'Only owner can cancel meeting' });
+      }
+
+      if (meeting.status === 'ended' || meeting.status === 'canceled') {
+        return res.status(400).json({ error: `Meeting is already ${meeting.status}` });
+      }
+
+      const now = admin.firestore.Timestamp.now();
+
+      // Update meeting
+      await admin.firestore().collection('meetings').doc(meetingId).update({
+        status: 'canceled',
+        expiresAt: now,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      // Log
+      await admin.firestore().collection('meetings').doc(meetingId).collection('logs').add({
+        type: 'canceled',
+        at: admin.firestore.FieldValue.serverTimestamp(),
+        byUid: user.uid,
+      });
+
+      return res.json({ success: true, message: 'Meeting canceled' });
+    } catch (error: any) {
+      console.error('Error canceling meeting:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  });
+});
+
 // Main API function
 export const api = functions.https.onRequest(async (req, res) => {
   return corsHandler(req, res, async () => {
@@ -472,6 +938,14 @@ export const api = functions.https.onRequest(async (req, res) => {
       return getRoomGuard(req, res);
     } else if (path.startsWith('/api/meet/webhooks/livekit') && method === 'POST') {
       return livekitWebhook(req, res);
+    } else if (path === '/api/schedule/create' && method === 'POST') {
+      return createScheduledMeeting(req, res);
+    } else if (path === '/api/schedule/token' && method === 'POST') {
+      return getJoinToken(req, res);
+    } else if (path === '/api/schedule/end' && method === 'POST') {
+      return endMeeting(req, res);
+    } else if (path === '/api/schedule/cancel' && method === 'POST') {
+      return cancelMeeting(req, res);
     } else {
       console.log('[API Router] No route found for:', path);
       return res.status(404).json({ error: 'Endpoint not found' });

@@ -6,8 +6,10 @@ import toast from 'react-hot-toast';
 import Header from '../components/Header';
 import CalendarInterface from '../components/CalendarInterface';
 import ShareScreen from '../components/ShareScreen';
+import ScheduleMeetingForm from '../components/ScheduleMeetingForm';
 import { collection, query, getDocs, orderBy, limit, getDoc, doc, setDoc, updateDoc, arrayUnion, serverTimestamp } from 'firebase/firestore';
 import { db } from '../lib/firebase';
+import { downloadICS } from '../lib/icsGenerator';
 
 const HomePage: React.FC = () => {
   const { user, userProfile } = useAuth();
@@ -15,6 +17,14 @@ const HomePage: React.FC = () => {
   const [inviteLink, setInviteLink] = useState('');
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
   const [activeTab, setActiveTab] = useState<'calendar' | 'schedule' | 'share'>('calendar');
+  const [showSuccessDialog, setShowSuccessDialog] = useState(false);
+  const [createdMeeting, setCreatedMeeting] = useState<{
+    meetingId: string;
+    hostLink: string;
+    participantLink: string;
+    icsData: string;
+    passcode?: string;
+  } | null>(null);
   const [isMobilePanelOpen, setIsMobilePanelOpen] = useState(false);
   const [recentMeetingsWithMessages, setRecentMeetingsWithMessages] = useState<any[]>([]);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
@@ -435,60 +445,13 @@ const HomePage: React.FC = () => {
                         Create and schedule meetings with your team or clients
                       </p>
                     </div>
-                    <div className="max-w-md mx-auto space-y-4 sm:space-y-6">
-                      <div>
-                        <label className="block text-sm font-medium text-midnight mb-2">
-                          Meeting Title
-                        </label>
-                        <input
-                          type="text"
-                          placeholder="Enter meeting title"
-                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-techBlue focus:border-transparent text-gray-900 placeholder-gray-500"
-                          style={{color: '#111827', backgroundColor: 'white'}}
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-midnight mb-2">
-                          Date & Time
-                        </label>
-                        <input
-                          type="datetime-local"
-                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-techBlue focus:border-transparent text-gray-900"
-                          style={{color: '#111827', backgroundColor: 'white'}}
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-midnight mb-2">
-                          Duration
-                        </label>
-                        <select className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-techBlue focus:border-transparent text-gray-900" style={{color: '#111827', backgroundColor: 'white'}}>
-                          <option>15 minutes</option>
-                          <option>30 minutes</option>
-                          <option>1 hour</option>
-                          <option>2 hours</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-midnight mb-2">
-                          Description
-                        </label>
-                        <textarea
-                          rows={4}
-                          placeholder="Meeting description or agenda"
-                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-techBlue focus:border-transparent resize-none text-gray-900 placeholder-gray-500"
-                          style={{color: '#111827', backgroundColor: 'white'}}
-                        />
-                      </div>
-                      <button
-                        onClick={handleCreateRoom}
-                        disabled={isCreatingRoom}
-                        className="w-full bg-techBlue text-cloud py-3 px-4 rounded-lg font-medium hover:bg-techBlue/90 transition-colors disabled:opacity-50 flex items-center justify-center space-x-2"
-                      >
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                        </svg>
-                        <span>{isCreatingRoom ? 'Creating...' : 'Schedule Meeting'}</span>
-                      </button>
+                    <div className="max-w-md mx-auto">
+                      <ScheduleMeetingForm
+                        onSuccess={(meetingId, hostLink, participantLink, icsData, passcode) => {
+                          setCreatedMeeting({ meetingId, hostLink, participantLink, icsData, passcode });
+                          setShowSuccessDialog(true);
+                        }}
+                      />
                     </div>
                   </div>
                 )}
@@ -534,62 +497,13 @@ const HomePage: React.FC = () => {
                     </p>
                   </div>
 
-                  <div className="max-w-md mx-auto space-y-4 sm:space-y-6">
-                    <div>
-                      <label className="block text-sm font-medium text-midnight mb-2">
-                        Meeting Title
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Enter meeting title"
-                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-techBlue focus:border-transparent text-gray-900 placeholder-gray-500"
-                        style={{color: '#111827', backgroundColor: 'white'}}
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-midnight mb-2">
-                        Date & Time
-                      </label>
-                      <input
-                        type="datetime-local"
-                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-techBlue focus:border-transparent text-gray-900"
-                        style={{color: '#111827', backgroundColor: 'white'}}
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-midnight mb-2">
-                        Duration (minutes)
-                      </label>
-                      <select className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-techBlue focus:border-transparent text-gray-900" style={{color: '#111827', backgroundColor: 'white'}}>
-                        <option value="15">15 minutes</option>
-                        <option value="30">30 minutes</option>
-                        <option value="60">1 hour</option>
-                        <option value="90">1.5 hours</option>
-                        <option value="120">2 hours</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-midnight mb-2">
-                        Description
-                      </label>
-                      <textarea
-                        rows={4}
-                        placeholder="Meeting description or agenda"
-                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-techBlue focus:border-transparent resize-none text-gray-900 placeholder-gray-500"
-                        style={{color: '#111827', backgroundColor: 'white'}}
-                      />
-                    </div>
-
-                    <button
-                      onClick={handleCreateRoom}
-                      disabled={isCreatingRoom}
-                      className="w-full bg-techBlue text-cloud py-3 px-6 rounded-lg font-semibold hover:bg-techBlue/90 transition-colors disabled:opacity-50"
-                    >
-                      {isCreatingRoom ? 'Scheduling...' : 'Schedule Meeting'}
-                    </button>
+                  <div className="max-w-md mx-auto">
+                    <ScheduleMeetingForm
+                      onSuccess={(meetingId, hostLink, participantLink, icsData, passcode) => {
+                        setCreatedMeeting({ meetingId, hostLink, participantLink, icsData, passcode });
+                        setShowSuccessDialog(true);
+                      }}
+                    />
                   </div>
                 </div>
               )}
@@ -1062,6 +976,135 @@ const HomePage: React.FC = () => {
            </div>
          </div>
       </main>
+
+      {/* Success Dialog */}
+      {showSuccessDialog && createdMeeting && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-cloud rounded-2xl shadow-2xl max-w-2xl w-full p-6 sm:p-8">
+            <div className="text-center mb-6">
+              <div className="w-16 h-16 bg-green-500 rounded-full flex items-center justify-center mx-auto mb-4">
+                <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <h2 className="text-2xl font-bold text-midnight mb-2">Meeting Scheduled!</h2>
+              <p className="text-gray-600">Your meeting has been created successfully</p>
+            </div>
+
+            <div className="space-y-4 mb-6">
+              <div>
+                <label className="block text-sm font-medium text-midnight mb-2">Host Link (Private)</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={createdMeeting.hostLink}
+                    readOnly
+                    className="flex-1 px-4 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-900"
+                  />
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(createdMeeting.hostLink);
+                      toast.success('Host link copied!');
+                    }}
+                    className="px-4 py-2 bg-techBlue text-cloud rounded-lg hover:bg-techBlue/90"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-midnight mb-2">Participant Link</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={createdMeeting.participantLink}
+                    readOnly
+                    className="flex-1 px-4 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-900"
+                  />
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(createdMeeting.participantLink);
+                      toast.success('Participant link copied!');
+                    }}
+                    className="px-4 py-2 bg-techBlue text-cloud rounded-lg hover:bg-techBlue/90"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+
+              {createdMeeting.passcode && (
+                <div>
+                  <label className="block text-sm font-medium text-midnight mb-2">
+                    Meeting Passcode (6-digit) <span className="text-red-500">*</span>
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={createdMeeting.passcode}
+                      readOnly
+                      className="flex-1 px-4 py-2 border border-gray-300 rounded-lg bg-yellow-50 text-gray-900 font-mono font-semibold text-center text-lg tracking-widest"
+                    />
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(createdMeeting.passcode!);
+                        toast.success('Passcode copied!');
+                      }}
+                      className="px-4 py-2 bg-goldBright text-midnight rounded-lg hover:bg-yellow-400 font-medium"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                  <p className="mt-1 text-xs text-gray-600">
+                    ⚠️ Share this 6-digit passcode with participants separately. They'll need it to join the meeting.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-3 justify-center flex-wrap">
+              <button
+                onClick={() => {
+                  downloadICS(createdMeeting.icsData, `meeting-${createdMeeting.meetingId}.ics`);
+                  toast.success('Calendar invite downloaded!');
+                }}
+                className="px-6 py-2 bg-goldBright text-midnight rounded-lg hover:bg-yellow-400 font-medium"
+              >
+                Download .ics
+              </button>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(createdMeeting.icsData);
+                  toast.success('ICS copied to clipboard!');
+                }}
+                className="px-6 py-2 bg-gray-200 text-midnight rounded-lg hover:bg-gray-300 font-medium"
+              >
+                Copy Invite
+              </button>
+              <button
+                onClick={() => {
+                  navigate(`/meeting/${createdMeeting.meetingId}`);
+                  setShowSuccessDialog(false);
+                }}
+                className="px-6 py-2 bg-techBlue text-cloud rounded-lg hover:bg-techBlue/90 font-medium"
+              >
+                View Details
+              </button>
+            </div>
+
+            <button
+              onClick={() => {
+                setShowSuccessDialog(false);
+                setCreatedMeeting(null);
+              }}
+              className="mt-4 w-full text-gray-600 hover:text-gray-800 text-sm"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -1,15 +1,20 @@
-import React, { useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { MeetingService } from '../lib/meetingService';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import toast from 'react-hot-toast';
+import { getScheduledMeetingToken } from '../lib/scheduledMeetingService';
 
 const JoinPage: React.FC = () => {
   const { roomId } = useParams<{ roomId: string }>();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { user, userProfile, loading } = useAuth();
+  const [showPasscodePrompt, setShowPasscodePrompt] = useState(false);
+  const [passcodeInput, setPasscodeInput] = useState('');
+  const [isRequestingToken, setIsRequestingToken] = useState(false);
 
   useEffect(() => {
     // Wait for auth to load
@@ -32,7 +37,95 @@ const JoinPage: React.FC = () => {
     // Handle joining
     const handleJoin = async () => {
       try {
-        // Check if room exists
+        // Check if this is a scheduled meeting (has 'k' query parameter)
+        const joinKey = searchParams.get('k');
+        
+        if (joinKey) {
+          // This is a scheduled meeting
+          if (!userProfile) {
+            toast.error('User profile not available');
+            navigate('/home');
+            return;
+          }
+
+          // Check if passcode is needed (try without first to see if it's required)
+          const urlPasscode = searchParams.get('passcode');
+          if (!urlPasscode) {
+            // Try to get token without passcode first to check if passcode is required
+            try {
+              const testResponse = await getScheduledMeetingToken({
+                meetingId: roomId,
+                key: joinKey,
+                displayName: userProfile.displayName || user.email?.split('@')[0] || 'User',
+                passcode: undefined,
+              });
+
+              // If we get a denied status with passcode required message, show prompt
+              if (testResponse.status === 'denied' && testResponse.message?.toLowerCase().includes('passcode')) {
+                setShowPasscodePrompt(true);
+                return;
+              }
+
+              // If waiting, expired, or other denied reasons, handle normally
+              if (testResponse.status === 'waiting') {
+                toast.error(testResponse.message || 'Meeting has not started yet');
+                navigate('/home');
+                return;
+              }
+
+              if (testResponse.status === 'expired') {
+                toast.error(testResponse.message || 'Meeting link has expired');
+                navigate('/home');
+                return;
+              }
+
+              // If we got a token, use it
+              if (testResponse.status === 'ok' && testResponse.token && testResponse.roomName) {
+                await handleSuccessfulTokenResponse(testResponse, userProfile, user);
+                return;
+              }
+            } catch (error: any) {
+              // If error mentions passcode, show prompt
+              if (error.message?.toLowerCase().includes('passcode')) {
+                setShowPasscodePrompt(true);
+                return;
+              }
+              throw error;
+            }
+          }
+
+          // Get join token from scheduled meeting API (with passcode if provided)
+          const tokenResponse = await getScheduledMeetingToken({
+            meetingId: roomId,
+            key: joinKey,
+            displayName: userProfile.displayName || user.email?.split('@')[0] || 'User',
+            passcode: urlPasscode || undefined,
+          });
+
+          // Handle different response statuses
+          if (tokenResponse.status === 'waiting') {
+            toast.error(tokenResponse.message || 'Meeting has not started yet');
+            navigate('/home');
+            return;
+          }
+
+          if (tokenResponse.status === 'denied' || tokenResponse.status === 'expired') {
+            toast.error(tokenResponse.message || 'Access denied');
+            navigate('/home');
+            return;
+          }
+
+          if (tokenResponse.status !== 'ok' || !tokenResponse.token || !tokenResponse.roomName) {
+            toast.error('Failed to get meeting access');
+            navigate('/home');
+            return;
+          }
+
+          await handleSuccessfulTokenResponse(tokenResponse, userProfile, user);
+          return;
+        }
+
+        // Regular room join (not a scheduled meeting)
         const room = await MeetingService.getMeeting(roomId);
         if (!room) {
           toast.error('Meeting room not found');
@@ -71,6 +164,8 @@ const JoinPage: React.FC = () => {
         // Store room ID in session for pre-meeting page
         sessionStorage.setItem('currentRoomId', roomId);
         sessionStorage.setItem('isParticipant', 'true');
+        sessionStorage.removeItem('isScheduledMeeting');
+        sessionStorage.removeItem('meetingToken');
 
         // Navigate to pre-meeting setup
         navigate('/pre-meeting');
@@ -82,7 +177,196 @@ const JoinPage: React.FC = () => {
     };
 
     handleJoin();
-  }, [roomId, user, userProfile, loading, navigate]);
+  }, [roomId, user, userProfile, loading, navigate, searchParams]);
+
+  const handleSuccessfulTokenResponse = async (
+    tokenResponse: any,
+    userProfile: any,
+    user: any
+  ) => {
+    // Ensure room exists in Firestore (scheduled meetings might not have created it yet)
+    const roomRef = doc(db, 'rooms', tokenResponse.roomName);
+    const roomSnap = await getDoc(roomRef);
+    
+    if (!roomSnap.exists()) {
+      // Create the room document
+      await setDoc(roomRef, {
+        title: tokenResponse.meeting?.title || 'Scheduled Meeting',
+        description: tokenResponse.meeting?.description || '',
+        createdBy: tokenResponse.meeting?.ownerUid || user.uid,
+        createdByName: userProfile.displayName || user.email?.split('@')[0] || 'Host',
+        status: 'open' as const,
+        waitingRoom: tokenResponse.meeting?.lobbyEnabled || false,
+        maxParticipants: 100,
+        isRecording: false,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    // Add participant to meeting
+    const participantRef = doc(db, 'rooms', tokenResponse.roomName, 'participants', user.uid);
+    await setDoc(participantRef, {
+      uid: user.uid,
+      displayName: userProfile.displayName || user.email?.split('@')[0] || 'User',
+      role: tokenResponse.role === 'host' ? 'host' : 'viewer',
+      isActive: true,
+      isMuted: false,
+      isVideoEnabled: true,
+      isScreenSharing: false,
+      joinedAt: serverTimestamp(),
+      lastSeen: serverTimestamp(),
+    }, { merge: true });
+
+    // Store room ID and token for pre-meeting page
+    sessionStorage.setItem('currentRoomId', tokenResponse.roomName);
+    sessionStorage.setItem('meetingToken', tokenResponse.token);
+    sessionStorage.setItem('isScheduledMeeting', 'true');
+    sessionStorage.setItem('isParticipant', tokenResponse.role === 'host' ? 'false' : 'true');
+
+    // Navigate to pre-meeting setup
+    navigate('/pre-meeting');
+  };
+
+  const handlePasscodeSubmit = async () => {
+    if (!passcodeInput.trim()) {
+      toast.error('Please enter a passcode');
+      return;
+    }
+
+    // Validate passcode is exactly 6 digits
+    const passcodeRegex = /^\d{6}$/;
+    if (!passcodeRegex.test(passcodeInput.trim())) {
+      toast.error('Passcode must be exactly 6 digits');
+      return;
+    }
+
+    if (!userProfile || !roomId) {
+      toast.error('Missing user information');
+      return;
+    }
+
+    setIsRequestingToken(true);
+    try {
+      const joinKey = searchParams.get('k');
+      if (!joinKey) {
+        toast.error('Invalid meeting link');
+        navigate('/home');
+        return;
+      }
+
+      const tokenResponse = await getScheduledMeetingToken({
+        meetingId: roomId,
+        key: joinKey,
+        displayName: userProfile.displayName || (user?.email?.split('@')[0]) || 'User',
+        passcode: passcodeInput.trim(),
+      });
+
+      if (tokenResponse.status === 'denied') {
+        toast.error(tokenResponse.message || 'Invalid passcode');
+        setPasscodeInput('');
+        return;
+      }
+
+      if (tokenResponse.status === 'waiting' || tokenResponse.status === 'expired') {
+        toast.error(tokenResponse.message || 'Cannot join meeting');
+        navigate('/home');
+        return;
+      }
+
+      if (tokenResponse.status === 'ok' && tokenResponse.token && tokenResponse.roomName) {
+        if (!user) {
+          toast.error('User not authenticated');
+          navigate('/home');
+          return;
+        }
+        await handleSuccessfulTokenResponse(tokenResponse, userProfile, user);
+      } else {
+        toast.error('Failed to join meeting');
+        navigate('/home');
+      }
+    } catch (error: any) {
+      console.error('Error joining with passcode:', error);
+      if (error.message?.toLowerCase().includes('passcode') || error.message?.toLowerCase().includes('invalid')) {
+        toast.error('Invalid passcode. Please try again.');
+        setPasscodeInput('');
+      } else {
+        toast.error('Failed to join meeting: ' + error.message);
+        navigate('/home');
+      }
+    } finally {
+      setIsRequestingToken(false);
+    }
+  };
+
+  if (showPasscodePrompt) {
+    return (
+      <div className="min-h-screen bg-midnight flex items-center justify-center p-4">
+        <div className="bg-cloud rounded-xl shadow-2xl max-w-md w-full p-6 sm:p-8">
+          <div className="text-center mb-6">
+            <div className="w-16 h-16 bg-goldBright rounded-full flex items-center justify-center mx-auto mb-4">
+              <svg className="w-8 h-8 text-midnight" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+              </svg>
+            </div>
+            <h2 className="text-2xl font-bold text-midnight mb-2">Passcode Required</h2>
+            <p className="text-gray-600">This meeting requires a passcode to join</p>
+          </div>
+
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-midnight mb-2">
+                Enter Passcode
+              </label>
+              <input
+                type="text"
+                value={passcodeInput}
+                onChange={(e) => {
+                  // Only allow digits and limit to 6 characters
+                  const value = e.target.value.replace(/\D/g, '').slice(0, 6);
+                  setPasscodeInput(value);
+                }}
+                onKeyPress={(e) => {
+                  if (e.key === 'Enter' && passcodeInput.length === 6) {
+                    handlePasscodeSubmit();
+                  }
+                }}
+                placeholder="Enter 6-digit passcode"
+                maxLength={6}
+                pattern="[0-9]{6}"
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-techBlue focus:border-transparent text-gray-900 font-mono text-center text-lg tracking-widest"
+                autoFocus
+              />
+              <p className="mt-2 text-xs text-gray-500">
+                Enter the 6-digit passcode provided by the meeting host
+              </p>
+              {passcodeInput.length > 0 && passcodeInput.length < 6 && (
+                <p className="mt-1 text-xs text-orange-600">
+                  {6 - passcodeInput.length} more digit{6 - passcodeInput.length !== 1 ? 's' : ''} required
+                </p>
+              )}
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => navigate('/home')}
+                className="flex-1 px-4 py-2 bg-gray-200 text-midnight rounded-lg hover:bg-gray-300 font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handlePasscodeSubmit}
+                disabled={isRequestingToken || passcodeInput.length !== 6}
+                className="flex-1 px-4 py-2 bg-techBlue text-cloud rounded-lg hover:bg-techBlue/90 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isRequestingToken ? 'Joining...' : 'Join Meeting'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-midnight flex items-center justify-center">

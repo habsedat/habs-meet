@@ -737,8 +737,8 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
             // Fallback to publication's isMuted
             if (micPub.isMuted !== undefined && micPub.isMuted !== null) {
               micEnabled = !micPub.isMuted;
-            }
-          }
+        }
+      }
         } else {
           // Track not subscribed yet - check publication's isMuted
           // NOTE: We should subscribe to audio tracks to get accurate mute state
@@ -767,7 +767,7 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
       
       console.log('[VideoTile] Remote status updated:', {
         participant: participant.identity || participant.name,
-        mic: micEnabled,
+        mic: micEnabled, 
         micPubExists: !!micPub,
         micPubIsMuted: micPub?.isMuted,
         trackIsMuted: micPub?.track?.isMuted,
@@ -915,10 +915,10 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
         // ✅ Poll the publication's isMuted state periodically as fallback
         // This catches any changes that might not trigger events
         // Always poll, even if publication doesn't exist yet (it might appear later)
-        const publicationPollInterval = setInterval(() => {
-          updateMicCameraStatus();
+          const publicationPollInterval = setInterval(() => {
+            updateMicCameraStatus();
         }, 200); // Very frequent polling (200ms) for immediate updates
-        cleanupFunctions.push(() => clearInterval(publicationPollInterval));
+          cleanupFunctions.push(() => clearInterval(publicationPollInterval));
       }
     };
     

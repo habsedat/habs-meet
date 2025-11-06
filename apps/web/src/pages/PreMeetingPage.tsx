@@ -55,6 +55,13 @@ const PreMeetingPage: React.FC = () => {
         // Load room information and listen for status changes
     const loadRoom = async () => {
       try {
+        // Check if this is a scheduled meeting - if so, wait a bit for room to be created
+        const isScheduledMeeting = sessionStorage.getItem('isScheduledMeeting') === 'true';
+        if (isScheduledMeeting) {
+          // Wait a moment for room to be created in Firestore
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+
         const room = await MeetingService.getMeeting(storedRoomId);
         if (room) {
           setRoomTitle(room.title);
@@ -67,6 +74,7 @@ const PreMeetingPage: React.FC = () => {
             sessionStorage.removeItem('isParticipant');
             sessionStorage.removeItem('pendingInvite');
             sessionStorage.removeItem('meetingToken');
+            sessionStorage.removeItem('isScheduledMeeting');
             // Reset state to allow creating a new meeting
             setRoomId(null);
             setIsParticipant(false);
@@ -75,23 +83,43 @@ const PreMeetingPage: React.FC = () => {
           }
 
           // Determine if user is a participant or host (creator)
-          // If user is the creator of the room, they are the host (not a participant)
-          // If user joined via invite link, they are a participant
-          const isUserCreator = room.createdBy === user?.uid;
-          if (isUserCreator) {
-            // User created the meeting, so they are the host (not a participant)
-            setIsParticipant(false);
-            // Also clear the isParticipant flag from sessionStorage to ensure consistency
-            sessionStorage.removeItem('isParticipant');
-          } else {
-            // User joined via invite link, check sessionStorage
+          // For scheduled meetings, check sessionStorage for role
+          if (isScheduledMeeting) {
             const isParticipantFlag = sessionStorage.getItem('isParticipant');
             setIsParticipant(isParticipantFlag === 'true');
+          } else {
+            // Regular meeting - check if user is creator
+            const isUserCreator = room.createdBy === user?.uid;
+            if (isUserCreator) {
+              // User created the meeting, so they are the host (not a participant)
+              setIsParticipant(false);
+              // Also clear the isParticipant flag from sessionStorage to ensure consistency
+              sessionStorage.removeItem('isParticipant');
+            } else {
+              // User joined via invite link, check sessionStorage
+              const isParticipantFlag = sessionStorage.getItem('isParticipant');
+              setIsParticipant(isParticipantFlag === 'true');
+            }
           }
         } else {
-          toast.error('Meeting room not found');
-          navigate('/home');
-          return;
+          // If it's a scheduled meeting and room doesn't exist yet, wait a bit more and retry
+          if (isScheduledMeeting) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            const retryRoom = await MeetingService.getMeeting(storedRoomId);
+            if (retryRoom) {
+              setRoomTitle(retryRoom.title);
+              const isParticipantFlag = sessionStorage.getItem('isParticipant');
+              setIsParticipant(isParticipantFlag === 'true');
+            } else {
+              toast.error('Meeting room not found. Please try joining again.');
+              navigate('/home');
+              return;
+            }
+          } else {
+            toast.error('Meeting room not found');
+            navigate('/home');
+            return;
+          }
         }
       } catch (error) {
         console.error('Error loading room:', error);
@@ -114,6 +142,7 @@ const PreMeetingPage: React.FC = () => {
             sessionStorage.removeItem('isParticipant');
             sessionStorage.removeItem('pendingInvite');
             sessionStorage.removeItem('meetingToken');
+            sessionStorage.removeItem('isScheduledMeeting');
             // Reset state to allow creating a new meeting
             setRoomId(null);
             setIsParticipant(false);
@@ -130,6 +159,7 @@ const PreMeetingPage: React.FC = () => {
           sessionStorage.removeItem('isParticipant');
           sessionStorage.removeItem('pendingInvite');
           sessionStorage.removeItem('meetingToken');
+          sessionStorage.removeItem('isScheduledMeeting');
           setRoomId(null);
           setIsParticipant(false);
           // Stop listening since room is deleted
@@ -203,6 +233,7 @@ const PreMeetingPage: React.FC = () => {
       sessionStorage.removeItem('isParticipant');
       sessionStorage.removeItem('pendingInvite');
       sessionStorage.removeItem('meetingToken');
+      sessionStorage.removeItem('isScheduledMeeting');
 
       // Load new room title first
       const room = await MeetingService.getMeeting(newRoomId);
