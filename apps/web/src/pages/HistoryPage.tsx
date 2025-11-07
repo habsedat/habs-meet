@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { collection, query, where, orderBy, getDocs } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import toast from 'react-hot-toast';
+import toast from '../lib/toast';
 import Header from '../components/Header';
 
 interface Recording {

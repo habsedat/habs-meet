@@ -1,19 +1,32 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { createScheduledMeeting } from '../lib/scheduledMeetingService';
-import toast from 'react-hot-toast';
+import toast from '../lib/toast';
 
 interface ScheduleMeetingFormProps {
   onSuccess?: (meetingId: string, hostLink: string, participantLink: string, icsData: string, passcode?: string) => void;
+  initialDate?: Date;
+  onCancel?: () => void;
 }
 
-const ScheduleMeetingForm: React.FC<ScheduleMeetingFormProps> = ({ onSuccess }) => {
+const ScheduleMeetingForm: React.FC<ScheduleMeetingFormProps> = ({ onSuccess, initialDate, onCancel }) => {
   const { user, userProfile } = useAuth();
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Format date for input field (YYYY-MM-DDTHH:mm)
+  const formatDateForInput = (date: Date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    return `${year}-${month}-${day}T${hours}:${minutes}`;
+  };
+
   const [formData, setFormData] = useState({
     title: '',
     description: '',
-    startAt: '',
+    startAt: initialDate ? formatDateForInput(initialDate) : '',
     durationMin: 30,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     allowEarlyJoinMin: 10,
@@ -21,6 +34,16 @@ const ScheduleMeetingForm: React.FC<ScheduleMeetingFormProps> = ({ onSuccess }) 
     passcode: '',
     lobbyEnabled: true,
   });
+
+  // Update form data when initialDate changes
+  useEffect(() => {
+    if (initialDate) {
+      setFormData(prev => ({
+        ...prev,
+        startAt: formatDateForInput(initialDate)
+      }));
+    }
+  }, [initialDate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -90,7 +113,7 @@ const ScheduleMeetingForm: React.FC<ScheduleMeetingFormProps> = ({ onSuccess }) 
       setFormData({
         title: '',
         description: '',
-        startAt: '',
+        startAt: initialDate ? formatDateForInput(initialDate) : '',
         durationMin: 30,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         allowEarlyJoinMin: 10,
@@ -261,13 +284,25 @@ const ScheduleMeetingForm: React.FC<ScheduleMeetingFormProps> = ({ onSuccess }) 
         </label>
       </div>
 
-      <button
-        type="submit"
-        disabled={isSubmitting}
-        className="w-full bg-techBlue text-cloud py-3 px-6 rounded-lg font-semibold hover:bg-techBlue/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-      >
-        {isSubmitting ? 'Scheduling...' : 'Schedule Meeting'}
-      </button>
+      <div className="flex gap-3">
+        {onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isSubmitting}
+            className="flex-1 px-6 py-3 border border-gray-300 text-midnight rounded-lg font-semibold hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Cancel
+          </button>
+        )}
+        <button
+          type="submit"
+          disabled={isSubmitting}
+          className={`px-6 py-3 bg-techBlue text-cloud rounded-lg font-semibold hover:bg-techBlue/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${onCancel ? 'flex-1' : 'w-full'}`}
+        >
+          {isSubmitting ? 'Scheduling...' : 'Schedule Meeting'}
+        </button>
+      </div>
     </form>
   );
 };

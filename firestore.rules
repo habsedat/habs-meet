@@ -55,6 +55,22 @@ service cloud.firestore {
       allow delete: if isAuthenticated() && request.auth.uid == resource.data.createdBy;
     }
     
+    // Scheduled meetings collection
+    match /meetings/{meetingId} {
+      allow read: if isAuthenticated() && request.auth.uid == resource.data.ownerUid;
+      allow create: if isAuthenticated() && request.auth.uid == request.resource.data.ownerUid;
+      allow update: if isAuthenticated() && request.auth.uid == resource.data.ownerUid;
+      allow delete: if isAuthenticated() && request.auth.uid == resource.data.ownerUid;
+      
+      // Logs subcollection - read-only for meeting owners
+      match /logs/{logId} {
+        allow read: if isAuthenticated() && 
+          request.auth.uid == get(/databases/$(database)/documents/meetings/$(meetingId)).data.ownerUid;
+        allow create: if false; // Only functions can create logs
+        allow update, delete: if false; // Logs are immutable
+      }
+    }
+    
     // Recordings collection
     match /recordings/{recId} {
       allow read: if isAuthenticated() && 

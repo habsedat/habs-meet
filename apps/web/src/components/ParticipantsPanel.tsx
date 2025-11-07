@@ -1,6 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { Participant } from '../lib/meetingService';
+import { api } from '../lib/api';
+import toast from '../lib/toast';
 
 interface ParticipantsPanelProps {
   participants: Participant[];
@@ -11,9 +13,15 @@ interface ParticipantsPanelProps {
 const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
   participants,
   isHost,
+  roomId,
 }) => {
   const { user } = useAuth();
-  const activeParticipants = participants.filter(p => !p.leftAt);
+  const [isProcessing, setIsProcessing] = useState<string | null>(null);
+  
+  // Get all participants including waiting ones for hosts
+  const allParticipants = participants.filter(p => !p.leftAt);
+  const waitingParticipants = allParticipants.filter(p => p.lobbyStatus === 'waiting');
+  const admittedParticipants = allParticipants.filter(p => !p.lobbyStatus || p.lobbyStatus === 'admitted');
 
   const handlePromote = async (participantId: string, newRole: 'speaker' | 'viewer') => {
     if (!isHost) return;
@@ -37,6 +45,48 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
     }
   };
 
+  const handleAdmit = async (participantId: string) => {
+    if (!isHost) return;
+    
+    setIsProcessing(participantId);
+    try {
+      await api.admitParticipant(roomId, participantId);
+      toast.success('Participant admitted');
+    } catch (error: any) {
+      toast.error('Failed to admit participant: ' + error.message);
+    } finally {
+      setIsProcessing(null);
+    }
+  };
+
+  const handleDeny = async (participantId: string) => {
+    if (!isHost) return;
+    
+    setIsProcessing(participantId);
+    try {
+      await api.denyParticipant(roomId, participantId);
+      toast.success('Participant denied');
+    } catch (error: any) {
+      toast.error('Failed to deny participant: ' + error.message);
+    } finally {
+      setIsProcessing(null);
+    }
+  };
+
+  const handleAdmitAll = async () => {
+    if (!isHost || waitingParticipants.length === 0) return;
+    
+    setIsProcessing('all');
+    try {
+      await api.admitAllParticipants(roomId);
+      toast.success(`Admitted ${waitingParticipants.length} participant(s)`);
+    } catch (error: any) {
+      toast.error('Failed to admit participants: ' + error.message);
+    } finally {
+      setIsProcessing(null);
+    }
+  };
+
   const formatJoinTime = (timestamp: any) => {
     if (!timestamp) return '';
     const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
@@ -48,18 +98,79 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
       <div className="p-4 border-b border-gray-300">
         <h3 className="font-semibold text-midnight">Participants</h3>
         <p className="text-sm text-gray-600">
-          {activeParticipants.length} participant{activeParticipants.length !== 1 ? 's' : ''}
+          {admittedParticipants.length} in meeting
+          {waitingParticipants.length > 0 && ` • ${waitingParticipants.length} waiting`}
         </p>
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {activeParticipants.length === 0 ? (
+        {/* Waiting Room Section (Host Only) */}
+        {isHost && waitingParticipants.length > 0 && (
+          <div className="p-4 border-b border-yellow-200 bg-yellow-50">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center space-x-2">
+                <svg className="w-5 h-5 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <h4 className="font-semibold text-yellow-800">Waiting Room ({waitingParticipants.length})</h4>
+              </div>
+              <button
+                onClick={handleAdmitAll}
+                disabled={isProcessing === 'all'}
+                className="px-3 py-1 bg-techBlue text-cloud rounded-lg hover:bg-techBlue/90 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isProcessing === 'all' ? 'Admitting...' : 'Admit All'}
+              </button>
+            </div>
+            <div className="space-y-2">
+              {waitingParticipants.map((participant) => (
+                <div
+                  key={participant.id}
+                  className="flex items-center justify-between p-2 bg-white rounded border border-yellow-200"
+                >
+                  <div className="flex items-center space-x-2">
+                    <div className="w-8 h-8 bg-gradient-to-br from-techBlue to-violetDeep rounded-full flex items-center justify-center">
+                      <span className="text-cloud font-medium text-xs">
+                        {participant.displayName?.charAt(0).toUpperCase() || participant.uid.charAt(0).toUpperCase()}
+                      </span>
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-midnight">
+                        {participant.displayName || participant.uid}
+                      </p>
+                      <p className="text-xs text-gray-500">Waiting for approval</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center space-x-1">
+                    <button
+                      onClick={() => handleAdmit(participant.id)}
+                      disabled={isProcessing === participant.id}
+                      className="px-3 py-1 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Admit
+                    </button>
+                    <button
+                      onClick={() => handleDeny(participant.id)}
+                      disabled={isProcessing === participant.id}
+                      className="px-3 py-1 bg-red-600 text-white rounded text-xs font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Deny
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Admitted Participants Section */}
+        {admittedParticipants.length === 0 ? (
           <div className="p-4 text-center text-gray-500">
-            <p>No participants yet</p>
+            <p>No participants in meeting yet</p>
           </div>
         ) : (
           <div className="p-2 space-y-2">
-            {activeParticipants.map((participant) => {
+            {admittedParticipants.map((participant) => {
               const isCurrentUser = participant.uid === user?.uid;
               const canModify = isHost && !isCurrentUser;
 

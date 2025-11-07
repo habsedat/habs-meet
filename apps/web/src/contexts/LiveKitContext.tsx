@@ -15,6 +15,7 @@ export interface RemoteControlEvent {
 }
 import { LIVEKIT_CONFIG } from '../lib/livekitConfig';
 import { backgroundEngine } from '../video/BackgroundEngine';
+import toast from '../lib/toast';
 
 interface LiveKitContextType {
   room: Room | null;
@@ -27,6 +28,7 @@ interface LiveKitContextType {
   toggleMicrophone: () => Promise<void>;
   toggleCamera: () => Promise<void>;
   toggleScreenShare: () => Promise<void>;
+  switchCamera: () => Promise<void>;
   setMicrophoneEnabled: (enabled: boolean) => Promise<void>;
   setCameraEnabled: (enabled: boolean) => Promise<void>;
   setScreenShareEnabled: (enabled: boolean) => Promise<void>;
@@ -80,6 +82,7 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
   const [isMicrophoneEnabled, setIsMicrophoneEnabled] = useState(true);
   const [isCameraEnabled, setIsCameraEnabled] = useState(true);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [cameraFacingMode, setCameraFacingMode] = useState<'user' | 'environment'>('user');
   const [participants, setParticipants] = useState<Map<string, RemoteParticipant>>(new Map());
   const [localParticipant, setLocalParticipant] = useState<LocalParticipant | null>(null);
   const [roomName, setRoomName] = useState('');
@@ -1003,6 +1006,109 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
     await setCameraEnabled(!isCameraEnabled);
   }, [isCameraEnabled, setCameraEnabled]);
 
+  // Switch between front and back camera (mobile/tablet only)
+  const switchCamera = useCallback(async () => {
+    if (!roomRef.current || !isCameraEnabled) return;
+    
+    const r = roomRef.current;
+    const localPart = r.localParticipant;
+    if (!localPart) return;
+
+    // Check if mobile/tablet
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    const isTablet = typeof window !== 'undefined' &&
+                     window.matchMedia('(max-width: 1024px)').matches &&
+                     !window.matchMedia('(max-width: 768px)').matches;
+    const isiPad = /iPad/.test(navigator.userAgent) ||
+                   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    
+    if (!isMobile && !isTablet && !isiPad) {
+      console.warn('[LiveKit] Camera switching only available on mobile/tablet');
+      return;
+    }
+
+    try {
+      // Get current video track
+      const existingPub = localPart.getTrack(Track.Source.Camera) as LocalTrackPublication | undefined;
+      const existingTrack = existingPub?.track as LocalVideoTrack | undefined;
+      
+      // Get saved background settings
+      const saved = localStorage.getItem('preMeetingSettings') 
+        ? JSON.parse(localStorage.getItem('preMeetingSettings')!)
+        : {};
+      const bgEnabled = saved.backgroundEffectsEnabled || 
+        localStorage.getItem('backgroundEffectsEnabled') === 'true';
+      const chosenBg = saved.savedBackground || 
+        (localStorage.getItem('savedBackground') && 
+         JSON.parse(localStorage.getItem('savedBackground')!));
+
+      // Switch facing mode
+      const newFacingMode = cameraFacingMode === 'user' ? 'environment' : 'user';
+      setCameraFacingMode(newFacingMode);
+
+      // Unpublish existing track
+      if (existingTrack && existingPub) {
+        // Clean up background engine first
+        try {
+          if (backgroundEngine && typeof backgroundEngine.setNone === 'function') {
+            await backgroundEngine.setNone();
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+        } catch (e) {
+          console.warn('[LiveKit] Error cleaning up background engine:', e);
+        }
+        
+        await localPart.unpublishTrack(existingTrack);
+        existingTrack.stop();
+      }
+
+      // Create new track with new facing mode
+      const newTrack = await createLocalVideoTrack({
+        facingMode: newFacingMode,
+        resolution: { width: 1280, height: 720, frameRate: 30 },
+      });
+
+      // Reapply background effects if enabled
+      if (bgEnabled) {
+        try {
+          await backgroundEngine.init(newTrack);
+          await new Promise(resolve => setTimeout(resolve, 100));
+          
+          if (chosenBg) {
+            if (chosenBg.type === 'blur' && typeof backgroundEngine.setBlur === 'function') {
+              await backgroundEngine.setBlur();
+            } else if (chosenBg.type === 'image' && chosenBg.url && typeof backgroundEngine.setImage === 'function') {
+              await backgroundEngine.setImage(chosenBg.url);
+            } else if (chosenBg.type === 'video' && chosenBg.url && typeof backgroundEngine.setVideo === 'function') {
+              await backgroundEngine.setVideo(chosenBg.url);
+            }
+          } else if (typeof backgroundEngine.setBlur === 'function') {
+            // Default to blur if no specific background
+            await backgroundEngine.setBlur();
+          }
+        } catch (e) {
+          console.warn('[LiveKit] Error reapplying background after camera switch:', e);
+        }
+      }
+
+      // Publish new track
+      await localPart.publishTrack(newTrack, {
+        source: Track.Source.Camera,
+      });
+
+      // Force update to refresh UI
+      setTimeout(() => {
+        forceUpdate({});
+        setLocalParticipant(localPart);
+      }, 100);
+
+      console.log('[LiveKit] Camera switched to:', newFacingMode);
+    } catch (error: any) {
+      console.error('[LiveKit] Error switching camera:', error);
+      toast.error('Failed to switch camera: ' + (error.message || 'Unknown error'));
+    }
+  }, [cameraFacingMode, isCameraEnabled]);
+
   const toggleScreenShare = useCallback(async () => {
     await setScreenShareEnabled(!isScreenSharing);
   }, [isScreenSharing, setScreenShareEnabled]);
@@ -1186,6 +1292,7 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
     toggleMicrophone,
     toggleCamera,
     toggleScreenShare,
+    switchCamera,
     setMicrophoneEnabled,
     setCameraEnabled,
     setScreenShareEnabled,

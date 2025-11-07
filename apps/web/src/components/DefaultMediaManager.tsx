@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { defaultMediaService, DefaultMedia, DefaultMediaUploadProgress } from '../lib/defaultMediaService';
-import toast from 'react-hot-toast';
+import toast from '../lib/toast';
 
 interface DefaultMediaManagerProps {
   isOpen: boolean;

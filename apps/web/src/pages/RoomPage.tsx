@@ -3,10 +3,10 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useLiveKit } from '../contexts/LiveKitContext';
 import { api } from '../lib/api';
-import { doc, onSnapshot, collection, query, orderBy, addDoc, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { doc, onSnapshot, collection, query, orderBy, addDoc, serverTimestamp, updateDoc, getDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { MeetingService } from '../lib/meetingService';
-import toast from 'react-hot-toast';
+import toast from '../lib/toast';
 import MeetingControls from '../components/MeetingControls';
 import MeetingShell from '../meeting/MeetingShell';
 import ViewMenu from '../components/ViewMenu';
@@ -97,6 +97,10 @@ const RoomPage: React.FC = () => {
     return unsubscribe;
   }, [roomId]);
 
+  // Separate waiting participants for host
+  const waitingParticipants = participants.filter(p => p.lobbyStatus === 'waiting');
+  const admittedParticipants = participants.filter(p => !p.lobbyStatus || p.lobbyStatus === 'admitted');
+
   // Load chat messages and track unread count
   useEffect(() => {
     if (!roomId) return;
@@ -143,12 +147,60 @@ const RoomPage: React.FC = () => {
     }
   }, [activePanel, chatMessages]);
 
-  // Connect to LiveKit room
+  // Check lobby status before connecting
+  useEffect(() => {
+    if (!roomId || !user) return;
+
+    const participantRef = doc(db, 'rooms', roomId, 'participants', user.uid);
+    const unsubscribe = onSnapshot(participantRef, (doc) => {
+      if (doc.exists()) {
+        const participantData = doc.data() as any;
+        const lobbyStatus = participantData.lobbyStatus || 'admitted';
+
+        // If user is waiting in lobby, redirect to waiting room
+        if (lobbyStatus === 'waiting') {
+          navigate('/waiting-room');
+          return;
+        }
+
+        // If denied, redirect home
+        if (lobbyStatus === 'denied') {
+          toast.error('You have been denied access to this meeting');
+          navigate('/home');
+          return;
+        }
+      }
+    });
+
+    return unsubscribe;
+  }, [roomId, user, navigate]);
+
+  // Connect to LiveKit room (only if admitted)
   useEffect(() => {
     if (!roomId || !user || isConnected || isConnecting) return;
 
     const connectToRoom = async () => {
       try {
+        // Check lobby status first
+        const participantRef = doc(db, 'rooms', roomId, 'participants', user.uid);
+        const participantSnap = await getDoc(participantRef);
+        
+        if (participantSnap.exists()) {
+          const participantData = participantSnap.data() as any;
+          const lobbyStatus = participantData.lobbyStatus || 'admitted';
+          
+          if (lobbyStatus === 'waiting') {
+            navigate('/waiting-room');
+            return;
+          }
+          
+          if (lobbyStatus === 'denied') {
+            toast.error('You have been denied access to this meeting');
+            navigate('/home');
+            return;
+          }
+        }
+
         // Check if this is a scheduled meeting with a pre-generated token
         const isScheduledMeeting = sessionStorage.getItem('isScheduledMeeting') === 'true';
         const preGeneratedToken = sessionStorage.getItem('meetingToken');
@@ -232,7 +284,10 @@ const RoomPage: React.FC = () => {
           break;
         case 'escape':
           // ESC leaves the meeting (not ends it, even for host)
+          // Only non-hosts can leave with ESC - hosts must use End Meeting
+          if (!isHost) {
           handleLeave();
+          }
           break;
       }
     };
@@ -242,10 +297,37 @@ const RoomPage: React.FC = () => {
   }, []);
 
   const handleLeave = useCallback(async () => {
-    // For non-hosts or host choosing to leave (not end), just disconnect
+    // If host is leaving, generate a host join key so they can rejoin as host
+    if (isHost && roomId && user) {
+      try {
+        // Generate a secure host join key (similar to scheduled meetings)
+        const hostJoinKey = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '').substring(0, 16);
+        
+        // Store the host join key in the room document
+        const roomRef = doc(db, 'rooms', roomId);
+        await updateDoc(roomRef, {
+          hostJoinKey: hostJoinKey,
+          hostJoinKeyCreatedAt: serverTimestamp(),
+        });
+        
+        // Generate host rejoin link
+        const baseUrl = window.location.origin;
+        const hostLink = `${baseUrl}/join/${roomId}?k=${hostJoinKey}`;
+        
+        // Store in sessionStorage for easy access
+        sessionStorage.setItem(`hostLink_${roomId}`, hostLink);
+        
+        console.log('Host join key generated. Link:', hostLink);
+      } catch (error: any) {
+        console.error('Failed to generate host join key:', error);
+        // Continue with leave even if key generation fails
+      }
+    }
+    
+    // Disconnect and navigate
     disconnect();
     navigate('/');
-  }, [disconnect, navigate]);
+  }, [disconnect, navigate, isHost, roomId, user]);
 
   const handleEndMeeting = useCallback(async () => {
     // Only hosts can end meetings
@@ -540,8 +622,13 @@ const RoomPage: React.FC = () => {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />                                                                               
             </svg>
             <span className="absolute -top-0.5 -right-0.5 bg-techBlue text-white text-xs rounded-full w-4 h-4 flex items-center justify-center">                                        
-              {participants.length}
+              {admittedParticipants.length + (waitingParticipants.length > 0 ? 1 : 0)}
             </span>
+            {waitingParticipants.length > 0 && isHost && (
+              <span className="absolute -top-0.5 -right-0.5 bg-yellow-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center animate-pulse" style={{ marginRight: '16px' }}>
+                {waitingParticipants.length}
+              </span>
+            )}
           </button>
 
           <button
@@ -582,23 +669,14 @@ const RoomPage: React.FC = () => {
 
           {/* Right side - leave/end buttons */}
           {isHost ? (
-            // Host has two options: Leave or End Meeting
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <button
-                onClick={handleLeave}
-                className="bg-gray-600 hover:bg-gray-700 text-white px-3 sm:px-5 py-2 rounded-lg font-medium transition-colors text-xs sm:text-sm"                                      
-                title="Leave meeting (others can continue)"
-              >
-                Leave
-              </button>
+            // Host only has End Meeting option (no Leave button)
               <button
                 onClick={handleEndMeeting}
-                className="bg-red-600 hover:bg-red-700 text-white px-3 sm:px-5 py-2 rounded-lg font-medium transition-colors text-xs sm:text-sm"                                        
+              className="bg-red-600 hover:bg-red-700 text-white px-3 sm:px-5 py-2 rounded-lg font-medium transition-colors text-xs sm:text-sm flex-shrink-0"                                        
                 title="End meeting for everyone"
               >
                 End Meeting
               </button>
-            </div>
           ) : (
             // Non-hosts only have Leave option
             <button

@@ -2,14 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { MeetingService } from '../lib/meetingService';
-import toast from 'react-hot-toast';
+import toast from '../lib/toast';
 import Header from '../components/Header';
 import CalendarInterface from '../components/CalendarInterface';
 import ShareScreen from '../components/ShareScreen';
 import ScheduleMeetingForm from '../components/ScheduleMeetingForm';
 import { collection, query, getDocs, orderBy, limit, getDoc, doc, setDoc, updateDoc, arrayUnion, serverTimestamp } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { downloadICS } from '../lib/icsGenerator';
 
 const HomePage: React.FC = () => {
   const { user, userProfile } = useAuth();
@@ -49,7 +48,7 @@ const HomePage: React.FC = () => {
         `${userProfile.displayName || user.email?.split('@')[0]}'s Habs Meet`,
         user.uid,
         userProfile.displayName || user.email?.split('@')[0] || 'User',
-        'Professional meeting room with video and audio capabilities'
+        'Premium meeting room with video and audio capabilities'
       );
 
       toast.success('Meeting created successfully! Redirecting...');
@@ -1061,36 +1060,6 @@ const HomePage: React.FC = () => {
                   </p>
                 </div>
               )}
-            </div>
-
-            <div className="flex gap-3 justify-center flex-wrap">
-              <button
-                onClick={() => {
-                  downloadICS(createdMeeting.icsData, `meeting-${createdMeeting.meetingId}.ics`);
-                  toast.success('Calendar invite downloaded!');
-                }}
-                className="px-6 py-2 bg-goldBright text-midnight rounded-lg hover:bg-yellow-400 font-medium"
-              >
-                Download .ics
-              </button>
-              <button
-                onClick={() => {
-                  navigator.clipboard.writeText(createdMeeting.icsData);
-                  toast.success('ICS copied to clipboard!');
-                }}
-                className="px-6 py-2 bg-gray-200 text-midnight rounded-lg hover:bg-gray-300 font-medium"
-              >
-                Copy Invite
-              </button>
-              <button
-                onClick={() => {
-                  navigate(`/meeting/${createdMeeting.meetingId}`);
-                  setShowSuccessDialog(false);
-                }}
-                className="px-6 py-2 bg-techBlue text-cloud rounded-lg hover:bg-techBlue/90 font-medium"
-              >
-                View Details
-              </button>
             </div>
 
             <button

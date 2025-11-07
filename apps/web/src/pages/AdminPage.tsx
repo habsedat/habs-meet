@@ -4,7 +4,7 @@ import { defaultMediaService, DefaultMedia } from '../lib/defaultMediaService';
 import { FileUploadProgress } from '../lib/fileStorageService';
 import { doc, setDoc, collection, getDocs } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import toast from 'react-hot-toast';
+import toast from '../lib/toast';
 
 const AdminPage: React.FC = () => {
   const { user, isAdmin } = useAuth();

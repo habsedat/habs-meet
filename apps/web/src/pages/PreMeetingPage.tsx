@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { MeetingService } from '../lib/meetingService';
 import PreMeetingSetup from '../components/PreMeetingSetup';
-import toast from 'react-hot-toast';
+import toast from '../lib/toast';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 
@@ -43,6 +43,13 @@ const PreMeetingPage: React.FC = () => {
     if (!storedRoomId) {
       toast.error('No meeting room found. Please create or join a meeting.');
       navigate('/home');
+      return;
+    }
+
+    // Check if user is waiting in lobby
+    const lobbyStatus = sessionStorage.getItem('lobbyStatus');
+    if (lobbyStatus === 'waiting') {
+      navigate('/waiting-room');
       return;
     }
 
@@ -222,7 +229,7 @@ const PreMeetingPage: React.FC = () => {
         `${userProfile.displayName || user.email?.split('@')[0]}'s Habs Meet`,
         user.uid,
         userProfile.displayName || user.email?.split('@')[0] || 'User',
-        'Professional meeting room with video and audio capabilities'
+        'Premium meeting room with video and audio capabilities'
       );
 
             toast.success('Meeting created successfully!');

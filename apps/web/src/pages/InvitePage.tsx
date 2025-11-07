@@ -2,8 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { api } from '../lib/api';
-import toast from 'react-hot-toast';
+import toast from '../lib/toast';
 import Header from '../components/Header';
+import { getDoc, doc } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 
 const InvitePage: React.FC = () => {
   const { inviteId } = useParams<{ inviteId: string }>();
@@ -36,6 +38,21 @@ const InvitePage: React.FC = () => {
     setIsRedeeming(true);
     try {
       const result = await api.redeemInvite(token);
+      
+      // Check if room is locked before allowing join
+      const roomRef = doc(db, 'rooms', result.roomId);
+      const roomSnap = await getDoc(roomRef);
+      
+      if (roomSnap.exists()) {
+        const roomData = roomSnap.data();
+        if (roomData?.status === 'locked') {
+          toast.error('This meeting is locked. The host has locked the meeting. Please wait for the host to unlock it.');
+          navigate('/');
+          setIsRedeeming(false);
+          return;
+        }
+      }
+      
       setInviteInfo(result);
       
       // Store room ID in session for pre-meeting page

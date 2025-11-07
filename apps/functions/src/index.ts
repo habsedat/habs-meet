@@ -917,6 +917,148 @@ export const cancelMeeting = functions.https.onRequest(async (req, res) => {
   });
 });
 
+// POST /api/lobby/admit
+export const admitParticipant = functions.https.onRequest(async (req, res) => {
+  return corsHandler(req, res, async () => {
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
+    }
+
+    try {
+      const user = await verifyAuth(req);
+      const { roomId, participantId } = req.body;
+
+      if (!roomId || !participantId) {
+        return res.status(400).json({ error: 'Missing roomId or participantId' });
+      }
+
+      // Verify user is host
+      const isHost = await verifyHost(roomId, user.uid);
+      if (!isHost) {
+        return res.status(403).json({ error: 'Only hosts can admit participants' });
+      }
+
+      // Get participant document
+      const participantRef = admin.firestore()
+        .collection('rooms')
+        .doc(roomId)
+        .collection('participants')
+        .doc(participantId);
+
+      const participantDoc = await participantRef.get();
+      if (!participantDoc.exists) {
+        return res.status(404).json({ error: 'Participant not found' });
+      }
+
+      // Update participant status to admitted
+      await participantRef.update({
+        lobbyStatus: 'admitted',
+        admittedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      return res.json({ success: true, message: 'Participant admitted' });
+    } catch (error: any) {
+      console.error('Error admitting participant:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  });
+});
+
+// POST /api/lobby/deny
+export const denyParticipant = functions.https.onRequest(async (req, res) => {
+  return corsHandler(req, res, async () => {
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
+    }
+
+    try {
+      const user = await verifyAuth(req);
+      const { roomId, participantId } = req.body;
+
+      if (!roomId || !participantId) {
+        return res.status(400).json({ error: 'Missing roomId or participantId' });
+      }
+
+      // Verify user is host
+      const isHost = await verifyHost(roomId, user.uid);
+      if (!isHost) {
+        return res.status(403).json({ error: 'Only hosts can deny participants' });
+      }
+
+      // Update participant status to denied and remove from participants
+      const participantRef = admin.firestore()
+        .collection('rooms')
+        .doc(roomId)
+        .collection('participants')
+        .doc(participantId);
+
+      await participantRef.update({
+        lobbyStatus: 'denied',
+        deniedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      // Remove participant after a delay (optional - or keep for logging)
+      // await participantRef.delete();
+
+      return res.json({ success: true, message: 'Participant denied' });
+    } catch (error: any) {
+      console.error('Error denying participant:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  });
+});
+
+// POST /api/lobby/admit-all
+export const admitAllParticipants = functions.https.onRequest(async (req, res) => {
+  return corsHandler(req, res, async () => {
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
+    }
+
+    try {
+      const user = await verifyAuth(req);
+      const { roomId } = req.body;
+
+      if (!roomId) {
+        return res.status(400).json({ error: 'Missing roomId' });
+      }
+
+      // Verify user is host
+      const isHost = await verifyHost(roomId, user.uid);
+      if (!isHost) {
+        return res.status(403).json({ error: 'Only hosts can admit participants' });
+      }
+
+      // Get all waiting participants
+      const participantsSnapshot = await admin.firestore()
+        .collection('rooms')
+        .doc(roomId)
+        .collection('participants')
+        .where('lobbyStatus', '==', 'waiting')
+        .get();
+
+      // Admit all waiting participants
+      const batch = admin.firestore().batch();
+      participantsSnapshot.docs.forEach((doc) => {
+        batch.update(doc.ref, {
+          lobbyStatus: 'admitted',
+          admittedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      });
+
+      await batch.commit();
+
+      return res.json({ 
+        success: true, 
+        message: `Admitted ${participantsSnapshot.docs.length} participant(s)` 
+      });
+    } catch (error: any) {
+      console.error('Error admitting all participants:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  });
+});
+
 // Main API function
 export const api = functions.https.onRequest(async (req, res) => {
   return corsHandler(req, res, async () => {
@@ -946,6 +1088,12 @@ export const api = functions.https.onRequest(async (req, res) => {
       return endMeeting(req, res);
     } else if (path === '/api/schedule/cancel' && method === 'POST') {
       return cancelMeeting(req, res);
+    } else if (path === '/api/lobby/admit' && method === 'POST') {
+      return admitParticipant(req, res);
+    } else if (path === '/api/lobby/deny' && method === 'POST') {
+      return denyParticipant(req, res);
+    } else if (path === '/api/lobby/admit-all' && method === 'POST') {
+      return admitAllParticipants(req, res);
     } else {
       console.log('[API Router] No route found for:', path);
       return res.status(404).json({ error: 'Endpoint not found' });

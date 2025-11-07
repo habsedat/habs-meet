@@ -4,8 +4,9 @@ import { useAuth } from '../contexts/AuthContext';
 import { MeetingService } from '../lib/meetingService';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import toast from 'react-hot-toast';
+import toast from '../lib/toast';
 import { getScheduledMeetingToken } from '../lib/scheduledMeetingService';
+import SEOHead from '../components/SEOHead';
 
 const JoinPage: React.FC = () => {
   const { roomId } = useParams<{ roomId: string }>();
@@ -15,6 +16,26 @@ const JoinPage: React.FC = () => {
   const [showPasscodePrompt, setShowPasscodePrompt] = useState(false);
   const [passcodeInput, setPasscodeInput] = useState('');
   const [isRequestingToken, setIsRequestingToken] = useState(false);
+  const [roomData, setRoomData] = useState<any>(null);
+
+  // Fetch room data for SEO/meta tags (early, before auth check)
+  useEffect(() => {
+    if (!roomId) return;
+
+    const fetchRoomForPreview = async () => {
+      try {
+        const room = await MeetingService.getMeeting(roomId);
+        if (room) {
+          setRoomData(room);
+        }
+      } catch (error) {
+        // Silently fail - room might not exist yet or user might not have access
+        console.log('Could not fetch room for preview:', error);
+      }
+    };
+
+    fetchRoomForPreview();
+  }, [roomId]);
 
   useEffect(() => {
     // Wait for auth to load
@@ -133,39 +154,80 @@ const JoinPage: React.FC = () => {
           return;
         }
 
-        // Check if room is locked
-        if (room.status === 'locked') {
-          // Check if user is already a participant
-          const participantRef = doc(db, 'rooms', roomId, 'participants', user!.uid);
-          const participantSnap = await getDoc(participantRef);
-          
-          if (!participantSnap.exists()) {
-            // User is not a participant and room is locked - deny access
-            toast.error('This meeting is locked. Only existing participants can join.');
+        // Check if user is joining with a host key
+        const hostJoinKeyParam = searchParams.get('k');
+        let isHostRejoin = false;
+        
+        if (hostJoinKeyParam && room.hostJoinKey && hostJoinKeyParam === room.hostJoinKey) {
+          // Verify user was originally the host (createdBy matches)
+          if (room.createdBy === user!.uid) {
+            isHostRejoin = true;
+            console.log('Host rejoining with host key');
+          } else {
+            // Invalid host key for this user
+            toast.error('Invalid host key');
             navigate('/home');
             return;
           }
-          // User is already a participant - allow them to rejoin
         }
 
+        // Check if room is locked - NO ONE can join when locked (except host rejoining with host key)
+        if (room.status === 'locked') {
+          // Only allow host rejoining with valid host key
+          if (!isHostRejoin) {
+            // Room is locked - deny access to everyone (including existing participants)
+            toast.error('This meeting is locked. The host has locked the meeting. Please wait for the host to unlock it.');
+            navigate('/home');
+            return;
+          }
+          // Host rejoining with valid host key is allowed even when locked
+        }
+
+        // Check if waiting room is enabled
+        const waitingRoomEnabled = room.waitingRoom || false;
+        
+        // Determine role: host if rejoining as original host, otherwise viewer
+        const participantRole = isHostRejoin ? 'host' : 'viewer';
+        
         // Add participant to meeting (will update existing if already present)
         if (user && userProfile) {
-          await MeetingService.addParticipant(roomId, {
+          const participantRef = doc(db, 'rooms', roomId, 'participants', user.uid);
+          // Hosts are always admitted, others depend on waiting room
+          const lobbyStatus = (isHostRejoin || !waitingRoomEnabled) ? 'admitted' : 'waiting';
+          
+          await setDoc(participantRef, {
             uid: user.uid,
             displayName: userProfile.displayName,
-            role: 'viewer',
+            role: participantRole,
             isActive: true,
             isMuted: false,
             isVideoEnabled: true,
             isScreenSharing: false,
-          });
+            joinedAt: serverTimestamp(),
+            lastSeen: serverTimestamp(),
+            lobbyStatus: lobbyStatus,
+            ...(lobbyStatus === 'admitted' && { admittedAt: serverTimestamp() }),
+          }, { merge: true });
         }
 
         // Store room ID in session for pre-meeting page
         sessionStorage.setItem('currentRoomId', roomId);
         sessionStorage.setItem('isParticipant', 'true');
+        if (isHostRejoin) {
+          sessionStorage.setItem('isHost', 'true');
+        }
         sessionStorage.removeItem('isScheduledMeeting');
         sessionStorage.removeItem('meetingToken');
+        
+        // Lobby status already determined above (hosts are always admitted)
+        const lobbyStatusForSession = (isHostRejoin || !waitingRoomEnabled) ? 'admitted' : 'waiting';
+        sessionStorage.setItem('lobbyStatus', lobbyStatusForSession);
+
+        // If waiting room is enabled, navigate to waiting room
+        if (waitingRoomEnabled) {
+          navigate('/waiting-room');
+          return;
+        }
 
         // Navigate to pre-meeting setup
         navigate('/pre-meeting');
@@ -188,9 +250,12 @@ const JoinPage: React.FC = () => {
     const roomRef = doc(db, 'rooms', tokenResponse.roomName);
     const roomSnap = await getDoc(roomRef);
     
-    if (!roomSnap.exists()) {
+    let roomData: any = null;
+    if (roomSnap.exists()) {
+      roomData = roomSnap.data();
+    } else {
       // Create the room document
-      await setDoc(roomRef, {
+      roomData = {
         title: tokenResponse.meeting?.title || 'Scheduled Meeting',
         description: tokenResponse.meeting?.description || '',
         createdBy: tokenResponse.meeting?.ownerUid || user.uid,
@@ -201,11 +266,31 @@ const JoinPage: React.FC = () => {
         isRecording: false,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-      });
+      };
+      await setDoc(roomRef, roomData);
     }
+    
+    // Check if room is locked - block all joins (except host with host key which is already checked in scheduled meeting flow)
+    if (roomData.status === 'locked') {
+      // Only allow if user is the host (ownerUid matches)
+      const isHost = tokenResponse.role === 'host' || roomData.createdBy === user.uid;
+      if (!isHost) {
+        toast.error('This meeting is locked. The host has locked the meeting. Please wait for the host to unlock it.');
+        navigate('/home');
+        return;
+      }
+    }
+
+    // Check if waiting room is enabled
+    const waitingRoomEnabled = tokenResponse.meeting?.lobbyEnabled || false;
+    const isHost = tokenResponse.role === 'host';
 
     // Add participant to meeting
     const participantRef = doc(db, 'rooms', tokenResponse.roomName, 'participants', user.uid);
+    
+    // Set lobby status based on waiting room and role
+    const lobbyStatus = waitingRoomEnabled && !isHost ? 'waiting' : 'admitted';
+    
     await setDoc(participantRef, {
       uid: user.uid,
       displayName: userProfile.displayName || user.email?.split('@')[0] || 'User',
@@ -216,6 +301,8 @@ const JoinPage: React.FC = () => {
       isScreenSharing: false,
       joinedAt: serverTimestamp(),
       lastSeen: serverTimestamp(),
+      lobbyStatus: lobbyStatus,
+      ...(lobbyStatus === 'admitted' && { admittedAt: serverTimestamp() }),
     }, { merge: true });
 
     // Store room ID and token for pre-meeting page
@@ -223,6 +310,13 @@ const JoinPage: React.FC = () => {
     sessionStorage.setItem('meetingToken', tokenResponse.token);
     sessionStorage.setItem('isScheduledMeeting', 'true');
     sessionStorage.setItem('isParticipant', tokenResponse.role === 'host' ? 'false' : 'true');
+    sessionStorage.setItem('lobbyStatus', lobbyStatus);
+
+    // If waiting in lobby, navigate to waiting room page
+    if (lobbyStatus === 'waiting') {
+      navigate('/waiting-room');
+      return;
+    }
 
     // Navigate to pre-meeting setup
     navigate('/pre-meeting');
@@ -299,9 +393,24 @@ const JoinPage: React.FC = () => {
     }
   };
 
+  // Generate SEO meta tags based on room data
+  const seoTitle = roomData?.title 
+    ? `${roomData.title} - Join Meeting | Habs Meet`
+    : 'Join Meeting - Habs Meet';
+  const seoDescription = roomData?.description 
+    ? roomData.description
+    : 'Join a premium video meeting on Habs Meet. HD video, screen sharing, and real-time collaboration.';
+  const seoUrl = `https://habs-meet-dev.web.app/join/${roomId}`;
+
   if (showPasscodePrompt) {
     return (
-      <div className="min-h-screen bg-midnight flex items-center justify-center p-4">
+      <>
+        <SEOHead 
+          title={seoTitle}
+          description={seoDescription}
+          url={seoUrl}
+        />
+        <div className="min-h-screen bg-midnight flex items-center justify-center p-4">
         <div className="bg-cloud rounded-xl shadow-2xl max-w-md w-full p-6 sm:p-8">
           <div className="text-center mb-6">
             <div className="w-16 h-16 bg-goldBright rounded-full flex items-center justify-center mx-auto mb-4">
@@ -365,17 +474,25 @@ const JoinPage: React.FC = () => {
           </div>
         </div>
       </div>
+      </>
     );
   }
 
   return (
-    <div className="min-h-screen bg-midnight flex items-center justify-center">
+    <>
+      <SEOHead 
+        title={seoTitle}
+        description={seoDescription}
+        url={seoUrl}
+      />
+      <div className="min-h-screen bg-midnight flex items-center justify-center">
       <div className="text-center">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-techBlue mx-auto mb-4"></div>
         <h2 className="text-2xl font-semibold text-cloud mb-2">Joining Meeting</h2>
         <p className="text-gray-300">Please wait...</p>
       </div>
     </div>
+    </>
   );
 };
 

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import toast from 'react-hot-toast';
+import toast from '../lib/toast';
 
 interface ShareScreenProps {
   onScreenShareStart?: () => void;

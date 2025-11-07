@@ -16,10 +16,12 @@ const Header: React.FC<HeaderProps> = ({ title, showUserMenu = true, onLeave }) 
     <header className="bg-midnight border-b border-gray-800 px-3 sm:px-4 lg:px-6 py-2">
       <div className="flex items-center justify-between">
         <div className="flex items-center space-x-2 sm:space-x-4">
-          {/* Brand logo mark - stylized H placeholder */}
-          <div className="w-7 h-7 sm:w-8 sm:h-8 bg-gradient-to-br from-techBlue to-violetDeep rounded-lg flex items-center justify-center">
-            <span className="text-cloud font-bold text-base sm:text-lg">H</span>
-          </div>
+          {/* Brand logo */}
+          <img 
+            src="/logo.png" 
+            alt="Habs Meet Logo" 
+            className="w-7 h-7 sm:w-8 sm:h-8 object-contain"
+          />
           {title && (
             <h1 className="text-base sm:text-lg font-semibold text-cloud">{title}</h1>
           )}

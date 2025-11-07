@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { createLocalVideoTrack, createLocalAudioTrack, LocalVideoTrack, LocalAudioTrack } from 'livekit-client';
 import { backgroundEngine } from '../video/BackgroundEngine';
 import BackgroundEffectsPanel from './BackgroundEffectsPanel';
-import toast from 'react-hot-toast';
+import toast from '../lib/toast';
 
 interface PreMeetingSetupProps {
   roomId: string;
@@ -47,17 +47,26 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
   const [showBackgroundPanel, setShowBackgroundPanel] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   
+  // Camera facing mode for mobile/tablet (front/back)
+  const [cameraFacingMode, setCameraFacingMode] = useState<'user' | 'environment'>('user');
+  
   // Detect mobile/tablet screen size
   const [isMobile, setIsMobile] = useState(false);
+  const [isTablet, setIsTablet] = useState(false);
   
   useEffect(() => {
-    const checkMobile = () => {
-      setIsMobile(window.innerWidth < 640); // sm breakpoint in Tailwind
+    const checkScreenSize = () => {
+      const width = window.innerWidth;
+      setIsMobile(width < 640); // sm breakpoint
+      setIsTablet(width >= 640 && width < 1024); // tablet: sm to lg
     };
-    checkMobile();
-    window.addEventListener('resize', checkMobile);
-    return () => window.removeEventListener('resize', checkMobile);
+    checkScreenSize();
+    window.addEventListener('resize', checkScreenSize);
+    return () => window.removeEventListener('resize', checkScreenSize);
   }, []);
+  
+  // Hide device inputs on mobile/tablet (phones and tablets don't have external devices)
+  const showDeviceInputs = !isMobile && !isTablet;
   
   // Memoize close handler to prevent effect re-running
   const handleClosePanel = useCallback(() => {
@@ -201,9 +210,10 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
       const element = videoTrack.attach();
       element.style.width = '100%';
       element.style.height = '100%';
-      element.style.objectFit = 'contain'; // Show full video without cropping
+      element.style.objectFit = 'cover'; // Fill container completely
       element.style.objectPosition = 'center';
-      element.style.backgroundColor = '#000';
+      element.style.backgroundColor = 'transparent'; // Use container gradient instead
+      element.style.borderRadius = '0.5rem';
       containerRef.current.appendChild(element);
     }
     
@@ -431,12 +441,20 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
             }
           }
         } else {
-          // No device selected - use default (facingMode for mobile, or default for desktop)
+          // No device selected - use facingMode for mobile/tablet, or default for desktop
           try {
-            video = await createLocalVideoTrack({
-              facingMode: 'user',
-              resolution: { width: 1280, height: 720 }
-            });
+            if (isMobile || isTablet) {
+              // Use facingMode for mobile/tablet devices
+              video = await createLocalVideoTrack({
+                facingMode: cameraFacingMode,
+                resolution: { width: 1280, height: 720 }
+              });
+            } else {
+              // Desktop - use default camera
+              video = await createLocalVideoTrack({
+                resolution: { width: 1280, height: 720 }
+              });
+            }
           } catch (defaultError: any) {
             throw new Error(`Failed to access default camera: ${defaultError?.message || 'Please check permissions'}`);
           }
@@ -661,6 +679,100 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
     }
   };
 
+  // Switch between front and back camera (mobile/tablet only)
+  const handleSwitchCamera = async () => {
+    if (!isMobile && !isTablet) return; // Only available on mobile/tablet
+    
+    const newFacingMode = cameraFacingMode === 'user' ? 'environment' : 'user';
+    setCameraFacingMode(newFacingMode);
+    
+    // Recreate video track with new facing mode
+    if (isVideoEnabled) {
+      try {
+        // Stop and detach current track
+        if (videoTrack) {
+          try {
+            if (backgroundEngine && typeof backgroundEngine.setNone === 'function') {
+              await backgroundEngine.setNone();
+              await new Promise(resolve => setTimeout(resolve, 50));
+            }
+          } catch (e) {
+            console.warn('[BG] Error cleaning up background engine:', e);
+          }
+          
+          if (containerRef.current) {
+            const existingVideo = containerRef.current.querySelector('video');
+            if (existingVideo) {
+              existingVideo.remove();
+            }
+          }
+          
+          const tracks = videoTrack.mediaStream?.getVideoTracks();
+          if (tracks && tracks.length > 0 && tracks[0].readyState !== 'ended') {
+            videoTrack.stop();
+          }
+          videoTrack.detach();
+        }
+        
+        // Create new track with new facing mode
+        const newVideo = await createLocalVideoTrack({
+          facingMode: newFacingMode,
+          resolution: { width: 1280, height: 720 }
+        });
+        
+        setVideoTrack(newVideo);
+        setDeviceErrors(prev => ({ ...prev, video: undefined }));
+        
+        // Reapply background effects if enabled (for both front and back cameras)
+        if (isBackgroundEffectsEnabled) {
+          setTimeout(async () => {
+            try {
+              if (!backgroundEngine) {
+                console.warn('[BG] Background engine not available');
+                return;
+              }
+              
+              // Initialize background engine with new video track
+              await backgroundEngine.init(newVideo);
+              
+              // Wait a bit for initialization to complete
+              await new Promise(resolve => setTimeout(resolve, 100));
+              
+              // Reapply the saved background effect
+              if (savedBackground) {
+                if (savedBackground.type === 'blur') {
+                  if (typeof backgroundEngine.setBlur === 'function') {
+                    await backgroundEngine.setBlur();
+                  }
+                } else if (savedBackground.type === 'image' && savedBackground.url) {
+                  if (typeof backgroundEngine.setImage === 'function') {
+                    await backgroundEngine.setImage(savedBackground.url);
+                  }
+                } else if (savedBackground.type === 'video' && savedBackground.url) {
+                  if (typeof backgroundEngine.setVideo === 'function') {
+                    await backgroundEngine.setVideo(savedBackground.url);
+                  }
+                }
+              } else {
+                // No saved background but effects are enabled - apply blur as default
+                if (typeof backgroundEngine.setBlur === 'function') {
+                  await backgroundEngine.setBlur();
+                }
+              }
+            } catch (error) {
+              console.error('[BG] Error reapplying background after camera switch:', error);
+              // Don't show error to user, just log it
+            }
+          }, 500);
+        }
+      } catch (error: any) {
+        console.error('Error switching camera:', error);
+        toast.error('Failed to switch camera: ' + (error.message || 'Unknown error'));
+        setDeviceErrors(prev => ({ ...prev, video: error.message || 'Camera switch failed' }));
+      }
+    }
+  };
+
   const handleStart = async () => {
     setIsStarting(true);
     try {
@@ -745,105 +857,126 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
       };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-midnight via-techBlue to-violetDeep flex items-center justify-center p-2 sm:p-4">
-      {/* Compact Modal */}
-      <div className="bg-midnight/98 backdrop-blur-lg rounded-xl w-full max-w-4xl border border-white/10 overflow-hidden shadow-2xl max-h-[95vh] sm:max-h-none">
-        {/* Compact Header */}
-        <div className="bg-midnight/90 border-b border-white/10 px-3 sm:px-4 py-2 sm:py-3 flex items-center justify-between">
-          <div className="flex items-center space-x-2 min-w-0">
-            <div className="w-6 h-6 sm:w-7 sm:h-7 md:w-8 md:h-8 bg-goldBright rounded flex items-center justify-center flex-shrink-0">
-              <svg className="w-4 h-4 sm:w-4 sm:h-4 md:w-5 md:h-5 text-midnight" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M17 10.5V7a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1v-3.5l4 4v-11l-4 4z"/>
-              </svg>
-            </div>
-            <h1 className="text-xs sm:text-xs md:text-sm font-semibold text-cloud truncate">{roomTitle}</h1>
+    <div className="min-h-screen bg-gradient-to-br from-midnight via-techBlue to-violetDeep flex flex-col">
+      {/* Header - Compact on Mobile */}
+      <div className="bg-midnight/80 backdrop-blur-sm border-b border-white/10 px-3 sm:px-4 py-2 sm:py-3 flex items-center justify-between">
+        <div className="flex items-center space-x-2 min-w-0">
+          <div className="w-7 h-7 sm:w-8 sm:h-8 bg-goldBright rounded flex items-center justify-center flex-shrink-0">
+            <svg className="w-4 h-4 sm:w-5 sm:h-5 text-midnight" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M17 10.5V7a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1v-3.5l4 4v-11l-4 4z"/>
+            </svg>
           </div>
-          {/* Hide X button on mobile, show on desktop */}
+          <h1 className="text-xs sm:text-sm font-semibold text-cloud truncate">{roomTitle}</h1>
+        </div>
+        {!isMobile && (
           <button
             onClick={() => navigate('/home')}
-            className={`text-cloud/50 hover:text-cloud transition-colors p-1 ${isMobile ? 'hidden' : ''}`}
+            className="text-cloud/50 hover:text-cloud transition-colors p-1"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
+        )}
+      </div>
+
+      {/* Main Content - Maximize Camera Preview */}
+      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
+        {/* Video Preview - Full Screen, Maximized */}
+        <div className="flex-1 flex items-center justify-center p-2 sm:p-4 lg:p-6 relative" style={{ paddingBottom: isMobile || isTablet ? '140px' : '0' }}>
+          <div 
+            ref={containerRef}
+            className="w-full h-full max-w-full max-h-full bg-gradient-to-br from-techBlue/30 to-violetDeep/30 rounded-lg overflow-hidden relative flex items-center justify-center"
+            style={{ 
+              minHeight: isMobile ? 'calc(100vh - 220px)' : 'calc(100vh - 180px)',
+              aspectRatio: '16/9'
+            }}
+          >
+            {!isVideoEnabled && (
+              <div className="absolute inset-0 bg-midnight/80 flex items-center justify-center z-10">
+                <div className="text-center">
+                  <svg className="w-16 h-16 text-cloud/60 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                  </svg>
+                  <p className="text-cloud/60 text-sm">Camera is off</p>
+                </div>
+              </div>
+            )}
+
+            {/* Floating Control Icons - Inside Camera Preview */}
+            <div className="absolute bottom-3 sm:bottom-4 left-1/2 transform -translate-x-1/2 z-20 flex items-center space-x-2 sm:space-x-3 bg-midnight/90 backdrop-blur-md rounded-full px-2 sm:px-4 py-2 sm:py-3 shadow-xl">
+            {/* Audio Icon Button */}
+            <button
+              onClick={handleToggleMic}
+              className={`p-2 sm:p-3 rounded-full transition-all ${
+                isMicEnabled
+                  ? 'bg-white/10 text-cloud hover:bg-white/20'
+                  : 'bg-red-500 text-white hover:bg-red-600'
+              }`}
+              title={isMicEnabled ? 'Mute microphone' : 'Unmute microphone'}
+            >
+              <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                {isMicEnabled ? (
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                ) : (
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                )}
+              </svg>
+            </button>
+
+            {/* Video Icon Button */}
+            <button
+              onClick={handleToggleVideo}
+              className={`p-2 sm:p-3 rounded-full transition-all ${
+                isVideoEnabled
+                  ? 'bg-goldBright text-midnight hover:bg-yellow-400'
+                  : 'bg-white/10 text-cloud hover:bg-white/20'
+              }`}
+              title={isVideoEnabled ? 'Turn off camera' : 'Turn on camera'}
+            >
+              <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+            </button>
+
+            {/* Backgrounds Icon Button */}
+            <button
+              onClick={() => setShowBackgroundPanel(true)}
+              className={`p-2 sm:p-3 rounded-full transition-all ${
+                showBackgroundPanel
+                  ? 'bg-goldBright text-midnight hover:bg-yellow-400'
+                  : 'bg-white/10 text-cloud hover:bg-white/20'
+              }`}
+              title="Background effects"
+            >
+              <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+            </button>
+
+            {/* Camera Switch Button - Mobile/Tablet Only */}
+            {(isMobile || isTablet) && (
+              <button
+                onClick={handleSwitchCamera}
+                className="p-2 sm:p-3 rounded-full transition-all bg-white/10 text-cloud hover:bg-white/20"
+                title={cameraFacingMode === 'user' ? 'Switch to back camera' : 'Switch to front camera'}
+              >
+                <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+                </svg>
+              </button>
+            )}
+          </div>
+          </div>
         </div>
 
-        <div className="flex flex-col lg:flex-row overflow-y-auto max-h-[calc(95vh-60px)] sm:max-h-none">
-          {/* Left Panel - Compact Video Preview */}
-          <div className="lg:w-2/3 p-3 sm:p-4 md:p-6 flex flex-col">
-            <div 
-              ref={containerRef}
-              className="bg-black rounded-lg overflow-hidden mb-2 sm:mb-3 relative aspect-video w-full"
-            >
-              {!isVideoEnabled && (
-                <div className="absolute inset-0 bg-midnight/80 flex items-center justify-center z-10">
-                  <div className="text-center">
-                    <svg className="w-12 h-12 text-cloud/60 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                    </svg>
-                    <p className="text-cloud/60 text-sm">Camera is off</p>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Compact Control Buttons */}
-            <div className="flex space-x-2 sm:space-x-3 justify-center">
-              <button
-                onClick={handleToggleMic}
-                className={`flex items-center space-x-1 sm:space-x-2 px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg text-xs sm:text-sm font-medium transition-all ${
-                  isMicEnabled
-                    ? 'bg-white/10 text-cloud hover:bg-white/20'
-                    : 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
-                }`}
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  {isMicEnabled ? (
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                  ) : (
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
-                  )}
-                </svg>
-                <span>Audio</span>
-              </button>
-
-              <button
-                onClick={handleToggleVideo}
-                className={`flex items-center space-x-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                  isVideoEnabled
-                    ? 'bg-goldBright text-midnight hover:bg-yellow-400'
-                    : 'bg-white/10 text-cloud hover:bg-white/20'
-                }`}
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
-                <span>Video</span>
-              </button>
-
-              <button
-                onClick={() => setShowBackgroundPanel(true)}
-                className={`flex items-center space-x-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                  showBackgroundPanel
-                    ? 'bg-goldBright text-midnight hover:bg-yellow-400'
-                    : 'bg-white/10 text-cloud hover:bg-white/20'
-                }`}
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                </svg>
-                <span>Backgrounds</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Right Panel - Compact Settings */}
-          <div className="lg:w-1/3 border-t lg:border-t-0 lg:border-l border-white/10 p-3 sm:p-4 bg-midnight/50">
-            <div className="space-y-3 sm:space-y-4">
-              {/* Audio Input */}
+        {/* Settings Panel - Minimal on Mobile, Full on Desktop */}
+        <div className={`${isMobile || isTablet ? 'fixed bottom-0 left-0 right-0' : 'lg:w-80 xl:w-96 border-l'} border-white/10 bg-midnight/95 backdrop-blur-sm ${isMobile || isTablet ? 'p-3 rounded-t-xl' : 'p-4 lg:p-6 overflow-y-auto'}`}>
+          <div className={`${isMobile || isTablet ? 'space-y-3' : 'space-y-4'}`}>
+            {/* Audio Input - Hidden on Mobile/Tablet */}
+            {showDeviceInputs && (
               <div>
-                <label className="block text-xs font-medium text-cloud/80 mb-1.5">
+                <label className="block text-sm font-medium text-cloud/80 mb-2">
                   Audio Input
                   {deviceErrors.audio && (
                     <span className="ml-2 text-red-400 text-xs">⚠ {deviceErrors.audio}</span>
@@ -852,7 +985,7 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
                 <select
                   value={selectedAudioDevice}
                   onChange={(e) => setSelectedAudioDevice(e.target.value)}
-                  className={`w-full px-3 py-1.5 text-sm bg-midnight border rounded-lg text-cloud focus:outline-none focus:ring-2 focus:ring-goldBright ${
+                  className={`w-full px-3 py-2 text-sm bg-midnight border rounded-lg text-cloud focus:outline-none focus:ring-2 focus:ring-goldBright ${
                     deviceErrors.audio ? 'border-red-500' : 'border-white/10'
                   }`}
                   disabled={audioDevices.length === 0}
@@ -871,10 +1004,12 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
                   <p className="text-xs text-green-400 mt-1">✓ Active</p>
                 )}
               </div>
+            )}
 
-              {/* Video Input */}
+            {/* Video Input - Hidden on Mobile/Tablet */}
+            {showDeviceInputs && (
               <div>
-                <label className="block text-xs font-medium text-cloud/80 mb-1.5">
+                <label className="block text-sm font-medium text-cloud/80 mb-2">
                   Video Input
                   {deviceErrors.video && (
                     <span className="ml-2 text-red-400 text-xs">⚠ {deviceErrors.video}</span>
@@ -883,7 +1018,7 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
                 <select
                   value={selectedVideoDevice}
                   onChange={(e) => setSelectedVideoDevice(e.target.value)}
-                  className={`w-full px-3 py-1.5 text-sm bg-midnight border rounded-lg text-cloud focus:outline-none focus:ring-2 focus:ring-goldBright ${
+                  className={`w-full px-3 py-2 text-sm bg-midnight border rounded-lg text-cloud focus:outline-none focus:ring-2 focus:ring-goldBright ${
                     deviceErrors.video ? 'border-red-500' : 'border-white/10'
                   }`}
                   disabled={videoDevices.length === 0}
@@ -902,58 +1037,62 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
                   <p className="text-xs text-green-400 mt-1">✓ Active</p>
                 )}
               </div>
+            )}
 
-              {/* Enable Background Effects */}
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-xs font-medium text-cloud">
-                    Enable Background Effects
-                  </label>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={isBackgroundEffectsEnabled}
-                      onChange={(e) => setIsBackgroundEffectsEnabled(e.target.checked)}
-                      className="sr-only peer"
-                    />
-                    <div className="w-9 h-5 bg-gray-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-goldBright rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-goldBright"></div>
-                  </label>
-                </div>
-                <p className="text-xs text-cloud/50">
+            {/* Enable Background Effects - Smaller labels on Mobile/Tablet */}
+            <div>
+              <div className="flex items-center justify-between">
+                <label className={`${isMobile || isTablet ? 'text-xs' : 'text-sm'} font-medium text-cloud`}>
+                  Enable Background Effects
+                </label>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={isBackgroundEffectsEnabled}
+                    onChange={(e) => setIsBackgroundEffectsEnabled(e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className={`${isMobile || isTablet ? 'w-10 h-5 after:h-4 after:w-4' : 'w-11 h-6 after:h-5 after:w-5'} bg-gray-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-goldBright rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:transition-all peer-checked:bg-goldBright`}></div>
+                </label>
+              </div>
+              {!isMobile && !isTablet && (
+                <p className="text-xs text-cloud/50 mt-1">
                   Use virtual backgrounds, blur, and other effects
                 </p>
-              </div>
+              )}
+            </div>
 
-              {/* Always show this preview */}
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-xs font-medium text-cloud">
-                    Always show this preview
-                  </label>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={alwaysShowPreview}
-                      onChange={(e) => setAlwaysShowPreview(e.target.checked)}
-                      className="sr-only peer"
-                    />
-                    <div className="w-9 h-5 bg-gray-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-goldBright rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-goldBright"></div>
-                  </label>
-                </div>
-                <p className="text-xs text-cloud/50">
+            {/* Always show this preview - Smaller labels on Mobile/Tablet */}
+            <div>
+              <div className="flex items-center justify-between">
+                <label className={`${isMobile || isTablet ? 'text-xs' : 'text-sm'} font-medium text-cloud`}>
+                  Always show this preview
+                </label>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={alwaysShowPreview}
+                    onChange={(e) => setAlwaysShowPreview(e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className={`${isMobile || isTablet ? 'w-10 h-5 after:h-4 after:w-4' : 'w-11 h-6 after:h-5 after:w-5'} bg-gray-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-goldBright rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:transition-all peer-checked:bg-goldBright`}></div>
+                </label>
+              </div>
+              {!isMobile && !isTablet && (
+                <p className="text-xs text-cloud/50 mt-1">
                   Show this setup screen before joining meetings
                 </p>
-              </div>
-
-              {/* Start/Join Button */}
-              <button
-                onClick={handleStart}
-                disabled={isStarting}
-                className="w-full bg-goldBright text-midnight py-2.5 rounded-lg font-semibold hover:bg-yellow-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm mt-4"
-              >
-                {isStarting ? 'Joining...' : (isParticipant ? 'Join Meeting' : 'Start')}
-              </button>
+              )}
             </div>
+
+            {/* Start/Join Button */}
+            <button
+              onClick={handleStart}
+              disabled={isStarting}
+              className={`w-full bg-goldBright text-midnight ${isMobile || isTablet ? 'py-2.5 text-sm' : 'py-3 text-base'} rounded-lg font-semibold hover:bg-yellow-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${isMobile || isTablet ? 'mt-2' : 'mt-6'}`}
+            >
+              {isStarting ? 'Joining...' : (isParticipant ? 'Join Meeting' : 'Start')}
+            </button>
           </div>
         </div>
       </div>

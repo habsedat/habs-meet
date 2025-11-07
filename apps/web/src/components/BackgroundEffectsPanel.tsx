@@ -3,7 +3,7 @@ import { LocalVideoTrack } from 'livekit-client';
 import { defaultMediaService, DefaultMedia } from '../lib/defaultMediaService';
 import { fileStorageService, UploadedFile, FileUploadProgress } from '../lib/fileStorageService';
 import { useAuth } from '../contexts/AuthContext';
-import toast from 'react-hot-toast';
+import toast from '../lib/toast';
 
 interface BackgroundEffectsPanelProps {
       onClose: () => void;
