@@ -198,7 +198,7 @@ const PopupMeetingWindow: React.FC<PopupMeetingWindowProps> = ({ roomId, onClose
     const unsubscribeParticipant = onSnapshot(participantRef, (participantDoc) => {
       if (participantDoc.exists()) {
         const participantData = participantDoc.data() as any;
-        setIsHost(participantData.role === 'host');
+        setIsHost(participantData.role === 'host' || participantData.role === 'cohost');
       }
     });
 

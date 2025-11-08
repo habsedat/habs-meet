@@ -9,7 +9,8 @@ service cloud.firestore {
     function isHost(roomId) {
       return isAuthenticated() && 
         exists(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid)).data.role == 'host';
+        (get(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid)).data.role == 'host' ||
+         get(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid)).data.role == 'cohost');
     }
     
     function isParticipant(roomId) {
@@ -75,7 +76,8 @@ service cloud.firestore {
     match /recordings/{recId} {
       allow read: if isAuthenticated() && 
         exists(/databases/$(database)/documents/rooms/$(resource.data.roomId)/participants/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/rooms/$(resource.data.roomId)/participants/$(request.auth.uid)).data.role == 'host';
+        (get(/databases/$(database)/documents/rooms/$(resource.data.roomId)/participants/$(request.auth.uid)).data.role == 'host' ||
+         get(/databases/$(database)/documents/rooms/$(resource.data.roomId)/participants/$(request.auth.uid)).data.role == 'cohost');
       allow create: if isAuthenticated(); // Only functions can create recordings
       allow update, delete: if false; // Recordings are immutable
     }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useLiveKit } from '../contexts/LiveKitContext';
@@ -37,6 +37,8 @@ const RoomPage: React.FC = () => {
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [lastSeenMessageId, setLastSeenMessageId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('speaker');
+  const autoRemovalRef = useRef<Set<string>>(new Set());
+  const MAX_PARTICIPANTS_PER_HOST = 6;
 
   // Load room data
   useEffect(() => {
@@ -72,7 +74,7 @@ const RoomPage: React.FC = () => {
     const unsubscribeParticipant = onSnapshot(participantRef, (participantDoc) => {
       if (participantDoc.exists()) {
         const participantData = participantDoc.data() as any;
-        setIsHost(participantData.role === 'host');
+        setIsHost(participantData.role === 'host' || participantData.role === 'cohost');
       }
     });
 
@@ -99,7 +101,9 @@ const RoomPage: React.FC = () => {
 
   // Separate waiting participants for host
   const waitingParticipants = participants.filter(p => p.lobbyStatus === 'waiting');
-  const admittedParticipants = participants.filter(p => !p.lobbyStatus || p.lobbyStatus === 'admitted');
+  const admittedParticipants = participants.filter(
+    (p) => (!p.lobbyStatus || p.lobbyStatus === 'admitted') && p.isActive !== false
+  );
 
   // Load chat messages and track unread count
   useEffect(() => {
@@ -169,11 +173,70 @@ const RoomPage: React.FC = () => {
           navigate('/home');
           return;
         }
+
+        if (participantData.removalReason === 'removed_by_host' || participantData.removalReason === 'capacity_limit') {
+          const message = participantData.removalReason === 'capacity_limit'
+            ? 'You were removed because the meeting reached its capacity limit.'
+            : 'The host removed you from this meeting.';
+          toast.error(message);
+          disconnect();
+          navigate('/home');
+          return;
+        }
       }
     });
 
     return unsubscribe;
-  }, [roomId, user, navigate]);
+  }, [roomId, user, navigate, disconnect]);
+
+  // Automatically enforce capacity limit when acting as host/co-host
+  useEffect(() => {
+    if (!isHost || !roomId || admittedParticipants.length === 0) {
+      return;
+    }
+
+    const activeHosts = admittedParticipants.filter(
+      (participant) => (participant.role === 'host' || participant.role === 'cohost') && participant.isActive !== false
+    );
+
+    if (activeHosts.length === 0) {
+      return;
+    }
+
+    const activeNonHosts = admittedParticipants.filter(
+      (participant) => participant.role !== 'host' && participant.role !== 'cohost'
+    );
+
+    const allowedNonHosts = activeHosts.length * MAX_PARTICIPANTS_PER_HOST;
+
+    if (activeNonHosts.length <= allowedNonHosts) {
+      return;
+    }
+
+    const overflow = activeNonHosts.length - allowedNonHosts;
+    const sortedByJoin = [...activeNonHosts].sort((a, b) => {
+      const aJoined = a.joinedAt?.toMillis ? a.joinedAt.toMillis() : 0;
+      const bJoined = b.joinedAt?.toMillis ? b.joinedAt.toMillis() : 0;
+      return aJoined - bJoined;
+    });
+
+    const participantsToRemove = sortedByJoin.slice(-overflow);
+
+    participantsToRemove.forEach(async (participant) => {
+      if (autoRemovalRef.current.has(participant.id)) {
+        return;
+      }
+      autoRemovalRef.current.add(participant.id);
+      try {
+        await api.removeParticipant(roomId, participant.id);
+        toast('Removed extra participant to keep meeting within host capacity', { icon: '⚖️' });
+      } catch (error: any) {
+        toast.error(error.message || 'Failed to enforce participant capacity');
+      } finally {
+        autoRemovalRef.current.delete(participant.id);
+      }
+    });
+  }, [isHost, admittedParticipants, roomId]);
 
   // Connect to LiveKit room (only if admitted)
   useEffect(() => {

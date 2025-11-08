@@ -16,74 +16,87 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
   roomId,
 }) => {
   const { user } = useAuth();
-  const [isProcessing, setIsProcessing] = useState<string | null>(null);
+  const [actionState, setActionState] = useState<{ id: string; action: string } | null>(null);
+
+  const startAction = (id: string, action: string) => setActionState({ id, action });
+  const stopAction = () => setActionState(null);
+  const isProcessing = (id: string, action: string) => actionState?.id === id && actionState?.action === action;
   
   // Get all participants including waiting ones for hosts
   const allParticipants = participants.filter(p => !p.leftAt);
   const waitingParticipants = allParticipants.filter(p => p.lobbyStatus === 'waiting');
-  const admittedParticipants = allParticipants.filter(p => !p.lobbyStatus || p.lobbyStatus === 'admitted');
+  const admittedParticipants = allParticipants.filter(p => (!p.lobbyStatus || p.lobbyStatus === 'admitted') && p.isActive !== false);
 
-  const handlePromote = async (participantId: string, newRole: 'speaker' | 'viewer') => {
+  const handleSetRole = async (
+    participantId: string,
+    newRole: 'host' | 'cohost' | 'speaker' | 'viewer'
+  ) => {
     if (!isHost) return;
-    
+
+    startAction(participantId, `role-${newRole}`);
     try {
-      // TODO: Implement participant role change via API
-      console.log(`Promoting ${participantId} to ${newRole}`);
-    } catch (error) {
-      console.error('Failed to promote participant:', error);
+      await api.updateParticipantRole(roomId, participantId, newRole);
+      toast.success(`Participant updated to ${newRole === 'cohost' ? 'Co-Host' : newRole}`);
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to update participant role');
+    } finally {
+      stopAction();
     }
   };
 
   const handleRemove = async (participantId: string) => {
     if (!isHost) return;
-    
+
+    startAction(participantId, 'remove');
     try {
-      // TODO: Implement participant removal via API
-      console.log(`Removing ${participantId}`);
-    } catch (error) {
-      console.error('Failed to remove participant:', error);
+      await api.removeParticipant(roomId, participantId);
+      toast.success('Participant removed from meeting');
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to remove participant');
+    } finally {
+      stopAction();
     }
   };
 
   const handleAdmit = async (participantId: string) => {
     if (!isHost) return;
     
-    setIsProcessing(participantId);
+    startAction(participantId, 'admit');
     try {
       await api.admitParticipant(roomId, participantId);
       toast.success('Participant admitted');
     } catch (error: any) {
       toast.error('Failed to admit participant: ' + error.message);
     } finally {
-      setIsProcessing(null);
+      stopAction();
     }
   };
 
   const handleDeny = async (participantId: string) => {
     if (!isHost) return;
     
-    setIsProcessing(participantId);
+    startAction(participantId, 'deny');
     try {
       await api.denyParticipant(roomId, participantId);
       toast.success('Participant denied');
     } catch (error: any) {
       toast.error('Failed to deny participant: ' + error.message);
     } finally {
-      setIsProcessing(null);
+      stopAction();
     }
   };
 
   const handleAdmitAll = async () => {
     if (!isHost || waitingParticipants.length === 0) return;
     
-    setIsProcessing('all');
+    startAction('all', 'admit-all');
     try {
       await api.admitAllParticipants(roomId);
       toast.success(`Admitted ${waitingParticipants.length} participant(s)`);
     } catch (error: any) {
       toast.error('Failed to admit participants: ' + error.message);
     } finally {
-      setIsProcessing(null);
+      stopAction();
     }
   };
 
@@ -116,10 +129,10 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
               </div>
               <button
                 onClick={handleAdmitAll}
-                disabled={isProcessing === 'all'}
+                disabled={isProcessing('all', 'admit-all')}
                 className="px-3 py-1 bg-techBlue text-cloud rounded-lg hover:bg-techBlue/90 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {isProcessing === 'all' ? 'Admitting...' : 'Admit All'}
+                {isProcessing('all', 'admit-all') ? 'Admitting...' : 'Admit All'}
               </button>
             </div>
             <div className="space-y-2">
@@ -144,17 +157,17 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
                   <div className="flex items-center space-x-1">
                     <button
                       onClick={() => handleAdmit(participant.id)}
-                      disabled={isProcessing === participant.id}
+                      disabled={isProcessing(participant.id, 'admit')}
                       className="px-3 py-1 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      Admit
+                      {isProcessing(participant.id, 'admit') ? 'Admitting...' : 'Admit'}
                     </button>
                     <button
                       onClick={() => handleDeny(participant.id)}
-                      disabled={isProcessing === participant.id}
+                      disabled={isProcessing(participant.id, 'deny')}
                       className="px-3 py-1 bg-red-600 text-white rounded text-xs font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      Deny
+                      {isProcessing(participant.id, 'deny') ? 'Denying...' : 'Deny'}
                     </button>
                   </div>
                 </div>
@@ -199,6 +212,11 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
                             Host
                           </span>
                         )}
+                        {participant.role === 'cohost' && (
+                          <span className="bg-blue-200 text-blue-900 px-2 py-1 rounded text-xs font-medium">
+                            Co-Host
+                          </span>
+                        )}
                         {participant.role === 'speaker' && (
                           <span className="bg-violetDeep text-cloud px-2 py-1 rounded text-xs font-medium">
                             Speaker
@@ -215,35 +233,93 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
                   {canModify && (
                     <div className="flex items-center space-x-1">
                       {participant.role === 'viewer' && (
-                        <button
-                          onClick={() => handlePromote(participant.id, 'speaker')}
-                          className="p-1 text-violetDeep hover:bg-violetDeep hover:text-cloud rounded transition-colors"
-                          title="Promote to speaker"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 11l5-5m0 0l5 5m-5-5v12" />
-                          </svg>
-                        </button>
+                        <>
+                          <button
+                            onClick={() => handleSetRole(participant.id, 'speaker')}
+                            disabled={isProcessing(participant.id, 'role-speaker')}
+                            className="p-1 text-violetDeep hover:bg-violetDeep hover:text-cloud rounded transition-colors disabled:opacity-50"
+                            title="Promote to speaker"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 11l5-5m0 0l5 5m-5-5v12" />
+                            </svg>
+                          </button>
+                          <button
+                            onClick={() => handleSetRole(participant.id, 'cohost')}
+                            disabled={isProcessing(participant.id, 'role-cohost')}
+                            className="p-1 text-blue-600 hover:bg-blue-600 hover:text-cloud rounded transition-colors disabled:opacity-50"
+                            title="Make Co-Host"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                            </svg>
+                          </button>
+                        </>
                       )}
                       {participant.role === 'speaker' && (
-                        <button
-                          onClick={() => handlePromote(participant.id, 'viewer')}
-                          className="p-1 text-gray-600 hover:bg-gray-600 hover:text-cloud rounded transition-colors"
-                          title="Demote to viewer"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 13l-5 5m0 0l-5-5m5 5V6" />
-                          </svg>
-                        </button>
+                        <>
+                          <button
+                            onClick={() => handleSetRole(participant.id, 'viewer')}
+                            disabled={isProcessing(participant.id, 'role-viewer')}
+                            className="p-1 text-gray-600 hover:bg-gray-600 hover:text-cloud rounded transition-colors disabled:opacity-50"
+                            title="Demote to viewer"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 13l-5 5m0 0l-5-5m5 5V6" />
+                            </svg>
+                          </button>
+                          <button
+                            onClick={() => handleSetRole(participant.id, 'cohost')}
+                            disabled={isProcessing(participant.id, 'role-cohost')}
+                            className="p-1 text-blue-600 hover:bg-blue-600 hover:text-cloud rounded transition-colors disabled:opacity-50"
+                            title="Make Co-Host"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                            </svg>
+                          </button>
+                        </>
+                      )}
+                      {participant.role === 'cohost' && (
+                        <>
+                          <button
+                            onClick={() => handleSetRole(participant.id, 'speaker')}
+                            disabled={isProcessing(participant.id, 'role-speaker')}
+                            className="p-1 text-violetDeep hover:bg-violetDeep hover:text-cloud rounded transition-colors disabled:opacity-50"
+                            title="Demote to speaker"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 13l-5 5m0 0l-5-5m5 5V6" />
+                            </svg>
+                          </button>
+                          <button
+                            onClick={() => handleSetRole(participant.id, 'viewer')}
+                            disabled={isProcessing(participant.id, 'role-viewer')}
+                            className="p-1 text-gray-600 hover:bg-gray-600 hover:text-cloud rounded transition-colors disabled:opacity-50"
+                            title="Demote to viewer"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 13l-5 5m0 0l-5-5m5 5V6" />
+                            </svg>
+                          </button>
+                        </>
                       )}
                       <button
                         onClick={() => handleRemove(participant.id)}
+                        disabled={isProcessing(participant.id, 'remove')}
                         className="p-1 text-red-600 hover:bg-red-600 hover:text-cloud rounded transition-colors"
                         title="Remove participant"
                       >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
+                        {isProcessing(participant.id, 'remove') ? (
+                          <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a10 10 0 00-10 10h4z" />
+                          </svg>
+                        ) : (
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        )}
                       </button>
                     </div>
                   )}

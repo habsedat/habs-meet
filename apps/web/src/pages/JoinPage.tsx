@@ -273,7 +273,7 @@ const JoinPage: React.FC = () => {
     // Check if room is locked - block all joins (except host with host key which is already checked in scheduled meeting flow)
     if (roomData.status === 'locked') {
       // Only allow if user is the host (ownerUid matches)
-      const isHost = tokenResponse.role === 'host' || roomData.createdBy === user.uid;
+      const isHost = tokenResponse.role === 'host' || tokenResponse.role === 'cohost' || roomData.createdBy === user.uid;
       if (!isHost) {
         toast.error('This meeting is locked. The host has locked the meeting. Please wait for the host to unlock it.');
         navigate('/home');
@@ -283,7 +283,7 @@ const JoinPage: React.FC = () => {
 
     // Check if waiting room is enabled
     const waitingRoomEnabled = tokenResponse.meeting?.lobbyEnabled || false;
-    const isHost = tokenResponse.role === 'host';
+    const isHost = tokenResponse.role === 'host' || tokenResponse.role === 'cohost';
 
     // Add participant to meeting
     const participantRef = doc(db, 'rooms', tokenResponse.roomName, 'participants', user.uid);
@@ -294,7 +294,7 @@ const JoinPage: React.FC = () => {
     await setDoc(participantRef, {
       uid: user.uid,
       displayName: userProfile.displayName || user.email?.split('@')[0] || 'User',
-      role: tokenResponse.role === 'host' ? 'host' : 'viewer',
+      role: tokenResponse.role === 'host' ? 'host' : tokenResponse.role === 'cohost' ? 'cohost' : 'viewer',
       isActive: true,
       isMuted: false,
       isVideoEnabled: true,
@@ -309,7 +309,7 @@ const JoinPage: React.FC = () => {
     sessionStorage.setItem('currentRoomId', tokenResponse.roomName);
     sessionStorage.setItem('meetingToken', tokenResponse.token);
     sessionStorage.setItem('isScheduledMeeting', 'true');
-    sessionStorage.setItem('isParticipant', tokenResponse.role === 'host' ? 'false' : 'true');
+    sessionStorage.setItem('isParticipant', (tokenResponse.role === 'host' || tokenResponse.role === 'cohost') ? 'false' : 'true');
     sessionStorage.setItem('lobbyStatus', lobbyStatus);
 
     // If waiting in lobby, navigate to waiting room page

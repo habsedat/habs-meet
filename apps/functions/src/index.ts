@@ -77,7 +77,116 @@ const verifyHost = async (roomId: string, uid: string): Promise<boolean> => {
   }
 
   const participantData = participantDoc.data();
-  return participantData?.role === 'host';
+  return participantData?.role === 'host' || participantData?.role === 'cohost';
+};
+
+const MAX_PARTICIPANTS_PER_HOST = 6;
+
+type ParticipantData = {
+  id: string;
+  role?: string;
+  isActive?: boolean;
+  lobbyStatus?: string;
+  joinedAt?: FirebaseFirestore.Timestamp;
+  [key: string]: any;
+};
+
+const isHostRole = (role?: string) => role === 'host' || role === 'cohost';
+
+const isActiveParticipant = (participant: any) => {
+  const lobbyStatus = participant?.lobbyStatus;
+  const isAdmitted = !lobbyStatus || lobbyStatus === 'admitted';
+  const isActive = participant?.isActive !== false && !participant?.leftAt;
+  return isAdmitted && isActive;
+};
+
+const getParticipantStats = async (roomId: string) => {
+  const snapshot = await admin.firestore()
+    .collection('rooms')
+    .doc(roomId)
+    .collection('participants')
+    .get();
+
+  const participants = snapshot.docs.map((doc) => ({ id: doc.id, ...(doc.data() as FirebaseFirestore.DocumentData) })) as ParticipantData[];
+  const activeHosts = participants.filter((participant) => isHostRole(participant.role) && isActiveParticipant(participant));
+  const activeNonHosts = participants.filter((participant) => !isHostRole(participant.role) && isActiveParticipant(participant));
+
+  const allowedNonHosts = activeHosts.length * MAX_PARTICIPANTS_PER_HOST;
+
+  return {
+    participants,
+    activeHosts,
+    activeNonHosts,
+    allowedNonHosts,
+  };
+};
+
+const ensureCapacity = async (roomId: string) => {
+  const { activeHosts, activeNonHosts, allowedNonHosts } = await getParticipantStats(roomId);
+
+  if (activeHosts.length === 0) {
+    // No host in the meeting, remove all non-host participants
+    if (activeNonHosts.length === 0) {
+      return;
+    }
+    const batch = admin.firestore().batch();
+    const participantsCollection = admin.firestore()
+      .collection('rooms')
+      .doc(roomId)
+      .collection('participants');
+    activeNonHosts.forEach((participant) => {
+      const participantRef = participantsCollection.doc(participant.id);
+      batch.update(participantRef, {
+        isActive: false,
+        leftAt: admin.firestore.FieldValue.serverTimestamp(),
+        lobbyStatus: 'removed',
+        removalReason: 'capacity_limit',
+        removedBy: 'system',
+        removedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    });
+    await batch.commit();
+    return;
+  }
+
+  if (activeNonHosts.length <= allowedNonHosts) {
+    return;
+  }
+
+  const overflow = activeNonHosts.length - allowedNonHosts;
+
+  // Remove the most recently joined non-host participants beyond the capacity
+  const sortedNonHosts = [...activeNonHosts].sort((a, b) => {
+    const aJoined = a.joinedAt?.toMillis ? a.joinedAt.toMillis() : 0;
+    const bJoined = b.joinedAt?.toMillis ? b.joinedAt.toMillis() : 0;
+    return aJoined - bJoined;
+  });
+
+  const participantsToRemove = sortedNonHosts.slice(-overflow);
+  const batch = admin.firestore().batch();
+  const participantsCollection = admin.firestore()
+    .collection('rooms')
+    .doc(roomId)
+    .collection('participants');
+
+  participantsToRemove.forEach((participant) => {
+    const participantRef = participantsCollection.doc(participant.id);
+    batch.update(participantRef, {
+      isActive: false,
+      leftAt: admin.firestore.FieldValue.serverTimestamp(),
+      lobbyStatus: 'removed',
+      removalReason: 'capacity_limit',
+      removedBy: 'system',
+      removedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+
+  await batch.commit();
+};
+
+const hasOtherActiveHost = async (roomId: string, excludeParticipantId: string): Promise<boolean> => {
+  const { activeHosts } = await getParticipantStats(roomId);
+  return activeHosts.some((participant) => participant.id !== excludeParticipantId);
 };
 
 const signInviteToken = (inviteId: string, roomId: string, role: string, expiresAt: string): string => {
@@ -956,6 +1065,8 @@ export const admitParticipant = functions.https.onRequest(async (req, res) => {
         admittedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
+      await ensureCapacity(roomId);
+
       return res.json({ success: true, message: 'Participant admitted' });
     } catch (error: any) {
       console.error('Error admitting participant:', error);
@@ -1048,12 +1159,158 @@ export const admitAllParticipants = functions.https.onRequest(async (req, res) =
 
       await batch.commit();
 
+      await ensureCapacity(roomId);
+
       return res.json({ 
         success: true, 
         message: `Admitted ${participantsSnapshot.docs.length} participant(s)` 
       });
     } catch (error: any) {
       console.error('Error admitting all participants:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  });
+});
+
+// Firestore trigger to enforce capacity on participant changes
+export const enforceParticipantCapacity = functions.firestore
+  .document('rooms/{roomId}/participants/{participantId}')
+  .onWrite(async (_change, context) => {
+    const { roomId } = context.params as { roomId: string };
+    try {
+      await ensureCapacity(roomId);
+    } catch (error) {
+      console.error('Error enforcing participant capacity:', error);
+    }
+  });
+
+// POST /api/meet/remove-participant
+export const removeParticipant = functions.https.onRequest(async (req, res) => {
+  return corsHandler(req, res, async () => {
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
+    }
+
+    try {
+      const user = await verifyAuth(req);
+      const { roomId, participantId } = req.body;
+
+      if (!roomId || !participantId) {
+        return res.status(400).json({ error: 'Missing roomId or participantId' });
+      }
+
+      if (participantId === user.uid) {
+        return res.status(400).json({ error: 'You cannot remove yourself from the meeting' });
+      }
+
+      const isHost = await verifyHost(roomId, user.uid);
+      if (!isHost) {
+        return res.status(403).json({ error: 'Only hosts can remove participants' });
+      }
+
+      const participantRef = admin.firestore()
+        .collection('rooms')
+        .doc(roomId)
+        .collection('participants')
+        .doc(participantId);
+
+      const participantDoc = await participantRef.get();
+      if (!participantDoc.exists) {
+        return res.status(404).json({ error: 'Participant not found' });
+      }
+
+      const participantData = participantDoc.data();
+
+      if (isHostRole(participantData?.role)) {
+        const hasAnotherHost = await hasOtherActiveHost(roomId, participantId);
+        if (!hasAnotherHost) {
+          return res.status(400).json({ error: 'Cannot remove the last host. Assign another co-host first.' });
+        }
+      }
+
+      await participantRef.update({
+        isActive: false,
+        leftAt: admin.firestore.FieldValue.serverTimestamp(),
+        lobbyStatus: 'removed',
+        removalReason: 'removed_by_host',
+        removedBy: user.uid,
+        removedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      await ensureCapacity(roomId);
+
+      return res.json({ success: true, message: 'Participant removed' });
+    } catch (error: any) {
+      console.error('Error removing participant:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  });
+});
+
+// POST /api/meet/update-role
+export const updateParticipantRole = functions.https.onRequest(async (req, res) => {
+  return corsHandler(req, res, async () => {
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
+    }
+
+    try {
+      const user = await verifyAuth(req);
+      const { roomId, participantId, role } = req.body;
+
+      if (!roomId || !participantId || !role) {
+        return res.status(400).json({ error: 'Missing roomId, participantId or role' });
+      }
+
+      const allowedRoles = ['host', 'cohost', 'speaker', 'viewer'];
+      if (!allowedRoles.includes(role)) {
+        return res.status(400).json({ error: 'Invalid role specified' });
+      }
+
+      const isHost = await verifyHost(roomId, user.uid);
+      if (!isHost) {
+        return res.status(403).json({ error: 'Only hosts can update participant roles' });
+      }
+
+      const participantRef = admin.firestore()
+        .collection('rooms')
+        .doc(roomId)
+        .collection('participants')
+        .doc(participantId);
+
+      const participantDoc = await participantRef.get();
+      if (!participantDoc.exists) {
+        return res.status(404).json({ error: 'Participant not found' });
+      }
+
+      const participantData = participantDoc.data();
+      const wasHost = isHostRole(participantData?.role);
+      const willBeHost = isHostRole(role);
+
+      if (wasHost && !willBeHost) {
+        const hasAnotherHost = await hasOtherActiveHost(roomId, participantId);
+        if (!hasAnotherHost) {
+          return res.status(400).json({ error: 'Meeting must have at least one host' });
+        }
+      }
+
+      const updates: FirebaseFirestore.UpdateData<FirebaseFirestore.DocumentData> = {
+        role,
+        lastSeen: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      if (willBeHost) {
+        updates.lobbyStatus = 'admitted';
+        updates.isActive = true;
+      }
+
+      await participantRef.update(updates);
+
+      await ensureCapacity(roomId);
+
+      return res.json({ success: true, message: 'Participant role updated' });
+    } catch (error: any) {
+      console.error('Error updating participant role:', error);
       return res.status(500).json({ error: error.message });
     }
   });
@@ -1094,6 +1351,10 @@ export const api = functions.https.onRequest(async (req, res) => {
       return denyParticipant(req, res);
     } else if (path === '/api/lobby/admit-all' && method === 'POST') {
       return admitAllParticipants(req, res);
+    } else if (path === '/api/meet/remove-participant' && method === 'POST') {
+      return removeParticipant(req, res);
+    } else if (path === '/api/meet/update-role' && method === 'POST') {
+      return updateParticipantRole(req, res);
     } else {
       console.log('[API Router] No route found for:', path);
       return res.status(404).json({ error: 'Endpoint not found' });
