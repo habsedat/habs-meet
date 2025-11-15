@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import BiometricAuth from '../components/BiometricAuth';
-import toast from 'react-hot-toast';
+import toast from '../lib/toast';
 
 const AuthPage: React.FC = () => {
   const { signIn, signUp, loading, user } = useAuth();
@@ -130,11 +130,13 @@ const AuthPage: React.FC = () => {
       <div className="w-full max-w-md">
         {/* Brand Logo */}
         <div className="text-center mb-8">
-          <div className="w-16 h-16 bg-gradient-to-br from-techBlue to-violetDeep rounded-xl flex items-center justify-center mx-auto mb-4">
-            <span className="text-2xl font-bold text-cloud">H</span>
-          </div>
+          <img 
+            src="/logo.png" 
+            alt="Habs Meet Logo" 
+            className="w-16 h-16 mx-auto mb-4 object-contain"
+          />
           <h1 className="text-3xl font-bold text-cloud font-brand">Habs Meet</h1>
-          <p className="text-gray-400 mt-2">Professional video meetings</p>
+          <p className="text-gray-400 mt-2">Premium video meetings</p>
         </div>
 
         {/* Auth Form */}
@@ -146,7 +148,7 @@ const AuthPage: React.FC = () => {
             </h2>
             <p className="text-gray-600 mt-2">
               {isSignUp 
-                ? 'Sign up to start hosting professional meetings' 
+                ? 'Sign up to start hosting premium meetings' 
                 : 'Sign in to your account'
               }
             </p>

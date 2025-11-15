@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import toast from 'react-hot-toast';
+import toast from '../lib/toast';
 
 interface ShareScreenProps {
   onScreenShareStart?: () => void;
@@ -18,9 +18,33 @@ const ShareScreen: React.FC<ShareScreenProps> = ({
 
   useEffect(() => {
     // Check if screen sharing is supported
-    if (navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function') {
-      setIsSupported(true);
+    // First check if the browser API exists
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getDisplayMedia !== 'function') {
+      setIsSupported(false);
+      return;
     }
+
+    // Check if it's a mobile device (phone or tablet)
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    
+    // Check screen size for tablets
+    const isTablet = typeof window !== 'undefined' && 
+                     window.matchMedia('(max-width: 1024px)').matches && 
+                     !window.matchMedia('(max-width: 768px)').matches;
+    
+    // Check if it's specifically a tablet (iPad detection)
+    const isiPad = /iPad/.test(navigator.userAgent) || 
+                   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+    // Screen sharing is not reliably supported on phones and tablets
+    // Only enable on desktop/laptop devices
+    if (isMobile || isTablet || isiPad) {
+      setIsSupported(false);
+      return;
+    }
+
+    // Desktop/laptop devices should support screen sharing
+    setIsSupported(true);
   }, []);
 
   const handleStartScreenShare = async () => {

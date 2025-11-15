@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import toast from 'react-hot-toast';
+import toast from '../lib/toast';
 
 const EmailVerificationPage: React.FC = () => {
   const { user, sendEmailVerification, logout } = useAuth();

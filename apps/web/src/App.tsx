@@ -1,5 +1,4 @@
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
-import { Toaster } from 'react-hot-toast';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { LiveKitProvider } from './contexts/LiveKitContext';
 import AuthPage from './pages/AuthPage';
@@ -10,8 +9,10 @@ import HistoryPage from './pages/HistoryPage';
 import BrandPage from './pages/BrandPage';
 import InvitePage from './pages/InvitePage';
 import JoinPage from './pages/JoinPage';
+import WaitingRoomPage from './pages/WaitingRoomPage';
 import AdminPage from './pages/AdminPage';
 import ProtectedRoute from './components/ProtectedRoute';
+import SEOHead from './components/SEOHead';
 
 function AppRoutes() {
   const { loading } = useAuth();
@@ -32,6 +33,7 @@ function AppRoutes() {
 
   return (
     <div className="min-h-screen bg-midnight text-cloud">
+      <SEOHead />
       <Routes>
         <Route path="/" element={<AuthPage />} />
         <Route path="/home" element={
@@ -45,6 +47,14 @@ function AppRoutes() {
           element={
             <ProtectedRoute>
               <JoinPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/waiting-room"
+          element={
+            <ProtectedRoute>
+              <WaitingRoomPage />
             </ProtectedRoute>
           }
         />
@@ -82,17 +92,6 @@ function AppRoutes() {
           }
         />
       </Routes>
-      <Toaster
-        position="top-right"
-        toastOptions={{
-          duration: 4000,
-          style: {
-            background: '#0E0E10',
-            color: '#F5F5F5',
-            border: '1px solid #0E3A8A',
-          },
-        }}
-      />
     </div>
   );
 }

@@ -3,7 +3,7 @@ import { LocalVideoTrack } from 'livekit-client';
 import { defaultMediaService, DefaultMedia } from '../lib/defaultMediaService';
 import { fileStorageService, UploadedFile, FileUploadProgress } from '../lib/fileStorageService';
 import { useAuth } from '../contexts/AuthContext';
-import toast from 'react-hot-toast';
+import toast from '../lib/toast';
 
 interface BackgroundEffectsPanelProps {
       onClose: () => void;
@@ -91,7 +91,9 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
       element.muted = true; // helps some browsers when the panel tries to render
       element.style.width = '100%';
       element.style.height = '100%';
-      element.style.objectFit = 'cover';
+      element.style.objectFit = 'contain'; // Show full video without cropping
+      element.style.objectPosition = 'center';
+      element.style.backgroundColor = '#000';
       videoPreviewRef.current.appendChild(element);
     }
 
