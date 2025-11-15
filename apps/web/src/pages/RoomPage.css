@@ -1,19 +1,243 @@
-/* RoomPage specific styles */
+/* ✅ COMPREHENSIVE BORDER REMOVAL - ALL CONTAINERS AND WRAPPERS */
+/* Remove borders from EVERY possible container that wraps video tiles */
+.room-container,
+.room-page,
+.room-layout,
+.lk-layout,
+.lk-layout-wrapper,
+.lk-video-grid,
+.video-stage,
+.gallery-view,
+.gallery-grid,
+.lk-participant-layout,
+.video-tile,
+.participant-tile,
+.lk-participant-tile,
+.lk-video-container,
+.lk-participant-media,
+.video-grid-wrapper,
+.video-grid,
+[class*="room-container"],
+[class*="room-page"],
+[class*="room-layout"],
+[class*="lk-layout"],
+[class*="lk-video"],
+[class*="video-stage"],
+[class*="gallery"],
+[class*="participant-tile"],
+[class*="video-tile"],
+/* ✅ RoomPage wrapper divs that contain MeetingShell */
+div[class*="flex-1"][class*="flex"][class*="overflow"],
+div[class*="flex"][class*="flex-col"][class*="overflow"] {
+  border: none !important;
+  border-left: none !important;
+  border-right: none !important;
+  border-top: none !important;
+  border-bottom: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  outline: none !important;
+  outline-width: 0 !important;
+  outline-style: none !important;
+  outline-color: transparent !important;
+  box-shadow: none !important;
+  -webkit-box-shadow: none !important;
+  -moz-box-shadow: none !important;
+  gap: 0 !important; /* NO GAPS */
+  grid-gap: 0 !important; /* NO GRID GAPS */
+  background: transparent !important; /* NO background on containers */
+  background-color: transparent !important; /* NO background color */
+}
+
+/* RoomPage specific styles - ABSOLUTELY NO BORDERS - ALL VIEWS (Zoom-style) */
 .video-container {
-  position: relative;
-  background: #1a1a1a;
-  border-radius: 8px;
-  overflow: hidden;
+  position: relative !important;
+  background: transparent !important;
+  border: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  border-left: none !important;
+  border-right: none !important;
+  border-top: none !important;
+  border-bottom: none !important;
+  border-radius: 0 !important;
+  outline: none !important;
+  outline-width: 0 !important;
+  box-shadow: none !important;
+  overflow: hidden !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
 }
 
+/* ✅ GALLERY VIEW: NUCLEAR OPTION - REMOVE ALL BORDERS FROM EVERYTHING */
+/* Maximum specificity - target EVERY element in Gallery view */
+.video-grid-wrapper,
+.video-grid-wrapper *,
+.video-grid-wrapper *::before,
+.video-grid-wrapper *::after,
+.video-grid,
+.video-grid *,
+.video-grid *::before,
+.video-grid *::after,
+.video-grid-wrapper .video-container,
+.video-grid-wrapper .video-container *,
+.video-grid-wrapper .video-container *::before,
+.video-grid-wrapper .video-container *::after,
+.video-grid-wrapper .video-container > *,
+.video-grid-wrapper .video-container > div,
+.video-grid-wrapper .video-container > div > *,
+.video-grid-wrapper .video-container > div > * > *,
+.video-grid-wrapper .video-container video,
+.video-grid-wrapper .video-container div[data-video-container],
+.video-grid-wrapper .video-container div[data-video-container] *,
+.video-grid-wrapper .video-grid > div,
+.video-grid-wrapper .video-grid > div > *,
+.video-grid-wrapper .video-grid > div > * > *,
+.video-grid-wrapper .video-grid > div .video-container,
+.video-grid-wrapper .video-grid > div .video-container *,
+.video-grid-wrapper .video-grid > div .video-container * > *,
+.video-grid-wrapper .video-container [class*="absolute"],
+.video-grid-wrapper .video-container div[style*="absolute"],
+.video-grid-wrapper .video-container button,
+.video-grid-wrapper .video-container span,
+.video-grid-wrapper .video-container div,
+div[class*="video-grid"],
+div[class*="video-grid"] *,
+div[class*="video-grid-wrapper"],
+div[class*="video-grid-wrapper"] * {
+  border: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  border-left: none !important;
+  border-right: none !important;
+  border-top: none !important;
+  border-bottom: none !important;
+  border-radius: 0 !important;
+  outline: none !important;
+  outline-width: 0 !important;
+  outline-style: none !important;
+  outline-color: transparent !important;
+  box-shadow: none !important;
+  -webkit-box-shadow: none !important;
+  -moz-box-shadow: none !important;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+/* ✅ Ensure video-container is positioned relative so overlays are INSIDE */
+.video-grid-wrapper .video-container {
+  position: relative !important;
+  overflow: hidden !important;
+}
+
+/* ✅ Remove borders from name badge and mic icon overlays in Gallery */
+.video-grid-wrapper .video-container div[class*="absolute"][class*="bottom"],
+.video-grid-wrapper .video-container div[class*="absolute"][class*="left"],
+.video-grid-wrapper .video-container div[style*="bottom"],
+.video-grid-wrapper .video-container div[style*="left"] {
+  border: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  border-radius: 0 !important;
+  outline: none !important;
+  outline-width: 0 !important;
+  box-shadow: none !important;
+}
+
+/* ✅ Remove borders from all buttons and icons inside video tiles */
+.video-grid-wrapper .video-container button,
+.video-grid-wrapper .video-container svg,
+.video-grid-wrapper .video-container [class*="badge"],
+.video-grid-wrapper .video-container [class*="icon"] {
+  border: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  border-radius: 0 !important;
+  outline: none !important;
+  outline-width: 0 !important;
+  box-shadow: none !important;
+}
+
+/* Ensure video container inner div has NO background or borders */
+.video-container > div[data-video-container="true"] {
+  background: none !important;
+  background-color: transparent !important;
+  border: none !important;
+  border-width: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.video-container * {
+  border: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  border-radius: 0 !important;
+  outline: none !important;
+  outline-width: 0 !important;
+  box-shadow: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  background: transparent !important; /* Transparent - blue gradient shows through */
+  background-color: transparent !important;
+}
+
+/* Camera video – ABSOLUTELY NO BORDERS - ALL VIEWS (Zoom-style) */
+/* ✅ Transparent background - orientation-based object-fit handled by component */
 .video-container video {
-  width: 100%;
-  height: 100%;
-  object-fit: contain; /* Show full video without cropping */
-  object-position: center; /* Center the video */
-  background: #000; /* Black background for letterboxing if needed */
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important; /* Default to cover - component will override based on orientation */
+  object-position: center !important;
+  display: block !important;
+  border: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  border-radius: 0 !important;
+  outline: none !important;
+  outline-width: 0 !important;
+  box-shadow: none !important;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  background: transparent !important; /* Transparent - blue gradient shows through */
+  background-color: transparent !important;
 }
 
+/* ✅ Zoom-style Gallery: Video with transparent background - orientation-based object-fit */
+.video-grid-wrapper .video-container video {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important; /* Default to contain - component will override based on orientation */
+  object-position: center !important;
+  display: block !important;
+  border: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  border-radius: 0 !important;
+  outline: none !important;
+  outline-width: 0 !important;
+  box-shadow: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  background: transparent !important; /* Transparent - blue gradient shows through */
+  background-color: transparent !important;
+}
+
+/* Bottom overlay for name + icons */
 .participant-info {
   position: absolute;
   bottom: 0;
@@ -21,8 +245,8 @@
   right: 0;
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
   color: white;
-  padding: 8px 12px;
-  font-size: 14px;
+  padding: 6px 10px;
+  font-size: 13px;
 }
 
 .participant-status {
@@ -62,11 +286,86 @@
   }
 }
 
+/* Remove ALL borders from side panels, headers, and UI elements - ABSOLUTELY NO BORDERS */
+header,
+header *,
+[class*="border"],
+[class*="border-l"],
+[class*="border-r"],
+[class*="border-t"],
+[class*="border-b"],
+[class*="border-gray"],
+[class*="border-blue"] {
+  border: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  border-left: none !important;
+  border-right: none !important;
+  border-top: none !important;
+  border-bottom: none !important;
+  outline: none !important;
+  outline-width: 0 !important;
+  box-shadow: none !important;
+}
+
+/* Remove borders from side panel specifically */
+.absolute.right-0,
+[class*="bg-cloud"][class*="border"],
+div[class*="border-l"],
+div[class*="border-b"],
+div[class*="border-t"],
+div[class*="border-r"] {
+  border: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  border-left: none !important;
+  border-right: none !important;
+  border-top: none !important;
+  border-bottom: none !important;
+}
+
 /* Responsive video grid - handled in index.css */
 
+/* ✅ FINAL GLOBAL OVERRIDE: Remove ALL borders from video tiles - NO EXCEPTIONS */
+/* This is loaded after other styles to ensure NO borders survive */
+.video-tile,
+.participant-tile,
+.lk-participant-tile,
+.lk-video-container,
+.lk-participant-media,
+.video-container,
+.video-container *,
+[class*="video-tile"],
+[class*="participant-tile"],
+[class*="lk-participant"],
+[class*="lk-video"] {
+  border: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  border-left: none !important;
+  border-right: none !important;
+  border-top: none !important;
+  border-bottom: none !important;
+  outline: none !important;
+  outline-width: 0 !important;
+  box-shadow: none !important;
+}
 
-
-
-
-
-
+/* ✅ Remove borders from ALL states (hover, focus, active, selected, dragging) */
+.video-container:hover,
+.video-container:focus,
+.video-container:active,
+.video-container[class*="active"],
+.video-container[class*="selected"],
+.video-container[class*="primary"],
+.video-container[class*="hover"],
+.video-container[class*="dragging"],
+.video-container[class*="isDragging"],
+.video-container[class*="isHoverTarget"] {
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+}

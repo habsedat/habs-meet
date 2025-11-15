@@ -57,10 +57,18 @@ const MultiLayout: React.FC<MultiLayoutProps> = ({
 
   return (
     <div className="h-full w-full flex flex-col">
-      {/* Primary speaker - large top section */}
-      <div className="flex-1 min-h-0 relative mb-2">
+      {/* Primary speaker - reduced width, centered */}
+      <div className="flex-1 min-h-0 flex items-center justify-center mb-2">
         {primaryParticipant && (
-          <div className="absolute inset-0 transition-opacity duration-300">
+          <div 
+            className="relative transition-opacity duration-300"
+            style={{
+              width: '70%', /* Reduced width - 70% of container */
+              maxWidth: '1200px', /* Maximum width for very large screens */
+              height: '100%',
+              margin: '0 auto' /* Center horizontally */
+            }}
+          >
             <VideoTile
               participant={primaryParticipant}
               currentUserUid={currentUserUid}
@@ -72,13 +80,14 @@ const MultiLayout: React.FC<MultiLayoutProps> = ({
         )}
       </div>
 
-      {/* Secondary speakers - grid below */}
+      {/* Secondary speakers - grid below - NO BORDERS */}
       {activeSpeakers.length > 0 && (
         <div className="h-32 grid grid-cols-3 gap-2 px-2 pb-2">
           {activeSpeakers.map((participant) => (
             <div
               key={participant.identity || participant.sid}
-              className="rounded-lg overflow-hidden transition-transform hover:scale-105"
+              className="overflow-hidden transition-transform hover:scale-105"
+              style={{ borderRadius: 0, border: 'none' }}
             >
               <VideoTile
                 participant={participant}

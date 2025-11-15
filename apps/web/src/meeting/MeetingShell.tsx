@@ -27,17 +27,33 @@ const MeetingShell: React.FC<MeetingShellProps> = ({ viewMode }) => {
   const [spotlightId, setSpotlightId] = useState<string | null>(null);
   const [activeScreenShares, setActiveScreenShares] = useState<ActiveScreenShare[]>([]);
 
-  // Combine all participants
+  // Convert participants Map to array for proper reactivity tracking
+  const participantsArray = useMemo(() => {
+    return Array.from(participants.values());
+  }, [participants.size, Array.from(participants.keys()).join(',')]);
+
+  // Combine all participants - CRITICAL: Include ALL participants
   const allParticipants = useMemo(() => {
     const all: (LocalParticipant | RemoteParticipant)[] = [];
     if (localParticipant) {
       all.push(localParticipant);
     }
-    participants.forEach((p) => {
+    // Add all remote participants
+    participantsArray.forEach((p) => {
       all.push(p);
     });
+    
+    // Debug logging
+    console.log('[MeetingShell] 🔍 All participants:', {
+      total: all.length,
+      local: localParticipant ? 1 : 0,
+      remote: participantsArray.length,
+      participantIds: all.map(p => p.identity || p.sid),
+      participantNames: all.map(p => p.name || 'Unknown')
+    });
+    
     return all;
-  }, [localParticipant, participants]);
+  }, [localParticipant, participantsArray]);
 
   // Active speaker detection
   const speakerScores = useActiveSpeaker(room, localParticipant, participants);

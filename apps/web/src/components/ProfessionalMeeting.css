@@ -260,13 +260,39 @@
   @apply flex items-center space-x-2 w-full px-4 py-2 text-white hover:bg-gray-700 transition-colors;
 }
 
-/* Video Grid Enhancements */
+/* Video Grid Enhancements - Zoom-like borderless */
 .video-container {
-  @apply relative aspect-video bg-gray-900 rounded-lg overflow-hidden;
+  position: relative !important;
+  background: #0E0E10 !important; /* Match page background - seamless blend */
+  border: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  border-radius: 0 !important;
+  overflow: hidden !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  outline: none !important;
+  outline-width: 0 !important;
+  box-shadow: none !important;
+  width: 100% !important;
+  height: 100% !important;
 }
 
 .video-container video {
-  @apply w-full h-full object-cover;
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important; /* Show full camera - no cropping */
+  object-position: center !important;
+  background: transparent !important;
+  display: block !important;
+  border: none !important;
+  border-width: 0 !important;
+  border-radius: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  outline: none !important;
+  box-shadow: none !important;
 }
 
 .participant-info {

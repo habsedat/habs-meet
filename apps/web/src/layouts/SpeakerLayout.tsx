@@ -38,10 +38,18 @@ const SpeakerLayout: React.FC<SpeakerLayoutProps> = ({
 
   return (
     <div className="h-full w-full flex flex-col">
-      {/* Primary speaker - large, centered */}
-      <div className="flex-1 min-h-0 relative">
+      {/* Primary speaker - reduced width, centered */}
+      <div className="flex-1 min-h-0 flex items-center justify-center">
         {primaryParticipant && (
-          <div className="absolute inset-0 transition-opacity duration-300">
+          <div 
+            className="relative transition-opacity duration-300"
+            style={{
+              width: '70%', /* Reduced width - 70% of container */
+              maxWidth: '1200px', /* Maximum width for very large screens */
+              height: '100%',
+              margin: '0 auto' /* Center horizontally */
+            }}
+          >
             <VideoTile
               participant={primaryParticipant}
               currentUserUid={currentUserUid}
@@ -53,14 +61,15 @@ const SpeakerLayout: React.FC<SpeakerLayoutProps> = ({
         )}
       </div>
 
-      {/* Filmstrip - horizontal scrollable row at bottom */}
+      {/* Filmstrip - horizontal scrollable row at bottom - NO BORDERS */}
       {otherParticipants.length > 0 && (
-        <div className="h-24 bg-gray-900/50 border-t border-gray-700 overflow-x-auto overflow-y-hidden">
+        <div className="h-24 bg-gray-900/50 overflow-x-auto overflow-y-hidden" style={{ border: 'none', borderTop: 'none' }}>
           <div className="flex items-center h-full gap-2 px-2 py-2">
             {otherParticipants.map((participant) => (
               <div
                 key={participant.identity || participant.sid}
-                className="flex-shrink-0 w-32 h-full rounded-lg overflow-hidden transition-transform hover:scale-105"
+                className="flex-shrink-0 w-32 h-full overflow-hidden transition-transform hover:scale-105"
+                style={{ borderRadius: 0, border: 'none' }}
               >
                 <VideoTile
                   participant={participant}

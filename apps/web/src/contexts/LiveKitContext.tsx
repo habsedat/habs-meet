@@ -240,8 +240,10 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
               remoteParticipantsMap.set(participant.identity, participant);
             }
           });
-          setParticipants(remoteParticipantsMap);
+          // ✅ Force new Map reference to ensure React detects change
+          setParticipants(new Map(remoteParticipantsMap));
           setParticipantCount(newRoom.participants.size + 1);
+          console.log('[LiveKit] ✅✅✅ CONNECTED: Set', remoteParticipantsMap.size, 'remote participants in state');
 
         // ✅ SIMPLIFIED AND DIRECT: Subscribe to ALL tracks from ALL participants
         const subscribeToAll = () => {
@@ -316,8 +318,38 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
             const newMap = new Map(prev);
             // Replace if exists to handle refresh scenarios
             newMap.set(participant.identity, participant);
-            return newMap;
+            console.log('[LiveKit] 📊 Updated participants map. Total remote participants:', newMap.size);
+            console.log('[LiveKit] 📋 Participant IDs:', Array.from(newMap.keys()));
+            // Force new Map reference to ensure React detects change
+            return new Map(newMap);
           });
+          
+          // ✅ IMMEDIATELY subscribe to all tracks from this new participant
+          const subscribeToNewParticipant = async () => {
+            console.log('[LiveKit] 🔄 Subscribing to ALL tracks from NEW participant:', participant.identity);
+            const trackPublications = Array.from((participant as any).trackPublications?.values() || []) as RemoteTrackPublication[];
+            console.log('[LiveKit] Found', trackPublications.length, 'track publications from', participant.identity);
+            
+            for (const pub of trackPublications) {
+              if (pub && (pub.kind === Track.Kind.Video || pub.kind === Track.Kind.Audio)) {
+                if (!pub.isSubscribed) {
+                  try {
+                    await pub.setSubscribed(true);
+                    console.log('[LiveKit] ✅ Subscribed to', pub.kind, 'track from', participant.identity);
+                  } catch (err: any) {
+                    console.error('[LiveKit] ❌ Failed to subscribe to', pub.kind, 'from', participant.identity, ':', err);
+                  }
+                } else {
+                  console.log('[LiveKit] Already subscribed to', pub.kind, 'from', participant.identity);
+                }
+              }
+            }
+          };
+          
+          // Subscribe immediately and retry
+          subscribeToNewParticipant();
+          setTimeout(subscribeToNewParticipant, 300);
+          setTimeout(subscribeToNewParticipant, 1000);
         }
         
         setParticipantCount(newRoom.participants.size + 1);

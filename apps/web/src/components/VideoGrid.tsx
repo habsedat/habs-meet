@@ -9,11 +9,18 @@ interface ActiveScreenShare {
   publication: TrackPublication;
 }
 
+const getParticipantId = (p: LocalParticipant | RemoteParticipant) =>
+  p.identity || p.sid;
+
 const VideoGrid: React.FC = () => {
   const { participants, localParticipant, room } = useLiveKit();
   const { user } = useAuth();
   const [activeScreenShares, setActiveScreenShares] = useState<ActiveScreenShare[]>([]);
   const [cameraPage, setCameraPage] = useState(0); // ✅ Move hooks to top
+  
+  // 🔹 Zoom-style manual order of participants
+  const [orderedIds, setOrderedIds] = useState<string[]>([]);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
 
   // ✅ Track screen shares from all participants (max 2)
   useEffect(() => {
@@ -95,14 +102,96 @@ const VideoGrid: React.FC = () => {
     };
   }, [room, localParticipant, participants]);
 
-  // Combine local and remote participants
-  const allParticipants: (LocalParticipant | RemoteParticipant)[] = [];
-  if (localParticipant) {
-    allParticipants.push(localParticipant);
-  }
-  participants.forEach((participant) => {
-    allParticipants.push(participant);
-  });
+  // Convert participants Map to array for proper reactivity tracking
+  const participantsArray = React.useMemo(() => {
+    return Array.from(participants.values());
+  }, [participants.size, Array.from(participants.keys()).join(',')]);
+
+  // Combine local and remote participants - CRITICAL: Include ALL participants
+  // ✅ MUST use useMemo to ensure React tracks changes properly
+  const allParticipants = React.useMemo(() => {
+    const all: (LocalParticipant | RemoteParticipant)[] = [];
+    if (localParticipant) {
+      all.push(localParticipant);
+    }
+    // Add ALL remote participants
+    participantsArray.forEach((participant) => {
+      all.push(participant);
+    });
+    
+    // Debug: Log all participants
+    console.log('[VideoGrid] 🔍 Total participants:', all.length, {
+      local: localParticipant ? 1 : 0,
+      remote: participantsArray.length,
+      participantIds: all.map(p => p.identity || p.sid),
+      participantNames: all.map(p => p.name || 'Unknown')
+    });
+    
+    return all;
+  }, [localParticipant, participantsArray]);
+
+  // Keep a stable, user-controlled order of participants (for drag & drop)
+  useEffect(() => {
+    const ids = allParticipants.map(getParticipantId);
+
+    setOrderedIds((prev) => {
+      if (prev.length === 0) {
+        // First time: just use current order
+        return ids;
+      }
+
+      // Keep existing order for still-present participants
+      const existing = prev.filter((id) => ids.includes(id));
+      const added = ids.filter((id) => !existing.includes(id));
+
+      // If nothing changed, keep previous
+      if (existing.length === prev.length && added.length === 0) return prev;
+
+      return [...existing, ...added];
+    });
+  }, [allParticipants]); // ✅ Depend on entire array, not just length
+
+  // Create ordered participants array
+  const orderedParticipants = React.useMemo(
+    () => {
+      if (!orderedIds.length) return allParticipants;
+
+      const list = [...allParticipants];
+      return list.sort((a, b) => {
+        const idA = getParticipantId(a);
+        const idB = getParticipantId(b);
+        const idxA = orderedIds.indexOf(idA);
+        const idxB = orderedIds.indexOf(idB);
+        return (idxA === -1 ? 9999 : idxA) - (idxB === -1 ? 9999 : idxB);
+      });
+    },
+    [allParticipants, orderedIds]
+  );
+
+  // 🔹 Drag & drop handlers for Zoom-style rearranging
+  const handleDragStart = (id: string) => {
+    setDraggingId(id);
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>, overId: string) => {
+    e.preventDefault();
+    if (!draggingId || draggingId === overId) return;
+
+    setOrderedIds((prev) => {
+      const current = [...prev];
+      const fromIndex = current.indexOf(draggingId);
+      const toIndex = current.indexOf(overId);
+      if (fromIndex === -1 || toIndex === -1) return prev;
+
+      current.splice(fromIndex, 1);
+      current.splice(toIndex, 0, draggingId);
+      return current;
+    });
+  };
+
+  const handleDrop = () => {
+    setDraggingId(null);
+  };
 
   const hasScreenShare = activeScreenShares.length > 0;
   const screenShareCount = activeScreenShares.length;
@@ -150,17 +239,17 @@ const VideoGrid: React.FC = () => {
 
   // ✅ Zoom-style layout: cameras on top, screen shares on bottom
   if (hasScreenShare) {
-    const totalPages = Math.ceil(allParticipants.length / camerasPerPage);
+    const totalPages = Math.ceil(orderedParticipants.length / camerasPerPage);
     const startIndex = cameraPage * camerasPerPage;
     const endIndex = startIndex + camerasPerPage;
-    const visibleCameras = allParticipants.slice(startIndex, endIndex);
+    const visibleCameras = orderedParticipants.slice(startIndex, endIndex);
     const canGoLeft = cameraPage > 0;
     const canGoRight = cameraPage < totalPages - 1;
 
     return (
-      <div className="h-full w-full flex flex-col">
+      <div className="h-full w-full flex flex-col" style={{ margin: 0, padding: 0, border: 'none' }}>
         {/* ✅ Cameras section - Top (professional height, ~12-15% height) */}
-        <div className={`video-grid-cameras-wrapper ${screenShareCount === 2 ? 'h-[12%]' : 'h-[15%]'}`}>
+        <div className={`video-grid-cameras-wrapper ${screenShareCount === 2 ? 'h-[12%]' : 'h-[15%]'}`} style={{ border: 'none', margin: 0, padding: 0 }}>
           <div className="video-grid-cameras-container">
             {/* Left navigation button */}
             {canGoLeft && (
@@ -178,14 +267,26 @@ const VideoGrid: React.FC = () => {
             {/* Camera tiles container */}
             <div className="video-grid-cameras-content">
               <div className="video-grid" data-count={visibleCameras.length} data-screen-share="true">
-                {visibleCameras.map((participant) => (
-                  <VideoTile 
-                    key={participant.identity || participant.sid} 
-                    participant={participant} 
-                    currentUserUid={user?.uid}
-                    isScreenShareMode={true}
-                  />
-                ))}
+                {visibleCameras.map((participant) => {
+                  const participantId = getParticipantId(participant);
+                  return (
+                    <div
+                      key={participantId}
+                      draggable
+                      onDragStart={() => handleDragStart(participantId)}
+                      onDragOver={(e) => handleDragOver(e, participantId)}
+                      onDrop={handleDrop}
+                      onDragEnd={handleDrop}
+                      style={{ cursor: draggingId === participantId ? 'grabbing' : 'grab' }}
+                    >
+                      <VideoTile 
+                        participant={participant} 
+                        currentUserUid={user?.uid}
+                        isScreenShareMode={true}
+                      />
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
@@ -227,12 +328,36 @@ const VideoGrid: React.FC = () => {
     );
   }
 
-  // Normal grid layout when no screen share
+  // Normal grid layout when no screen share - Zoom-style: NO gaps, NO padding
   return (
-    <div className="video-grid" data-count={allParticipants.length}>
-      {allParticipants.map((participant) => (
-        <VideoTile key={participant.identity || participant.sid} participant={participant} currentUserUid={user?.uid} />
-      ))}
+    <div className="video-grid-wrapper" style={{ gap: 0, padding: 0, margin: 0 }}>
+      <div className="video-grid" data-count={orderedParticipants.length} style={{ gap: 0, padding: 0, margin: 0 }}>
+        {orderedParticipants.map((participant) => {
+          const participantId = getParticipantId(participant);
+          return (
+            <div
+              key={participantId}
+              draggable
+              onDragStart={() => handleDragStart(participantId)}
+              onDragOver={(e) => handleDragOver(e, participantId)}
+              onDrop={handleDrop}
+              onDragEnd={handleDrop}
+              style={{ 
+                cursor: draggingId === participantId ? 'grabbing' : 'grab',
+                margin: 0,
+                padding: 0,
+                width: '100%',
+                height: '100%',
+                display: 'flex',
+                alignItems: 'stretch',
+                justifyContent: 'stretch'
+              }}
+            >
+              <VideoTile participant={participant} currentUserUid={user?.uid} />
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 };
@@ -580,28 +705,45 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
       
       // ✅ If we don't have a track, or our current track is invalid, try to get a new one
       if (!videoPublication?.track || (vidPub && vidPub !== videoPublication)) {
-        if (vidPub && vidPub.track) {
+        if (vidPub) {
           // For remote participants, make sure track is subscribed
           if (!isLocal) {
             const remotePub = vidPub as any as RemoteTrackPublication;
             if (remotePub && !remotePub.isSubscribed) {
-              console.log('[VideoTile] Found unsubscribed remote track, subscribing...');
+              console.log('[VideoTile] 🔴 Found unsubscribed remote track for', participant.identity, '- subscribing NOW...');
               (async () => {
                 try {
                   await remotePub.setSubscribed(true);
-                  setVideoPublication(vidPub);
+                  console.log('[VideoTile] ✅ Successfully subscribed to remote track for', participant.identity);
+                  // Wait a bit for track to be ready
+                  setTimeout(() => {
+                    if (remotePub.track) {
+                      setVideoPublication(vidPub);
+                    }
+                  }, 200);
                 } catch (err: any) {
-                  console.error('[VideoTile] Failed to subscribe:', err);
+                  console.error('[VideoTile] ❌ Failed to subscribe to remote track:', err);
                 }
               })();
+              return;
+            }
+            
+            // If subscribed but no track element, wait for it
+            if (remotePub.isSubscribed && !remotePub.track) {
+              console.log('[VideoTile] ⏳ Remote track subscribed but not ready yet for', participant.identity);
               return;
             }
           }
           
           // ✅ Set the publication (this will trigger re-attachment)
-          if (vidPub !== videoPublication) {
-            console.log('[VideoTile] Found camera track, updating publication');
+          if (vidPub !== videoPublication && vidPub.track) {
+            console.log('[VideoTile] ✅ Found camera track for', participant.identity, '- updating publication');
             setVideoPublication(vidPub);
+          }
+        } else {
+          // No video track found - log for debugging
+          if (!isLocal) {
+            console.log('[VideoTile] ⚠️ No camera track found for remote participant:', participant.identity);
           }
         }
       }
@@ -612,10 +754,20 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
 
   // Attach video track when publication changes - for BOTH local AND remote participants
   useEffect(() => {
-    if (!containerRef.current) return;
-    if (!videoPublication?.track) return;
+    if (!containerRef.current) {
+      console.log('[VideoTile] ⚠️ Container not ready for', participant.identity);
+      return;
+    }
+    if (!videoPublication?.track) {
+      console.log('[VideoTile] ⚠️ No video track available for', participant.identity, {
+        hasPublication: !!videoPublication,
+        hasTrack: !!videoPublication?.track,
+        isSubscribed: !isLocal ? (videoPublication as any as RemoteTrackPublication)?.isSubscribed : 'N/A (local)'
+      });
+      return;
+    }
     
-    console.log('[VideoTile] Attaching video track for', isLocal ? 'local' : 'remote', 'participant:', participant.identity);
+    console.log('[VideoTile] ✅ Attaching video track for', isLocal ? 'local' : 'remote', 'participant:', participant.identity);
     
     // Attach video for BOTH local and remote participants
     const element = videoPublication.track.attach() as HTMLVideoElement;
@@ -626,10 +778,35 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
     element.controls = false;
     element.style.width = '100%';
     element.style.height = '100%';
-    // Use 'contain' to show full video without cropping - ensures everyone sees the same thing
-    element.style.objectFit = 'contain';
     element.style.objectPosition = 'center';
-    element.style.backgroundColor = '#000'; // Black background for letterboxing
+    element.style.backgroundColor = 'transparent'; /* Transparent - blue gradient shows through */
+    element.style.background = 'transparent'; /* Transparent - blue gradient shows through */
+    element.style.display = 'block';
+    element.style.border = 'none';
+    element.style.outline = 'none';
+    element.style.minWidth = '100%';
+    element.style.minHeight = '100%';
+    element.style.maxWidth = '100%';
+    element.style.maxHeight = '100%';
+    
+    // ✅ Orientation-based object-fit: cover for landscape, contain for portrait
+    const updateObjectFit = () => {
+      if (element.videoWidth && element.videoHeight) {
+        const isPortrait = element.videoHeight > element.videoWidth;
+        element.style.objectFit = isPortrait ? 'contain' : 'cover';
+        console.log(`[VideoTile] Orientation detected: ${isPortrait ? 'portrait' : 'landscape'} (${element.videoWidth}x${element.videoHeight}), using object-fit: ${isPortrait ? 'contain' : 'cover'}`);
+      } else {
+        // Default to contain until dimensions are known
+        element.style.objectFit = 'contain';
+      }
+    };
+    
+    // Set initial object-fit
+    updateObjectFit();
+    
+    // Update object-fit when video metadata loads
+    element.addEventListener('loadedmetadata', updateObjectFit);
+    element.addEventListener('resize', updateObjectFit);
 
     // ✅ Safe DOM manipulation - clear and append video element
     const container = containerRef.current;
@@ -679,6 +856,10 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
     }
 
     return () => {
+      // Remove event listeners
+      element.removeEventListener('loadedmetadata', updateObjectFit);
+      element.removeEventListener('resize', updateObjectFit);
+      
       if (videoPublication?.track && element) {
         console.log('[VideoTile] Detaching video track for', isLocal ? 'local' : 'remote');
         try {
@@ -998,9 +1179,44 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
   }, [participant, isLocal]);
 
   return (
-    <div className="video-container w-full h-full bg-gray-900 rounded-lg overflow-hidden relative" id={`participant-${participant.sid}`}>
-      {/* Video element container - add data attribute for easy finding */}
-      <div ref={containerRef} data-video-container="true" className="w-full h-full bg-black flex items-center justify-center">
+    <div 
+      className="video-container w-full h-full relative" 
+      id={`participant-${participant.sid}`} 
+      style={{ 
+        border: 'none', 
+        borderWidth: 0,
+        borderStyle: 'none',
+        borderColor: 'transparent',
+        borderRadius: 0,
+        outline: 'none', 
+        outlineWidth: 0,
+        background: 'transparent', /* Transparent - no background creating borders */
+        boxShadow: 'none',
+        margin: 0,
+        padding: 0,
+        overflow: 'hidden' /* Clip to tile like Zoom */
+      }}
+    >
+      {/* Video element container - borderless video like Zoom */}
+      <div 
+        ref={containerRef} 
+        data-video-container="true" 
+        className="w-full h-full" 
+        style={{ 
+          border: 'none',
+          borderWidth: 0,
+          borderStyle: 'none',
+          borderColor: 'transparent',
+          borderRadius: 0,
+          background: 'transparent', /* Transparent background */
+          outline: 'none',
+          outlineWidth: 0,
+          boxShadow: 'none',
+          margin: 0,
+          padding: 0,
+          overflow: 'hidden' /* Clip video to container */
+        }}
+      >
         {/* Placeholder when no video */}
         <div className="text-center text-cloud">
           <div className="w-12 h-12 sm:w-16 sm:h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-2">
@@ -1012,13 +1228,47 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
         </div>
       </div>
       
-      {/* Participant info overlay - Professional styling with animated backgrounds */}
-      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-2 z-10">
-        <div className="flex items-center justify-between gap-2">
-          {/* Name badge with animated background */}
-          <div className="flex items-center gap-2 flex-1 min-w-0">
-            <div className="relative px-2 py-0.5 rounded-md shadow-lg overflow-hidden">
-              {/* Animated gradient background - different colors for different participants */}
+      {/* ✅ Participant info overlay - INSIDE video tile, bottom-left corner - ABSOLUTELY NO BORDERS */}
+      <div 
+        className="absolute bottom-0 left-0 z-10"
+        style={{
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          background: 'linear-gradient(to top, rgba(0, 0, 0, 0.7) 0%, rgba(0, 0, 0, 0.4) 50%, transparent 100%)',
+          padding: '4px 8px',
+          margin: 0,
+          border: 'none',
+          borderWidth: 0,
+          borderStyle: 'none',
+          borderColor: 'transparent',
+          borderRadius: 0,
+          outline: 'none',
+          outlineWidth: 0,
+          boxShadow: 'none',
+          maxWidth: '100%',
+          pointerEvents: 'auto' /* Allow clicks on buttons inside */
+        }}
+      >
+        <div className="flex items-center" style={{ gap: '6px', margin: 0, padding: 0 }}>
+          {/* Name badge - INSIDE video, bottom-left */}
+          <div className="flex items-center flex-shrink-0" style={{ gap: '4px', margin: 0, padding: 0 }}>
+            <div 
+              className="relative overflow-hidden"
+              style={{
+                padding: '2px 6px',
+                margin: 0,
+                border: 'none',
+                borderWidth: 0,
+                borderStyle: 'none',
+                borderColor: 'transparent',
+                borderRadius: 0, /* No border radius - completely borderless */
+                boxShadow: 'none',
+                outline: 'none',
+                outlineWidth: 0
+              }}
+            >
+              {/* Animated gradient background */}
               <div 
                 className="absolute inset-0 opacity-90"
                 style={{
@@ -1026,7 +1276,11 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
                     ? 'linear-gradient(90deg, #3b82f6, #8b5cf6, #3b82f6)'
                     : `linear-gradient(90deg, ${colorPalettes[colorIndex].start}, ${colorPalettes[colorIndex].mid}, ${colorPalettes[colorIndex].end})`,
                   backgroundSize: '200% 100%',
-                  animation: 'gradient-shift 3s ease infinite'
+                  animation: 'gradient-shift 3s ease infinite',
+                  margin: 0,
+                  padding: 0,
+                  border: 'none',
+                  borderRadius: '4px'
                 }}
               />
               <style>
@@ -1037,14 +1291,14 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
                   }
                 `}
               </style>
-              <span className="relative font-medium text-[10px] sm:text-xs text-white drop-shadow-md whitespace-nowrap">
+              <span className="relative font-medium text-[10px] sm:text-xs text-white drop-shadow-md whitespace-nowrap" style={{ margin: 0, padding: 0 }}>
                 {displayName}
               </span>
             </div>
           </div>
           
-          {/* Mic and Camera status icons - visible to everyone */}
-          <div className="flex items-center gap-1.5 flex-shrink-0">
+          {/* Mic icon - INSIDE video, bottom-left next to name */}
+          <div className="flex items-center flex-shrink-0" style={{ gap: '4px', margin: 0, padding: 0 }}>
             {/* Pin button */}
             {onPin && (
               <button
@@ -1053,11 +1307,25 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
                   const isPinned = pinnedId === participant.identity;
                   onPin(isPinned ? null : participant.identity);
                 }}
-                className={`flex items-center justify-center w-6 h-6 rounded-full backdrop-blur-sm transition-colors ${
+                className={`flex items-center justify-center backdrop-blur-sm transition-colors ${
                   pinnedId === participant.identity
                     ? 'bg-techBlue text-white'
                     : 'bg-black/50 text-gray-300 hover:bg-black/70 hover:text-white'
                 }`}
+                style={{
+                  width: '24px',
+                  height: '24px',
+                  borderRadius: 0, /* No border radius - completely borderless */
+                  border: 'none',
+                  borderWidth: 0,
+                  borderStyle: 'none',
+                  borderColor: 'transparent',
+                  outline: 'none',
+                  outlineWidth: 0,
+                  boxShadow: 'none',
+                  margin: 0,
+                  padding: 0
+                }}
                 title={pinnedId === participant.identity ? 'Unpin' : 'Pin'}
               >
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1066,14 +1334,31 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
               </button>
             )}
             
-            {/* Microphone status - LARGER, MORE VISIBLE icon */}
-            <div className="flex items-center justify-center w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-black/70 backdrop-blur-sm border border-white/20">
+            {/* Microphone status - INSIDE video, ABSOLUTELY NO BORDERS */}
+            <div 
+              className="flex items-center justify-center backdrop-blur-sm"
+              style={{
+                width: '28px',
+                height: '28px',
+                borderRadius: 0, /* No border radius - completely borderless */
+                background: 'rgba(0, 0, 0, 0.7)',
+                border: 'none',
+                borderWidth: 0,
+                borderStyle: 'none',
+                borderColor: 'transparent',
+                outline: 'none',
+                outlineWidth: 0,
+                boxShadow: 'none',
+                margin: 0,
+                padding: 0
+              }}
+            >
               {isMicrophoneEnabled ? (
-                <svg className="w-5 h-5 sm:w-6 sm:h-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
+                <svg className="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
                 </svg>
               ) : (
-                <svg className="w-5 h-5 sm:w-6 sm:h-6 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
+                <svg className="w-5 h-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
                   <path strokeLinecap="round" strokeLinejoin="round" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
                 </svg>
@@ -1083,9 +1368,27 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
         </div>
       </div>
       
-      {/* Primary speaker indicator */}
+      {/* Primary speaker indicator - INSIDE video - ABSOLUTELY NO BORDERS */}
       {isPrimary && (
-        <div className="absolute top-2 right-2 bg-techBlue text-white px-2 py-1 rounded-full text-xs font-medium flex items-center gap-1 z-20">
+        <div 
+          className="absolute top-2 right-2 bg-techBlue text-white text-xs font-medium flex items-center z-20"
+          style={{
+            position: 'absolute',
+            top: '8px',
+            right: '8px',
+            padding: '4px 8px',
+            borderRadius: 0, /* No border radius - completely borderless */
+            gap: '4px',
+            border: 'none',
+            borderWidth: 0,
+            borderStyle: 'none',
+            borderColor: 'transparent',
+            outline: 'none',
+            outlineWidth: 0,
+            boxShadow: 'none',
+            margin: 0
+          }}
+        >
           <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
           </svg>

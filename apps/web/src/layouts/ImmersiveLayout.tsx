@@ -43,10 +43,10 @@ const ImmersiveLayout: React.FC<ImmersiveLayoutProps> = ({
       
       {/* Main content */}
       <div className="relative h-full flex flex-col">
-        {/* Primary speaker - center stage */}
+        {/* Primary speaker - center stage - NO BORDERS */}
         <div className="flex-1 flex items-center justify-center p-4">
           {primaryParticipant && (
-            <div className="w-full max-w-4xl h-full rounded-2xl overflow-hidden shadow-2xl transition-all duration-500">
+            <div className="w-full max-w-4xl h-full overflow-hidden transition-all duration-500" style={{ borderRadius: 0, border: 'none', boxShadow: 'none' }}>
               <VideoTile
                 participant={primaryParticipant}
                 currentUserUid={currentUserUid}
@@ -58,9 +58,9 @@ const ImmersiveLayout: React.FC<ImmersiveLayoutProps> = ({
           )}
         </div>
 
-        {/* Secondary participants - curved row below */}
+        {/* Secondary participants - curved row below - NO BORDERS */}
         {otherParticipants.length > 0 && (
-          <div className="h-40 bg-gray-900/30 backdrop-blur-md border-t border-gray-700/50">
+          <div className="h-40 bg-gray-900/30 backdrop-blur-md" style={{ border: 'none', borderTop: 'none' }}>
             <div className="flex items-center justify-center h-full gap-3 px-4 py-3">
               {otherParticipants.map((participant, index) => {
                 // Create curved positioning effect
@@ -71,8 +71,10 @@ const ImmersiveLayout: React.FC<ImmersiveLayoutProps> = ({
                 return (
                   <div
                     key={participant.identity || participant.sid}
-                    className="flex-shrink-0 w-32 h-full rounded-xl overflow-hidden transition-all duration-300 hover:scale-110"
+                    className="flex-shrink-0 w-32 h-full overflow-hidden transition-all duration-300 hover:scale-110"
                     style={{
+                      borderRadius: 0,
+                      border: 'none',
                       transform: `rotateY(${rotation}deg) scale(${scale})`,
                       transformStyle: 'preserve-3d',
                     }}

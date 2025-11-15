@@ -44,6 +44,17 @@ html, body {
   padding: 0;
   overflow-x: hidden;
   overflow-y: auto;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+#root {
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
 }
 
 body {
@@ -106,166 +117,264 @@ body {
   @apply bg-gradient-to-br from-techBlue to-violetDeep rounded-2xl p-8 text-center text-cloud shadow-2xl hover:shadow-2xl transition-all duration-300 hover:scale-105;
 }
 
-/* Video Grid Styles - Zoom-like adaptive layout with equal-sized tiles */
-.video-grid {
-  display: grid;
-  gap: 0.5rem;
-  height: 100%;
-  padding: 0.5rem;
+/* ✅ COMPREHENSIVE BORDER REMOVAL - ALL CONTAINERS AND WRAPPERS */
+/* Remove borders from EVERY possible container that wraps video tiles */
+.room-container,
+.lk-layout,
+.lk-layout-wrapper,
+.lk-video-grid,
+.video-stage,
+.gallery-view,
+.lk-participant-layout,
+.video-tile,
+.participant-tile,
+.lk-participant-tile,
+.lk-video-container,
+.lk-participant-media,
+[class*="room-container"],
+[class*="lk-layout"],
+[class*="lk-video"],
+[class*="video-stage"],
+[class*="gallery"],
+[class*="participant-tile"],
+[class*="video-tile"] {
+  border: none !important;
+  border-left: none !important;
+  border-right: none !important;
+  border-top: none !important;
+  border-bottom: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  outline: none !important;
+  outline-width: 0 !important;
+  outline-style: none !important;
+  outline-color: transparent !important;
+  box-shadow: none !important;
+  -webkit-box-shadow: none !important;
+  -moz-box-shadow: none !important;
+}
+
+/* ✅ Zoom-style Gallery Container: NO SCROLL, full height, NO BORDERS */
+.video-grid-wrapper {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: stretch !important;
+  justify-content: stretch !important;
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  border-left: none !important;
+  border-right: none !important;
+  border-top: none !important;
+  border-bottom: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  outline: none !important;
+  outline-width: 0 !important;
+  outline-style: none !important;
+  outline-color: transparent !important;
+  box-shadow: none !important;
+  -webkit-box-shadow: none !important;
+  -moz-box-shadow: none !important;
+  background: transparent !important; /* NO background - blue gradient shows through */
+  background-color: transparent !important; /* NO background color */
+  gap: 0 !important;
+  grid-gap: 0 !important; /* NO GRID GAP */
+  overflow: hidden !important; /* NO SCROLL */
+  box-sizing: border-box !important;
+  position: relative !important;
+}
+
+/* ✅ Zoom-style Gallery: NO SCROLL, centered grid, NO GAPS, NO BORDERS */
+.video-grid,
+.gallery-grid,
+.lk-video-grid {
+  display: grid !important;
+  gap: 0 !important; /* NO GAPS - edge-to-edge like Zoom */
+  grid-gap: 0 !important; /* NO GRID GAP */
+  row-gap: 0 !important; /* NO ROW GAPS */
+  column-gap: 0 !important; /* NO COLUMN GAPS */
+  padding: 0 !important;
+  margin: auto !important; /* Center the grid */
+  width: 100% !important;
+  max-width: 100% !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  border: none !important;
+  border-left: none !important;
+  border-right: none !important;
+  border-top: none !important;
+  border-bottom: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  outline: none !important;
+  outline-width: 0 !important;
+  outline-style: none !important;
+  outline-color: transparent !important;
+  box-shadow: none !important;
+  -webkit-box-shadow: none !important;
+  -moz-box-shadow: none !important;
+  background: transparent !important; /* NO background on grid - blue gradient shows through */
+  background-color: transparent !important; /* NO background color */
+  visibility: visible !important;
+  opacity: 1 !important;
+  justify-items: stretch !important;
+  align-items: stretch !important;
+  justify-content: center !important;
+  align-content: center !important;
+  overflow: hidden !important; /* NO SCROLL */
+}
+
+/* ✅ Dynamic grid calculation is now handled in GalleryLayout.tsx */
+/* CSS rules below are fallbacks - inline styles from component take precedence */
+/* All participants will have equal size via grid-template-columns/rows */
+
+/* ✅ GALLERY VIEW: NUCLEAR OPTION - REMOVE ALL BORDERS */
+/* Maximum specificity - target wrapper divs */
+.video-grid-wrapper .video-grid > div,
+.video-grid-wrapper .video-grid > div::before,
+.video-grid-wrapper .video-grid > div::after {
   width: 100%;
-  max-width: 100%;
-  justify-items: stretch;
-  align-items: stretch;
+  aspect-ratio: 16 / 9 !important;
+  height: auto !important;
+  border: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  border-left: none !important;
+  border-right: none !important;
+  border-top: none !important;
+  border-bottom: none !important;
+  outline: none !important;
+  outline-width: 0 !important;
+  outline-style: none !important;
+  box-shadow: none !important;
+  -webkit-box-shadow: none !important;
+  -moz-box-shadow: none !important;
+  background: transparent !important;
+  background-color: transparent !important;
+  overflow: hidden !important;
 }
 
-/* 1 participant - full screen */
-.video-grid[data-count="1"] {
-  grid-template-columns: 1fr;
-  grid-template-rows: 1fr;
+/* ✅ Gallery nested elements - FLOATING TILES, NO BORDERS */
+/* All elements transparent - blue gradient shows through */
+.video-grid-wrapper .video-grid > div,
+.video-grid-wrapper .video-grid > div > *,
+.video-grid-wrapper .video-grid > div .video-container,
+.video-grid-wrapper .video-grid > div .video-container *,
+.video-grid-wrapper .video-grid > div .video-container > *,
+.video-grid-wrapper .video-grid > div .video-container video {
+  border: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  border-left: none !important;
+  border-right: none !important;
+  border-top: none !important;
+  border-bottom: none !important;
+  outline: none !important;
+  outline-width: 0 !important;
+  outline-style: none !important;
+  box-shadow: none !important;
+  -webkit-box-shadow: none !important;
+  -moz-box-shadow: none !important;
+  background: transparent !important; /* Transparent - blue gradient shows through */
+  background-color: transparent !important;
 }
 
-/* 2 participants - side by side, equal size */
-.video-grid[data-count="2"] {
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr;
+/* Remove ALL borders from ALL video containers - ALL VIEWS (Zoom-style borderless) */
+/* ✅ Remove ALL black backgrounds - transparent everywhere */
+.video-container,
+.video-container *,
+.video-container video,
+.video-container > div,
+.video-container > div *,
+.video-container > div video {
+  border: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  border-radius: 0 !important;
+  outline: none !important;
+  outline-width: 0 !important;
+  box-shadow: none !important;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  background: transparent !important; /* Transparent - blue gradient shows through */
+  background-color: transparent !important;
 }
 
-/* ✅ 3 participants - 2 on top, 1 centered below (same size) */
-.video-grid[data-count="3"] {
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr 1fr;
-  justify-items: stretch;
-  align-items: stretch;
+/* ✅ Global rule: ALL video elements have transparent backgrounds */
+video {
+  background: transparent !important;
+  background-color: transparent !important;
 }
 
-/* ✅ FIX: 3rd participant centered, same width as top tiles */
-.video-grid[data-count="3"] > div:nth-child(3) {
-  grid-column: 1 / -1;
-  justify-self: center;
-  width: calc(50% - 0.25rem); /* Exactly same width as one top tile */
-  max-width: calc(50% - 0.25rem);
-  height: 100%;
+/* ✅ GLOBAL OVERRIDE: Remove ALL borders from video tiles - NO EXCEPTIONS */
+/* This ensures NO borders survive, even from third-party libraries or inline styles */
+.video-tile,
+.participant-tile,
+.lk-participant-tile,
+.lk-video-container,
+.lk-participant-media,
+.video-container,
+.video-container *,
+[class*="video-tile"],
+[class*="participant-tile"],
+[class*="lk-participant"],
+[class*="lk-video"] {
+  border: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  border-left: none !important;
+  border-right: none !important;
+  border-top: none !important;
+  border-bottom: none !important;
+  outline: none !important;
+  outline-width: 0 !important;
+  box-shadow: none !important;
 }
 
-/* On larger screens: show 3 in one row (all equal) - Zoom style */
-@media (min-width: 1200px) {
-  .video-grid[data-count="3"] {
-    grid-template-columns: repeat(3, 1fr);
-    grid-template-rows: 1fr;
-  }
-  
-  .video-grid[data-count="3"] > div:nth-child(3) {
-    grid-column: auto;
-    width: 100%;
-    max-width: none;
-    justify-self: stretch;
-  }
+/* ✅ Remove borders from active/selected/hover states */
+.video-container:hover,
+.video-container:focus,
+.video-container:active,
+.video-container[class*="active"],
+.video-container[class*="selected"],
+.video-container[class*="primary"],
+.video-container[class*="hover"] {
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
 }
 
-/* 4 participants - 2x2 grid, equal size */
-.video-grid[data-count="4"] {
-  grid-template-columns: repeat(2, 1fr);
-  grid-template-rows: repeat(2, 1fr);
-}
 
-/* 5 participants - 3 on top, 2 centered below */
-.video-grid[data-count="5"] {
-  grid-template-columns: repeat(3, 1fr);
-  grid-template-rows: 1fr 1fr;
-}
-
-.video-grid[data-count="5"] > div:nth-child(4),
-.video-grid[data-count="5"] > div:nth-child(5) {
-  grid-column: span 1;
-}
-
-/* Center the bottom row */
-.video-grid[data-count="5"] > div:nth-child(4) {
-  grid-column: 1 / 2;
-  justify-self: end;
-}
-
-.video-grid[data-count="5"] > div:nth-child(5) {
-  grid-column: 2 / 3;
-  justify-self: start;
-}
-
-/* 6 participants - 3x2 grid */
-.video-grid[data-count="6"] {
-  grid-template-columns: repeat(3, 1fr);
-  grid-template-rows: repeat(2, 1fr);
-}
-
-/* 7-9 participants - 3x3 grid */
-.video-grid[data-count="7"],
-.video-grid[data-count="8"],
-.video-grid[data-count="9"] {
-  grid-template-columns: repeat(3, 1fr);
-  grid-template-rows: repeat(3, 1fr);
-}
-
-/* 10-12 participants - 4 columns */
-.video-grid[data-count="10"],
-.video-grid[data-count="11"],
-.video-grid[data-count="12"] {
-  grid-template-columns: repeat(4, 1fr);
-  grid-template-rows: repeat(3, 1fr);
-  overflow-y: auto;
-}
-
-/* 13-16 participants - 4x4 grid */
-.video-grid[data-count="13"],
-.video-grid[data-count="14"],
-.video-grid[data-count="15"],
-.video-grid[data-count="16"] {
-  grid-template-columns: repeat(4, 1fr);
-  grid-template-rows: repeat(4, 1fr);
-  overflow-y: auto;
-}
-
-/* 17-20 participants - 5 columns */
-.video-grid[data-count="17"],
-.video-grid[data-count="18"],
-.video-grid[data-count="19"],
-.video-grid[data-count="20"] {
-  grid-template-columns: repeat(5, 1fr);
-  grid-template-rows: repeat(4, 1fr);
-  overflow-y: auto;
-}
-
-/* 21+ participants - 5 columns, more rows */
-.video-grid[data-count="21"],
-.video-grid[data-count="22"],
-.video-grid[data-count="23"],
-.video-grid[data-count="24"],
-.video-grid[data-count="25"] {
-  grid-template-columns: repeat(5, 1fr);
-  grid-template-rows: repeat(5, 1fr);
-  overflow-y: auto;
-}
-
-/* ✅ Ensure all video tiles are equal size and maintain aspect ratio */
-.video-grid > div {
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  /* Remove fixed aspect ratio - let video maintain its natural aspect ratio */
-  /* aspect-ratio: 16 / 9; */
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #000; /* Black background for letterboxing */
-}
-
-/* Ensure video elements maintain their natural aspect ratio */
-.video-grid > div video {
-  max-width: 100%;
-  max-height: 100%;
-  width: auto;
-  height: auto;
-  object-fit: contain;
-  object-position: center;
+/* ✅ Zoom-style: Video with transparent background - orientation-based object-fit */
+/* ✅ SCOPE: Only apply to Gallery view - other views use their own styling */
+.video-grid-wrapper .video-grid > div video {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important; /* Default to contain - component will override based on orientation */
+  object-position: center !important;
+  display: block !important;
+  border: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  border-radius: 0 !important;
+  outline: none !important;
+  outline-width: 0 !important;
+  box-shadow: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  background: transparent !important; /* Transparent - blue gradient shows through */
+  background-color: transparent !important;
 }
 
 /* ✅ Screen Share Mode - Professional Camera Layout */
@@ -293,22 +402,28 @@ body {
 }
 
 .video-grid[data-screen-share="true"] {
-  /* Professional camera tiles - show max 3, centered */
+  /* Professional camera tiles - show max 3, centered - Zoom style borderless */
   grid-template-columns: repeat(3, 1fr);
   grid-template-rows: 1fr;
-  gap: 0.5rem;
-  padding: 0;
+  gap: 0 !important; /* No gaps - borderless like Zoom */
+  padding: 0 !important;
   max-width: 600px; /* Professional width limit */
   width: 100%;
   height: 100%;
+  margin: 0 !important;
+  border: none !important;
 }
 
 .video-grid[data-screen-share="true"] > div {
-  /* Professional camera tile dimensions - allow flexible aspect ratio */
+  /* Professional camera tile dimensions - allow flexible aspect ratio - borderless */
   max-width: 190px; /* Professional size */
   min-height: auto;
   width: 100%;
   height: 100%;
+  border: none !important;
+  border-radius: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
   /* Let video maintain its natural aspect ratio */
 }
 
@@ -406,27 +521,25 @@ body {
 }
 
 @media (max-width: 768px) {
-  /* Mobile: always single column */
+  /* Mobile: always single column - Zoom style borderless */
   .video-grid {
     grid-template-columns: 1fr !important;
     grid-auto-rows: minmax(250px, auto) !important;
+    gap: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
   }
   
   .video-grid > div {
     grid-column: 1 !important;
+    border: none !important;
+    border-radius: 0 !important;
   }
 
   /* Mobile screen share layout */
   .video-grid-cameras {
     height: 25% !important; /* Slightly larger on mobile */
   }
-}
-
-.video-container {
-  position: relative;
-  background: #000;
-  border-radius: 0.5rem;
-  overflow: hidden;
 }
 
 .participant-info {

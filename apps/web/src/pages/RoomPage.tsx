@@ -36,7 +36,14 @@ const RoomPage: React.FC = () => {
   const [showBottomControls, setShowBottomControls] = useState(true);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [lastSeenMessageId, setLastSeenMessageId] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<ViewMode>('speaker');
+  // Load view mode from localStorage or default to 'gallery'
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    const saved = localStorage.getItem('viewMode');
+    if (saved && ['speaker', 'gallery', 'multi-speaker', 'immersive'].includes(saved)) {
+      return saved as ViewMode;
+    }
+    return 'gallery'; // Default to gallery
+  });
 
   // Load room data
   useEffect(() => {
@@ -509,8 +516,8 @@ const RoomPage: React.FC = () => {
 
   return (
     <div className="h-screen bg-gradient-to-br from-midnight via-techBlue to-violetDeep flex flex-col overflow-hidden relative">
-      {/* Top bar - always visible, thin */}
-      <header className="h-12 bg-gray-900/90 backdrop-blur-sm border-b border-gray-700 px-2 sm:px-4 flex items-center justify-between z-20">
+      {/* Top bar - always visible, thin - NO BORDERS */}
+      <header className="h-12 bg-gray-900/90 backdrop-blur-sm px-2 sm:px-4 flex items-center justify-between z-20" style={{ border: 'none', borderBottom: 'none' }}>
         <div className="flex items-center space-x-2 sm:space-x-3">
           <div className="w-8 h-8 bg-gradient-to-br from-techBlue to-violetDeep rounded-lg flex items-center justify-center">
             <span className="text-cloud font-bold text-lg">H</span>
@@ -552,11 +559,11 @@ const RoomPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Side panel - slide in from right when active */}
+        {/* Side panel - slide in from right when active - NO BORDERS */}
         {activePanel && (
-          <div className="absolute right-0 top-0 bottom-0 w-full sm:w-80 bg-cloud border-l border-gray-300 flex flex-col overflow-hidden shadow-2xl z-30">
-            {/* Panel header */}
-            <div className="h-12 bg-gray-800 flex items-center justify-between px-4 border-b border-gray-700">
+          <div className="absolute right-0 top-0 bottom-0 w-full sm:w-80 bg-cloud flex flex-col overflow-hidden shadow-2xl z-30" style={{ border: 'none', borderLeft: 'none' }}>
+            {/* Panel header - NO BORDERS */}
+            <div className="h-12 bg-gray-800 flex items-center justify-between px-4" style={{ border: 'none', borderBottom: 'none' }}>
               <h3 className="text-cloud font-semibold text-sm uppercase">
                 {activePanel === 'chat' && 'Chat'}
                 {activePanel === 'participants' && 'Participants'}
@@ -595,8 +602,8 @@ const RoomPage: React.FC = () => {
         )}
       </div>
 
-            {/* Bottom controls bar - auto-hide */}
-      <div className={`h-14 bg-gray-900/95 backdrop-blur-sm border-t border-gray-700 flex items-center justify-center px-2 sm:px-4 z-20 transition-transform duration-300 ${showBottomControls ? 'translate-y-0' : 'translate-y-full'}`}>                                           
+            {/* Bottom controls bar - auto-hide - NO BORDERS */}
+      <div className={`h-14 bg-gray-900/95 backdrop-blur-sm flex items-center justify-center px-2 sm:px-4 z-20 transition-transform duration-300 ${showBottomControls ? 'translate-y-0' : 'translate-y-full'}`} style={{ border: 'none', borderTop: 'none' }}>                                           
                 {/* Center - main controls - scrollable on smaller screens */}
         <div className="flex items-center space-x-1 sm:space-x-2 overflow-x-auto w-full lg:w-auto lg:justify-center flex-nowrap scrollbar-hide" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none', WebkitOverflowScrolling: 'touch' }}>
           <div className="flex items-center space-x-1 sm:space-x-2 flex-shrink-0">
