@@ -11,16 +11,14 @@ interface GalleryLayoutProps {
 
 const MAX_TILES_PER_PAGE = 9;
 
-// ✅ Zoom-style layout rules per participant count
+// ✅ PERMANENT FIX: Zoom-style layout rules per participant count
 const getGridLayout = (count: number): { rows: number; cols: number } => {
   if (count === 0) return { rows: 1, cols: 1 };
-  if (count === 1) return { rows: 1, cols: 1 };
-  if (count === 2) return { rows: 1, cols: 2 };
-  if (count === 3) return { rows: 2, cols: 2 }; // 2 on top, 1 centered bottom
-  if (count === 4) return { rows: 2, cols: 2 };
-  if (count === 5 || count === 6) return { rows: 2, cols: 3 };
-  if (count === 7 || count === 8 || count === 9) return { rows: 3, cols: 3 };
-  // For > 9, use 3x3 grid (will be paginated)
+  if (count === 1) return { rows: 1, cols: 1 }; // 1 participant → 1 column
+  if (count === 2) return { rows: 1, cols: 2 }; // 2 participants → 2 equal 16:9 tiles side-by-side
+  if (count === 3 || count === 4) return { rows: 2, cols: 2 }; // 3–4 participants → 2x2 grid
+  if (count >= 5 && count <= 9) return { rows: 3, cols: 3 }; // 5–9 participants → 3 columns
+  // 10+ participants → Auto-fit (will be paginated, 3 cols per page)
   return { rows: 3, cols: 3 };
 };
 
@@ -225,48 +223,65 @@ const GalleryLayout: React.FC<GalleryLayoutProps> = ({
     );
   }
   
+  // ✅ Container style - centered with side margins, no scrolling with 1-2 participants
+  const wrapperStyle: React.CSSProperties = {
+    display: 'flex',
+    flexDirection: 'column',
+    width: '100%',
+    height: '100%',
+    maxHeight: currentPageParticipants.length <= 2 ? '100%' : '100%', // No scrolling for 1-2 participants
+    overflow: currentPageParticipants.length <= 2 ? 'hidden' : 'auto', // Hidden for 1-2, auto for more
+    justifyContent: 'center', // Center vertically
+    alignItems: 'center', // Center horizontally
+    margin: '0 auto', // Center horizontally
+    marginTop: 0,
+    marginBottom: 0,
+    paddingLeft: '32px', // Left margin - increased for more breathing room
+    paddingRight: '32px', // Right margin - increased for more breathing room
+    paddingTop: 0,
+    paddingBottom: 0,
+    border: 'none',
+    outline: 'none',
+    boxShadow: 'none',
+    background: 'transparent',
+    position: 'relative',
+    boxSizing: 'border-box'
+  };
+
   return (
     <div 
       ref={wrapperRef}
-      className="video-grid-wrapper" 
-      style={{ 
-        height: '100%',
-        width: '100%',
-        overflow: 'hidden', /* NO SCROLL */
-        padding: 0,
-        margin: 0,
-        position: 'relative',
-        display: 'flex',
-        flexDirection: 'column',
-        border: 'none' /* EXACTLY like Speaker view - no borders */
-      }}
+      className="video-grid-wrapper gallery-view" 
       onMouseUp={handleMouseUp}
+      style={wrapperStyle}
     >
-      {/* ✅ Main grid area - NO SCROLL, centered */}
+      {/* ✅ PERMANENT FIX: Zoom-style grid layout */}
       <div
         ref={gridRef}
-        className="video-grid"
+        className="video-grid gallery-grid"
         style={{
           display: 'grid',
           gridTemplateColumns: `repeat(${cols}, 1fr)`,
-          gridAutoRows: '1fr',
-          gap: 0, /* NO GAPS - edge-to-edge like Zoom */
-          rowGap: 0, /* NO ROW GAPS */
-          columnGap: 0, /* NO COLUMN GAPS */
+          gridAutoRows: 'auto', // Let rows size based on 16:9 aspect ratio
+          gap: 0, // ZERO GAPS - edge-to-edge
+          rowGap: 0, // ZERO row gaps
+          columnGap: 0, // ZERO column gaps
+          gridGap: 0, // ZERO grid gaps
           padding: 0,
-          margin: 'auto', /* Center the grid */
+          margin: 0,
           width: '100%',
-          height: '100%',
+          height: 'auto', // Auto height to center properly
           maxWidth: '100%',
-          maxHeight: '100%',
           justifyItems: 'stretch',
           alignItems: 'stretch',
           justifyContent: 'center',
           alignContent: 'center',
           position: 'relative',
-          overflow: 'hidden', /* NO SCROLL */
-          background: 'transparent', /* Transparent - blue gradient shows through */
-          border: 'none' /* EXACTLY like Speaker view - no borders */
+          overflow: 'visible', // Visible to allow centering
+          background: 'transparent',
+          border: 'none',
+          outline: 'none',
+          boxShadow: 'none'
         }}
       >
         {currentPageParticipants.map((participant) => {
@@ -274,19 +289,42 @@ const GalleryLayout: React.FC<GalleryLayoutProps> = ({
           const stableKey = participantId;
           const isDragging = draggingId === participantId;
           
+          // ✅ PERMANENT FIX: Tile wrapper - 16:9 aspect ratio, NO BORDERS at JS level
+          const tileStyle: React.CSSProperties = {
+            aspectRatio: '16 / 9', // EXACTLY like Zoom
+            width: '100%',
+            height: 'auto',
+            position: 'relative',
+            background: 'black',
+            borderRadius: 0,
+            border: 'none',
+            borderWidth: 0,
+            borderStyle: 'none',
+            borderColor: 'transparent',
+            borderLeft: 'none',
+            borderRight: 'none',
+            borderTop: 'none',
+            borderBottom: 'none',
+            outline: 'none',
+            outlineWidth: 0,
+            outlineStyle: 'none',
+            outlineColor: 'transparent',
+            boxShadow: 'none',
+            WebkitBoxShadow: 'none',
+            MozBoxShadow: 'none',
+            margin: 0,
+            padding: 0,
+            overflow: 'hidden',
+            cursor: isDragEnabled && currentPageParticipants.length > 1 ? (isDragging ? 'grabbing' : 'grab') : 'default',
+            pointerEvents: 'auto'
+          };
+
           return (
             <div
               key={stableKey}
-              className="relative overflow-hidden"
+              className="gallery-tile relative overflow-hidden"
               onMouseDown={(e) => handleMouseDown(e, participantId)}
-              style={{
-                borderRadius: 0,
-                border: 'none', /* EXACTLY like Speaker view - minimal wrapper */
-                width: '100%',
-                aspectRatio: '16 / 9',
-                height: 'auto',
-                cursor: isDragEnabled && currentPageParticipants.length > 1 ? (isDragging ? 'grabbing' : 'grab') : 'default'
-              }}
+              style={tileStyle}
             >
               <VideoTile
                 participant={participant}

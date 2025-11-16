@@ -117,265 +117,6 @@ body {
   @apply bg-gradient-to-br from-techBlue to-violetDeep rounded-2xl p-8 text-center text-cloud shadow-2xl hover:shadow-2xl transition-all duration-300 hover:scale-105;
 }
 
-/* ✅ COMPREHENSIVE BORDER REMOVAL - ALL CONTAINERS AND WRAPPERS */
-/* Remove borders from EVERY possible container that wraps video tiles */
-.room-container,
-.lk-layout,
-.lk-layout-wrapper,
-.lk-video-grid,
-.video-stage,
-.gallery-view,
-.lk-participant-layout,
-.video-tile,
-.participant-tile,
-.lk-participant-tile,
-.lk-video-container,
-.lk-participant-media,
-[class*="room-container"],
-[class*="lk-layout"],
-[class*="lk-video"],
-[class*="video-stage"],
-[class*="gallery"],
-[class*="participant-tile"],
-[class*="video-tile"] {
-  border: none !important;
-  border-left: none !important;
-  border-right: none !important;
-  border-top: none !important;
-  border-bottom: none !important;
-  border-width: 0 !important;
-  border-style: none !important;
-  border-color: transparent !important;
-  outline: none !important;
-  outline-width: 0 !important;
-  outline-style: none !important;
-  outline-color: transparent !important;
-  box-shadow: none !important;
-  -webkit-box-shadow: none !important;
-  -moz-box-shadow: none !important;
-}
-
-/* ✅ Zoom-style Gallery Container: NO SCROLL, full height, NO BORDERS */
-.video-grid-wrapper {
-  display: flex !important;
-  flex-direction: column !important;
-  align-items: stretch !important;
-  justify-content: stretch !important;
-  width: 100% !important;
-  height: 100% !important;
-  margin: 0 !important;
-  padding: 0 !important;
-  border: none !important;
-  border-left: none !important;
-  border-right: none !important;
-  border-top: none !important;
-  border-bottom: none !important;
-  border-width: 0 !important;
-  border-style: none !important;
-  border-color: transparent !important;
-  outline: none !important;
-  outline-width: 0 !important;
-  outline-style: none !important;
-  outline-color: transparent !important;
-  box-shadow: none !important;
-  -webkit-box-shadow: none !important;
-  -moz-box-shadow: none !important;
-  background: transparent !important; /* NO background - blue gradient shows through */
-  background-color: transparent !important; /* NO background color */
-  gap: 0 !important;
-  grid-gap: 0 !important; /* NO GRID GAP */
-  overflow: hidden !important; /* NO SCROLL */
-  box-sizing: border-box !important;
-  position: relative !important;
-}
-
-/* ✅ Zoom-style Gallery: NO SCROLL, centered grid, NO GAPS, NO BORDERS */
-.video-grid,
-.gallery-grid,
-.lk-video-grid {
-  display: grid !important;
-  gap: 0 !important; /* NO GAPS - edge-to-edge like Zoom */
-  grid-gap: 0 !important; /* NO GRID GAP */
-  row-gap: 0 !important; /* NO ROW GAPS */
-  column-gap: 0 !important; /* NO COLUMN GAPS */
-  padding: 0 !important;
-  margin: auto !important; /* Center the grid */
-  width: 100% !important;
-  max-width: 100% !important;
-  height: 100% !important;
-  max-height: 100% !important;
-  border: none !important;
-  border-left: none !important;
-  border-right: none !important;
-  border-top: none !important;
-  border-bottom: none !important;
-  border-width: 0 !important;
-  border-style: none !important;
-  border-color: transparent !important;
-  outline: none !important;
-  outline-width: 0 !important;
-  outline-style: none !important;
-  outline-color: transparent !important;
-  box-shadow: none !important;
-  -webkit-box-shadow: none !important;
-  -moz-box-shadow: none !important;
-  background: transparent !important; /* NO background on grid - blue gradient shows through */
-  background-color: transparent !important; /* NO background color */
-  visibility: visible !important;
-  opacity: 1 !important;
-  justify-items: stretch !important;
-  align-items: stretch !important;
-  justify-content: center !important;
-  align-content: center !important;
-  overflow: hidden !important; /* NO SCROLL */
-}
-
-/* ✅ Dynamic grid calculation is now handled in GalleryLayout.tsx */
-/* CSS rules below are fallbacks - inline styles from component take precedence */
-/* All participants will have equal size via grid-template-columns/rows */
-
-/* ✅ GALLERY VIEW: NUCLEAR OPTION - REMOVE ALL BORDERS */
-/* Maximum specificity - target wrapper divs */
-.video-grid-wrapper .video-grid > div,
-.video-grid-wrapper .video-grid > div::before,
-.video-grid-wrapper .video-grid > div::after {
-  width: 100%;
-  aspect-ratio: 16 / 9 !important;
-  height: auto !important;
-  border: none !important;
-  border-width: 0 !important;
-  border-style: none !important;
-  border-color: transparent !important;
-  border-left: none !important;
-  border-right: none !important;
-  border-top: none !important;
-  border-bottom: none !important;
-  outline: none !important;
-  outline-width: 0 !important;
-  outline-style: none !important;
-  box-shadow: none !important;
-  -webkit-box-shadow: none !important;
-  -moz-box-shadow: none !important;
-  background: transparent !important;
-  background-color: transparent !important;
-  overflow: hidden !important;
-}
-
-/* ✅ Gallery nested elements - FLOATING TILES, NO BORDERS */
-/* All elements transparent - blue gradient shows through */
-.video-grid-wrapper .video-grid > div,
-.video-grid-wrapper .video-grid > div > *,
-.video-grid-wrapper .video-grid > div .video-container,
-.video-grid-wrapper .video-grid > div .video-container *,
-.video-grid-wrapper .video-grid > div .video-container > *,
-.video-grid-wrapper .video-grid > div .video-container video {
-  border: none !important;
-  border-width: 0 !important;
-  border-style: none !important;
-  border-color: transparent !important;
-  border-left: none !important;
-  border-right: none !important;
-  border-top: none !important;
-  border-bottom: none !important;
-  outline: none !important;
-  outline-width: 0 !important;
-  outline-style: none !important;
-  box-shadow: none !important;
-  -webkit-box-shadow: none !important;
-  -moz-box-shadow: none !important;
-  background: transparent !important; /* Transparent - blue gradient shows through */
-  background-color: transparent !important;
-}
-
-/* Remove ALL borders from ALL video containers - ALL VIEWS (Zoom-style borderless) */
-/* ✅ Remove ALL black backgrounds - transparent everywhere */
-.video-container,
-.video-container *,
-.video-container video,
-.video-container > div,
-.video-container > div *,
-.video-container > div video {
-  border: none !important;
-  border-width: 0 !important;
-  border-style: none !important;
-  border-color: transparent !important;
-  border-radius: 0 !important;
-  outline: none !important;
-  outline-width: 0 !important;
-  box-shadow: none !important;
-  -webkit-appearance: none !important;
-  appearance: none !important;
-  background: transparent !important; /* Transparent - blue gradient shows through */
-  background-color: transparent !important;
-}
-
-/* ✅ Global rule: ALL video elements have transparent backgrounds */
-video {
-  background: transparent !important;
-  background-color: transparent !important;
-}
-
-/* ✅ GLOBAL OVERRIDE: Remove ALL borders from video tiles - NO EXCEPTIONS */
-/* This ensures NO borders survive, even from third-party libraries or inline styles */
-.video-tile,
-.participant-tile,
-.lk-participant-tile,
-.lk-video-container,
-.lk-participant-media,
-.video-container,
-.video-container *,
-[class*="video-tile"],
-[class*="participant-tile"],
-[class*="lk-participant"],
-[class*="lk-video"] {
-  border: none !important;
-  border-width: 0 !important;
-  border-style: none !important;
-  border-color: transparent !important;
-  border-left: none !important;
-  border-right: none !important;
-  border-top: none !important;
-  border-bottom: none !important;
-  outline: none !important;
-  outline-width: 0 !important;
-  box-shadow: none !important;
-}
-
-/* ✅ Remove borders from active/selected/hover states */
-.video-container:hover,
-.video-container:focus,
-.video-container:active,
-.video-container[class*="active"],
-.video-container[class*="selected"],
-.video-container[class*="primary"],
-.video-container[class*="hover"] {
-  border: none !important;
-  outline: none !important;
-  box-shadow: none !important;
-}
-
-
-/* ✅ Zoom-style: Video with transparent background - orientation-based object-fit */
-/* ✅ SCOPE: Only apply to Gallery view - other views use their own styling */
-.video-grid-wrapper .video-grid > div video {
-  width: 100% !important;
-  height: 100% !important;
-  object-fit: contain !important; /* Default to contain - component will override based on orientation */
-  object-position: center !important;
-  display: block !important;
-  border: none !important;
-  border-width: 0 !important;
-  border-style: none !important;
-  border-color: transparent !important;
-  border-radius: 0 !important;
-  outline: none !important;
-  outline-width: 0 !important;
-  box-shadow: none !important;
-  margin: 0 !important;
-  padding: 0 !important;
-  background: transparent !important; /* Transparent - blue gradient shows through */
-  background-color: transparent !important;
-}
 
 /* ✅ Screen Share Mode - Professional Camera Layout */
 .video-grid-cameras-wrapper {
@@ -792,4 +533,130 @@ textarea::placeholder {
   background: rgba(255, 255, 255, 0.1);
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+/* =========================================
+   HABS MEET – FINAL GALLERY FIX (FATIMA)
+   ========================================= */
+
+/* Remove ALL borders everywhere in gallery */
+.gallery-view *,
+.gallery-view *::before,
+.gallery-view *::after {
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* FINAL OVERRIDE: Remove ALL spacing between tiles - catch everything */
+.gallery-view .video-grid > div + div,
+.gallery-view .gallery-grid > div + div {
+  margin-left: 0 !important;
+  margin-top: 0 !important;
+  padding-left: 0 !important;
+  padding-top: 0 !important;
+}
+
+/* Force video-grid-wrapper to have zero gaps, but add side margins for centering */
+.video-grid-wrapper.gallery-view,
+.gallery-view .video-grid-wrapper {
+  gap: 0 !important;
+  row-gap: 0 !important;
+  column-gap: 0 !important;
+  margin: 0 auto !important; /* Center horizontally */
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  padding-left: 32px !important; /* Left margin - increased */
+  padding-right: 32px !important; /* Right margin - increased */
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+/* Grid layout for all screens - ABSOLUTELY ZERO GAPS, edge-to-edge */
+.gallery-view .video-grid,
+.gallery-view .gallery-grid {
+  display: grid !important;
+  gap: 0 !important;
+  row-gap: 0 !important;
+  column-gap: 0 !important;
+  grid-gap: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border-spacing: 0 !important;
+  border-collapse: collapse !important;
+}
+
+/* 1 participant – center fullscreen 16:9 */
+.gallery-view .video-grid:has(> div:only-child) {
+  grid-template-columns: 1fr !important;
+}
+
+/* 2 participants – side by side like Zoom */
+.gallery-view .video-grid:has(> div:nth-child(2)) {
+  grid-template-columns: repeat(2, 1fr) !important;
+}
+
+/* 3 or more – auto layout */
+@media (min-width: 600px) {
+  .gallery-view .video-grid {
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)) !important;
+  }
+}
+@media (max-width: 599px) {
+  .gallery-view .video-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* Each tile EXACT 16:9 - ABSOLUTELY ZERO MARGINS/PADDING/GAPS, edge-to-edge */
+.gallery-view .video-grid > div,
+.gallery-view .gallery-grid > div,
+.gallery-tile {
+  position: relative !important;
+  aspect-ratio: 16 / 9 !important;
+  width: 100% !important;
+  height: 100% !important;
+  background: black !important;
+  overflow: hidden !important;
+  border: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  outline: none !important;
+  box-shadow: none !important;
+  /* Force no spacing */
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+/* Video container */
+.gallery-view .video-container {
+  position: absolute !important;
+  inset: 0 !important;
+  background: black !important;
+}
+
+/* Video element – FILL TILE COMPLETELY (cover), no black bars inside tile */
+.gallery-view video,
+.gallery-view .video-grid > div video,
+.gallery-view .gallery-grid > div video,
+.gallery-tile video {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important; /* COVER fills tile completely, no black bars */
+  object-position: center !important;
+  background: black !important;
+  border: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  display: block !important;
 }

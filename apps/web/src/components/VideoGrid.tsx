@@ -328,10 +328,10 @@ const VideoGrid: React.FC = () => {
     );
   }
 
-  // Normal grid layout when no screen share - Zoom-style: NO gaps, NO padding
+  // Normal grid layout when no screen share - Zoom-style gallery layout
   return (
-    <div className="video-grid-wrapper" style={{ gap: 0, padding: 0, margin: 0 }}>
-      <div className="video-grid" data-count={orderedParticipants.length} style={{ gap: 0, padding: 0, margin: 0 }}>
+    <div className="video-grid-wrapper">
+      <div className="video-grid" data-count={orderedParticipants.length}>
         {orderedParticipants.map((participant) => {
           const participantId = getParticipantId(participant);
           return (
@@ -343,14 +343,7 @@ const VideoGrid: React.FC = () => {
               onDrop={handleDrop}
               onDragEnd={handleDrop}
               style={{ 
-                cursor: draggingId === participantId ? 'grabbing' : 'grab',
-                margin: 0,
-                padding: 0,
-                width: '100%',
-                height: '100%',
-                display: 'flex',
-                alignItems: 'stretch',
-                justifyContent: 'stretch'
+                cursor: draggingId === participantId ? 'grabbing' : 'grab'
               }}
             >
               <VideoTile participant={participant} currentUserUid={user?.uid} />
@@ -776,37 +769,32 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
     element.setAttribute('playsinline', 'true');
     element.muted = isLocal; // Local is muted, remote is not
     element.controls = false;
+    // ✅ FILL TILE COMPLETELY: object-fit: cover (fills tile, no black bars inside)
     element.style.width = '100%';
     element.style.height = '100%';
+    element.style.objectFit = 'cover'; // COVER fills tile completely, no black bars
     element.style.objectPosition = 'center';
-    element.style.backgroundColor = 'transparent'; /* Transparent - blue gradient shows through */
-    element.style.background = 'transparent'; /* Transparent - blue gradient shows through */
+    element.style.backgroundColor = 'black';
+    element.style.background = 'black';
     element.style.display = 'block';
     element.style.border = 'none';
+    element.style.borderWidth = '0';
+    element.style.borderStyle = 'none';
+    element.style.borderColor = 'transparent';
     element.style.outline = 'none';
+    element.style.outlineWidth = '0';
+    element.style.boxShadow = 'none';
     element.style.minWidth = '100%';
     element.style.minHeight = '100%';
     element.style.maxWidth = '100%';
     element.style.maxHeight = '100%';
     
-    // ✅ Orientation-based object-fit: cover for landscape, contain for portrait
-    const updateObjectFit = () => {
-      if (element.videoWidth && element.videoHeight) {
-        const isPortrait = element.videoHeight > element.videoWidth;
-        element.style.objectFit = isPortrait ? 'contain' : 'cover';
-        console.log(`[VideoTile] Orientation detected: ${isPortrait ? 'portrait' : 'landscape'} (${element.videoWidth}x${element.videoHeight}), using object-fit: ${isPortrait ? 'contain' : 'cover'}`);
-      } else {
-        // Default to contain until dimensions are known
-        element.style.objectFit = 'contain';
-      }
-    };
-    
-    // Set initial object-fit
-    updateObjectFit();
-    
-    // Update object-fit when video metadata loads
-    element.addEventListener('loadedmetadata', updateObjectFit);
-    element.addEventListener('resize', updateObjectFit);
+    // ✅ Remove any inline styles that might add borders (from LiveKit TrackReference)
+    if ((element as any).style) {
+      delete (element as any).style.border;
+      delete (element as any).style.boxShadow;
+      delete (element as any).style.outline;
+    }
 
     // ✅ Safe DOM manipulation - clear and append video element
     const container = containerRef.current;
@@ -856,9 +844,7 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
     }
 
     return () => {
-      // Remove event listeners
-      element.removeEventListener('loadedmetadata', updateObjectFit);
-      element.removeEventListener('resize', updateObjectFit);
+      // ✅ No event listeners to remove (removed orientation-based logic)
       
       if (videoPublication?.track && element) {
         console.log('[VideoTile] Detaching video track for', isLocal ? 'local' : 'remote');
@@ -1178,26 +1164,40 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
     }
   }, [participant, isLocal]);
 
+  // ✅ PERMANENT FIX: Remove ALL borders at JS level (not CSS)
+  const containerStyle: React.CSSProperties = {
+    border: 'none',
+    borderWidth: 0,
+    borderStyle: 'none',
+    borderColor: 'transparent',
+    borderLeft: 'none',
+    borderRight: 'none',
+    borderTop: 'none',
+    borderBottom: 'none',
+    borderRadius: 0,
+    outline: 'none',
+    outlineWidth: 0,
+    outlineStyle: 'none',
+    outlineColor: 'transparent',
+    boxShadow: 'none',
+    WebkitBoxShadow: 'none',
+    MozBoxShadow: 'none',
+    background: 'black', // Black background for video container
+    margin: 0,
+    padding: 0,
+    overflow: 'hidden',
+    width: '100%',
+    height: '100%',
+    position: 'relative'
+  };
+
   return (
     <div 
       className="video-container w-full h-full relative" 
       id={`participant-${participant.sid}`} 
-      style={{ 
-        border: 'none', 
-        borderWidth: 0,
-        borderStyle: 'none',
-        borderColor: 'transparent',
-        borderRadius: 0,
-        outline: 'none', 
-        outlineWidth: 0,
-        background: 'transparent', /* Transparent - no background creating borders */
-        boxShadow: 'none',
-        margin: 0,
-        padding: 0,
-        overflow: 'hidden' /* Clip to tile like Zoom */
-      }}
+      style={containerStyle}
     >
-      {/* Video element container - borderless video like Zoom */}
+      {/* ✅ Video element container - NO BORDERS, black background */}
       <div 
         ref={containerRef} 
         data-video-container="true" 
@@ -1207,14 +1207,29 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
           borderWidth: 0,
           borderStyle: 'none',
           borderColor: 'transparent',
+          borderLeft: 'none',
+          borderRight: 'none',
+          borderTop: 'none',
+          borderBottom: 'none',
           borderRadius: 0,
-          background: 'transparent', /* Transparent background */
+          background: 'black', // Black background for letterboxing
+          backgroundColor: 'black',
           outline: 'none',
           outlineWidth: 0,
+          outlineStyle: 'none',
+          outlineColor: 'transparent',
           boxShadow: 'none',
+          WebkitBoxShadow: 'none',
+          MozBoxShadow: 'none',
           margin: 0,
           padding: 0,
-          overflow: 'hidden' /* Clip video to container */
+          overflow: 'hidden',
+          width: '100%',
+          height: '100%',
+          position: 'relative',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center'
         }}
       >
         {/* Placeholder when no video */}
