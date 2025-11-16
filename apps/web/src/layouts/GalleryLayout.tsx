@@ -11,16 +11,9 @@ interface GalleryLayoutProps {
 
 const MAX_TILES_PER_PAGE = 9;
 
-// ✅ Responsive Zoom-style layout rules per participant count
-const getGridLayout = (count: number, isMobile: boolean = false): { rows: number; cols: number } => {
+// ✅ PERMANENT FIX: Zoom-style layout rules per participant count
+const getGridLayout = (count: number): { rows: number; cols: number } => {
   if (count === 0) return { rows: 1, cols: 1 };
-  
-  // Mobile: Always single column for better usability
-  if (isMobile) {
-    return { rows: count, cols: 1 }; // Single column, scrollable
-  }
-  
-  // Desktop/Tablet layouts
   if (count === 1) return { rows: 1, cols: 1 }; // 1 participant → 1 column
   if (count === 2) return { rows: 1, cols: 2 }; // 2 participants → 2 equal 16:9 tiles side-by-side
   if (count === 3 || count === 4) return { rows: 2, cols: 2 }; // 3–4 participants → 2x2 grid
@@ -43,9 +36,6 @@ const GalleryLayout: React.FC<GalleryLayoutProps> = ({
   
   // ✅ Pagination state
   const [currentPage, setCurrentPage] = useState(0);
-  
-  // ✅ Mobile detection state
-  const [isMobile, setIsMobile] = useState(false);
   
   const gridRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -91,21 +81,11 @@ const GalleryLayout: React.FC<GalleryLayoutProps> = ({
     }
   }, [currentPage, pages.length]);
   
-  // ✅ Detect mobile device and update state
-  useEffect(() => {
-    const checkMobile = () => {
-      setIsMobile(window.innerWidth <= 599);
-    };
-    checkMobile();
-    window.addEventListener('resize', checkMobile);
-    return () => window.removeEventListener('resize', checkMobile);
-  }, []);
-  
   // ✅ Get current page participants
   const currentPageParticipants = pages[currentPage] || [];
   
-  // ✅ Get grid layout for current page (responsive)
-  const { rows, cols } = getGridLayout(currentPageParticipants.length, isMobile);
+  // ✅ Get grid layout for current page
+  const { rows, cols } = getGridLayout(currentPageParticipants.length);
   
   // ✅ Pagination handlers
   const canGoPrevious = currentPage > 0;
@@ -243,25 +223,23 @@ const GalleryLayout: React.FC<GalleryLayoutProps> = ({
     );
   }
   
-  // ✅ Container style - responsive with side margins, mobile-friendly scrolling
+  // ✅ Container style - centered with side margins, no scrolling with 1-2 participants
   const wrapperStyle: React.CSSProperties = {
     display: 'flex',
     flexDirection: 'column',
     width: '100%',
     height: '100%',
-    maxHeight: isMobile ? '100%' : (currentPageParticipants.length <= 2 ? '100%' : '100%'),
-    overflow: isMobile ? 'auto' : (currentPageParticipants.length <= 2 ? 'hidden' : 'auto'), // Always scrollable on mobile
-    overflowX: 'hidden', // Never scroll horizontally
-    WebkitOverflowScrolling: 'touch', // Smooth scrolling on iOS
-    justifyContent: isMobile ? 'flex-start' : 'center', // Top-aligned on mobile for scrolling
+    maxHeight: currentPageParticipants.length <= 2 ? '100%' : '100%', // No scrolling for 1-2 participants
+    overflow: currentPageParticipants.length <= 2 ? 'hidden' : 'auto', // Hidden for 1-2, auto for more
+    justifyContent: 'center', // Center vertically
     alignItems: 'center', // Center horizontally
     margin: '0 auto', // Center horizontally
     marginTop: 0,
     marginBottom: 0,
-    paddingLeft: isMobile ? '8px' : '32px', // Smaller margin on mobile
-    paddingRight: isMobile ? '8px' : '32px', // Smaller margin on mobile
-    paddingTop: isMobile ? '8px' : 0, // Small top padding on mobile
-    paddingBottom: isMobile ? '8px' : 0, // Small bottom padding on mobile
+    paddingLeft: '32px', // Left margin - increased for more breathing room
+    paddingRight: '32px', // Right margin - increased for more breathing room
+    paddingTop: 0,
+    paddingBottom: 0,
     border: 'none',
     outline: 'none',
     boxShadow: 'none',
@@ -269,7 +247,7 @@ const GalleryLayout: React.FC<GalleryLayoutProps> = ({
     position: 'relative',
     boxSizing: 'border-box'
   };
-  
+
   return (
     <div 
       ref={wrapperRef}
@@ -283,8 +261,8 @@ const GalleryLayout: React.FC<GalleryLayoutProps> = ({
         className="video-grid gallery-grid"
         style={{
           display: 'grid',
-          gridTemplateColumns: isMobile ? '1fr' : `repeat(${cols}, 1fr)`, // Single column on mobile
-          gridAutoRows: isMobile ? 'auto' : 'auto', // Auto rows for proper sizing
+          gridTemplateColumns: `repeat(${cols}, 1fr)`,
+          gridAutoRows: 'auto', // Let rows size based on 16:9 aspect ratio
           gap: 0, // ZERO GAPS - edge-to-edge
           rowGap: 0, // ZERO row gaps
           columnGap: 0, // ZERO column gaps
@@ -292,14 +270,14 @@ const GalleryLayout: React.FC<GalleryLayoutProps> = ({
           padding: 0,
           margin: 0,
           width: '100%',
-          height: isMobile ? 'auto' : 'auto', // Auto height for mobile scrolling
+          height: 'auto', // Auto height to center properly
           maxWidth: '100%',
           justifyItems: 'stretch',
           alignItems: 'stretch',
           justifyContent: 'center',
-          alignContent: isMobile ? 'flex-start' : 'center', // Top-aligned on mobile
+          alignContent: 'center',
           position: 'relative',
-          overflow: 'visible', // Visible to allow centering/scrolling
+          overflow: 'visible', // Visible to allow centering
           background: 'transparent',
           border: 'none',
           outline: 'none',
@@ -340,7 +318,7 @@ const GalleryLayout: React.FC<GalleryLayoutProps> = ({
             cursor: isDragEnabled && currentPageParticipants.length > 1 ? (isDragging ? 'grabbing' : 'grab') : 'default',
             pointerEvents: 'auto'
           };
-          
+
           return (
             <div
               key={stableKey}

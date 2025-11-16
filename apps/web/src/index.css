@@ -606,28 +606,9 @@ textarea::placeholder {
     grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)) !important;
   }
 }
-
-/* Mobile phones (≤ 599px): Always single column, scrollable */
 @media (max-width: 599px) {
   .gallery-view .video-grid {
     grid-template-columns: 1fr !important;
-    grid-auto-rows: auto !important;
-    height: auto !important; /* Allow scrolling */
-    overflow-y: auto !important;
-    -webkit-overflow-scrolling: touch !important; /* Smooth scrolling on iOS */
-  }
-  
-  /* Reduce side margins on mobile for better space usage */
-  .video-grid-wrapper.gallery-view,
-  .gallery-view .video-grid-wrapper {
-    padding-left: 8px !important; /* Smaller margin on mobile */
-    padding-right: 8px !important; /* Smaller margin on mobile */
-  }
-  
-  /* Ensure tiles are properly sized on mobile */
-  .gallery-view .video-grid > div {
-    min-height: 200px !important; /* Minimum height for visibility */
-    max-height: 50vh !important; /* Don't make tiles too tall */
   }
 }
 
@@ -664,32 +645,18 @@ textarea::placeholder {
   background: black !important;
 }
 
-/* Video element – Smart object-fit: contain for portrait (9:16), cover for landscape (16:9) */
+/* Video element – FILL TILE COMPLETELY (cover), no black bars inside tile */
 .gallery-view video,
 .gallery-view .video-grid > div video,
 .gallery-view .gallery-grid > div video,
 .gallery-tile video {
   width: 100% !important;
   height: 100% !important;
-  object-fit: cover !important; /* Default for landscape cameras */
+  object-fit: cover !important; /* COVER fills tile completely, no black bars */
   object-position: center !important;
   background: black !important;
   border: none !important;
   margin: 0 !important;
   padding: 0 !important;
   display: block !important;
-}
-
-/* Portrait cameras (9:16) - show full frame with letterboxing */
-/* Target all possible gallery view structures */
-.gallery-view video[data-portrait="true"],
-.gallery-view .video-grid > div video[data-portrait="true"],
-.gallery-view .gallery-grid > div video[data-portrait="true"],
-.gallery-view .gallery-tile video[data-portrait="true"],
-.gallery-tile video[data-portrait="true"],
-.video-grid-wrapper.gallery-view video[data-portrait="true"],
-.video-grid-wrapper.gallery-view .video-grid > div video[data-portrait="true"],
-.video-grid-wrapper.gallery-view .gallery-grid > div video[data-portrait="true"],
-.video-grid-wrapper.gallery-view .gallery-tile video[data-portrait="true"] {
-  object-fit: contain !important; /* Show full portrait frame, centered with black bars on sides */
 }

@@ -769,38 +769,10 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
     element.setAttribute('playsinline', 'true');
     element.muted = isLocal; // Local is muted, remote is not
     element.controls = false;
-    
-    // ✅ Smart object-fit: Detect portrait (9:16) vs landscape (16:9) cameras
-    // Default to cover for landscape cameras
-    let objectFitValue = 'cover'; // Default for landscape cameras
-    
-    // Function to update object-fit based on video aspect ratio
-    const updateObjectFit = () => {
-      if (element.videoWidth && element.videoHeight) {
-        const aspectRatio = element.videoWidth / element.videoHeight;
-        // Portrait cameras (9:16) have aspect ratio < 1 (typically around 0.5625)
-        // Landscape cameras (16:9) have aspect ratio > 1 (typically around 1.777)
-        // Use contain for portrait to show full frame with letterboxing
-        // Use cover for landscape to fill tile completely
-        if (aspectRatio < 1) {
-          // Portrait camera (9:16) - use contain to show full frame
-          objectFitValue = 'contain';
-          element.setAttribute('data-portrait', 'true');
-        } else {
-          // Landscape camera (16:9) - use cover to fill tile
-          objectFitValue = 'cover';
-          element.removeAttribute('data-portrait');
-        }
-        // Set inline style with !important to ensure it overrides CSS
-        element.style.setProperty('object-fit', objectFitValue, 'important');
-        console.log('[VideoTile] Video aspect ratio detected:', aspectRatio.toFixed(2), 'object-fit:', objectFitValue, 'for', participant.identity);
-      }
-    };
-    
-    // Set initial styles
+    // ✅ FILL TILE COMPLETELY: object-fit: cover (fills tile, no black bars inside)
     element.style.width = '100%';
     element.style.height = '100%';
-    element.style.setProperty('object-fit', objectFitValue, 'important'); // Will be updated when metadata loads
+    element.style.objectFit = 'cover'; // COVER fills tile completely, no black bars
     element.style.objectPosition = 'center';
     element.style.backgroundColor = 'black';
     element.style.background = 'black';
@@ -823,7 +795,7 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
       delete (element as any).style.boxShadow;
       delete (element as any).style.outline;
     }
-    
+
     // ✅ Safe DOM manipulation - clear and append video element
     const container = containerRef.current;
     if (!container) return;
@@ -860,56 +832,6 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
     try {
       container.appendChild(element);
       
-      // ✅ Aggressive aspect ratio detection - check immediately and repeatedly AFTER appending to DOM
-      const handleLoadedMetadata = () => {
-        updateObjectFit();
-      };
-      
-      const handleLoadedData = () => {
-        updateObjectFit();
-      };
-      
-      const handleCanPlay = () => {
-        updateObjectFit();
-      };
-      
-      const handlePlaying = () => {
-        updateObjectFit();
-      };
-      
-      // ✅ Also check when video dimensions change (e.g., camera switches)
-      const handleResize = () => {
-        updateObjectFit();
-      };
-      
-      // Add multiple event listeners to catch video when ready
-      element.addEventListener('loadedmetadata', handleLoadedMetadata);
-      element.addEventListener('loadeddata', handleLoadedData);
-      element.addEventListener('canplay', handleCanPlay);
-      element.addEventListener('playing', handlePlaying);
-      element.addEventListener('resize', handleResize);
-      
-      // ✅ Aggressive polling: Check video dimensions immediately and repeatedly until available
-      let checkAttempts = 0;
-      const maxAttempts = 50; // Check for up to 5 seconds (50 * 100ms)
-      const checkInterval = setInterval(() => {
-        checkAttempts++;
-        if (element.videoWidth && element.videoHeight) {
-          updateObjectFit();
-          clearInterval(checkInterval);
-        } else if (checkAttempts >= maxAttempts) {
-          // Give up after max attempts, but still listen for events
-          clearInterval(checkInterval);
-          console.log('[VideoTile] Video dimensions not available after', maxAttempts, 'attempts for', participant.identity);
-        }
-      }, 100); // Check every 100ms
-      
-      // ✅ If video already has dimensions, update immediately
-      if (element.videoWidth && element.videoHeight) {
-        updateObjectFit();
-        clearInterval(checkInterval);
-      }
-      
       // Try to play (for remote tracks)
       if (!isLocal) {
         element.play().catch((err) => {
@@ -917,37 +839,12 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
           // Will play on user interaction
         });
       }
-      
-      // ✅ Store interval reference for cleanup
-      (element as any)._checkInterval = checkInterval;
-      (element as any)._handlers = {
-        handleLoadedMetadata,
-        handleLoadedData,
-        handleCanPlay,
-        handlePlaying,
-        handleResize
-      };
     } catch (err) {
       console.error('[VideoTile] Error appending video element:', err);
     }
 
     return () => {
-      // ✅ Clean up event listeners and polling interval
-      const handlers = (element as any)?._handlers;
-      const checkInterval = (element as any)?._checkInterval;
-      
-      if (handlers) {
-        element.removeEventListener('loadedmetadata', handlers.handleLoadedMetadata);
-        element.removeEventListener('loadeddata', handlers.handleLoadedData);
-        element.removeEventListener('canplay', handlers.handleCanPlay);
-        element.removeEventListener('playing', handlers.handlePlaying);
-        element.removeEventListener('resize', handlers.handleResize);
-      }
-      
-      // Clear polling interval if still running
-      if (checkInterval) {
-        clearInterval(checkInterval);
-      }
+      // ✅ No event listeners to remove (removed orientation-based logic)
       
       if (videoPublication?.track && element) {
         console.log('[VideoTile] Detaching video track for', isLocal ? 'local' : 'remote');
@@ -1269,25 +1166,25 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
 
   // ✅ PERMANENT FIX: Remove ALL borders at JS level (not CSS)
   const containerStyle: React.CSSProperties = {
-        border: 'none', 
-        borderWidth: 0,
-        borderStyle: 'none',
-        borderColor: 'transparent',
+    border: 'none',
+    borderWidth: 0,
+    borderStyle: 'none',
+    borderColor: 'transparent',
     borderLeft: 'none',
     borderRight: 'none',
     borderTop: 'none',
     borderBottom: 'none',
-        borderRadius: 0,
-        outline: 'none', 
-        outlineWidth: 0,
+    borderRadius: 0,
+    outline: 'none',
+    outlineWidth: 0,
     outlineStyle: 'none',
     outlineColor: 'transparent',
-        boxShadow: 'none',
+    boxShadow: 'none',
     WebkitBoxShadow: 'none',
     MozBoxShadow: 'none',
     background: 'black', // Black background for video container
-        margin: 0,
-        padding: 0,
+    margin: 0,
+    padding: 0,
     overflow: 'hidden',
     width: '100%',
     height: '100%',
