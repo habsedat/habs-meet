@@ -242,7 +242,8 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
           });
           // ✅ Force new Map reference to ensure React detects change
           setParticipants(new Map(remoteParticipantsMap));
-          setParticipantCount(newRoom.participants.size + 1);
+          // ✅ Update count based on remote participants map size + 1 (local participant)
+          setParticipantCount(remoteParticipantsMap.size + 1);
           console.log('[LiveKit] ✅✅✅ CONNECTED: Set', remoteParticipantsMap.size, 'remote participants in state');
 
         // ✅ SIMPLIFIED AND DIRECT: Subscribe to ALL tracks from ALL participants
@@ -320,6 +321,8 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
             newMap.set(participant.identity, participant);
             console.log('[LiveKit] 📊 Updated participants map. Total remote participants:', newMap.size);
             console.log('[LiveKit] 📋 Participant IDs:', Array.from(newMap.keys()));
+            // ✅ Update count based on the new map size (remote participants) + 1 (local participant)
+            setParticipantCount(newMap.size + 1);
             // Force new Map reference to ensure React detects change
             return new Map(newMap);
           });
@@ -352,8 +355,6 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
           setTimeout(subscribeToNewParticipant, 1000);
         }
         
-        setParticipantCount(newRoom.participants.size + 1);
-
         // ✅ SIMPLIFIED: Make NEW participant subscribe to ALL EXISTING participants
         const newJoinerSubscribe = () => {
           console.log('[LiveKit] 🔑 NEW JOINER subscribing to existing participants');
@@ -406,9 +407,10 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
         setParticipants(prev => {
           const newMap = new Map(prev);
           newMap.delete(participant.identity);
+          // ✅ Update count based on the new map size (remote participants) + 1 (local participant)
+          setParticipantCount(newMap.size + 1);
           return newMap;
         });
-        setParticipantCount(newRoom.participants.size + 1);
       });
 
       // ✅ CRITICAL: Listen for TrackPublished - when ANY participant publishes a track

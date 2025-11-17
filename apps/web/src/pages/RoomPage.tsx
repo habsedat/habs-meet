@@ -20,7 +20,7 @@ const RoomPage: React.FC = () => {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
   const { user, userProfile } = useAuth();
-  const { connect, disconnect, isConnected, isConnecting, publishFromSavedSettings, room } = useLiveKit();
+  const { connect, disconnect, isConnected, isConnecting, publishFromSavedSettings, room, participantCount } = useLiveKit();
   
   const [roomData, setRoomData] = useState<any>(null);
   const [participants, setParticipants] = useState<any[]>([]);
@@ -595,7 +595,7 @@ const RoomPage: React.FC = () => {
                 />
               )}
               {activePanel === 'settings' && (
-                <SettingsPanel />
+                <SettingsPanel roomId={roomId} isHost={isHost} />
               )}
             </div>
           </div>
@@ -629,7 +629,7 @@ const RoomPage: React.FC = () => {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />                                                                               
             </svg>
             <span className="absolute -top-0.5 -right-0.5 bg-techBlue text-white text-xs rounded-full w-4 h-4 flex items-center justify-center">                                        
-              {admittedParticipants.length + (waitingParticipants.length > 0 ? 1 : 0)}
+              {isConnected && participantCount > 0 ? participantCount : admittedParticipants.length + (waitingParticipants.length > 0 ? 1 : 0)}
             </span>
             {waitingParticipants.length > 0 && isHost && (
               <span className="absolute -top-0.5 -right-0.5 bg-yellow-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center animate-pulse" style={{ marginRight: '16px' }}>

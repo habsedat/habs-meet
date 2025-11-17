@@ -3,6 +3,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { Participant } from '../lib/meetingService';
 import { api } from '../lib/api';
 import toast from '../lib/toast';
+import { useLiveKit } from '../contexts/LiveKitContext';
+import { Track, RemoteTrackPublication } from 'livekit-client';
 
 interface ParticipantsPanelProps {
   participants: Participant[];
@@ -16,6 +18,7 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
   roomId,
 }) => {
   const { user } = useAuth();
+  const { participants: liveKitParticipants } = useLiveKit();
   const [isProcessing, setIsProcessing] = useState<string | null>(null);
   
   // Get all participants including waiting ones for hosts
@@ -23,25 +26,91 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
   const waitingParticipants = allParticipants.filter(p => p.lobbyStatus === 'waiting');
   const admittedParticipants = allParticipants.filter(p => !p.lobbyStatus || p.lobbyStatus === 'admitted');
 
-  const handlePromote = async (participantId: string, newRole: 'speaker' | 'viewer') => {
-    if (!isHost) return;
+  const handlePromote = async (participantId: string, newRole: 'speaker' | 'viewer' | 'cohost') => {
+    if (!isHost) {
+      toast.error('Only hosts can update participant roles');
+      return;
+    }
     
+    setIsProcessing(participantId);
     try {
-      // TODO: Implement participant role change via API
-      console.log(`Promoting ${participantId} to ${newRole}`);
-    } catch (error) {
-      console.error('Failed to promote participant:', error);
+      console.log('[ParticipantsPanel] Updating role for participant:', participantId, 'to role:', newRole, 'in room:', roomId);
+      const result = await api.updateParticipantRole(roomId, participantId, newRole);
+      console.log('[ParticipantsPanel] Update role result:', result);
+      toast.success(`Participant role updated to ${newRole}`);
+    } catch (error: any) {
+      console.error('[ParticipantsPanel] Update role error:', error);
+      const errorMessage = error.message || error.error || 'Failed to update participant role';
+      toast.error(errorMessage);
+    } finally {
+      setIsProcessing(null);
     }
   };
 
   const handleRemove = async (participantId: string) => {
-    if (!isHost) return;
+    if (!isHost) {
+      toast.error('Only hosts can remove participants');
+      return;
+    }
     
+    if (!confirm('Are you sure you want to remove this participant from the meeting?')) {
+      return;
+    }
+    
+    setIsProcessing(participantId);
     try {
-      // TODO: Implement participant removal via API
-      console.log(`Removing ${participantId}`);
-    } catch (error) {
-      console.error('Failed to remove participant:', error);
+      console.log('[ParticipantsPanel] Removing participant:', participantId, 'from room:', roomId);
+      const result = await api.removeParticipant(roomId, participantId);
+      console.log('[ParticipantsPanel] Remove result:', result);
+      toast.success('Participant removed successfully');
+    } catch (error: any) {
+      console.error('[ParticipantsPanel] Remove error:', error);
+      const errorMessage = error.message || error.error || 'Failed to remove participant';
+      toast.error(errorMessage);
+    } finally {
+      setIsProcessing(null);
+    }
+  };
+
+  const handleMute = async (participantId: string) => {
+    if (!isHost) {
+      toast.error('Only hosts can mute participants');
+      return;
+    }
+    
+    setIsProcessing(participantId);
+    try {
+      console.log('[ParticipantsPanel] Muting participant:', participantId, 'in room:', roomId);
+      const result = await api.muteParticipant(roomId, participantId);
+      console.log('[ParticipantsPanel] Mute result:', result);
+      toast.success('Participant muted');
+    } catch (error: any) {
+      console.error('[ParticipantsPanel] Mute error:', error);
+      const errorMessage = error.message || error.error || 'Failed to mute participant';
+      toast.error(errorMessage);
+    } finally {
+      setIsProcessing(null);
+    }
+  };
+
+  const handleUnmute = async (participantId: string) => {
+    if (!isHost) {
+      toast.error('Only hosts can unmute participants');
+      return;
+    }
+    
+    setIsProcessing(participantId);
+    try {
+      console.log('[ParticipantsPanel] Unmuting participant:', participantId, 'in room:', roomId);
+      const result = await api.unmuteParticipant(roomId, participantId);
+      console.log('[ParticipantsPanel] Unmute result:', result);
+      toast.success('Participant unmuted');
+    } catch (error: any) {
+      console.error('[ParticipantsPanel] Unmute error:', error);
+      const errorMessage = error.message || error.error || 'Failed to unmute participant';
+      toast.error(errorMessage);
+    } finally {
+      setIsProcessing(null);
     }
   };
 
@@ -143,15 +212,15 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
                   </div>
                   <div className="flex items-center space-x-1">
                     <button
-                      onClick={() => handleAdmit(participant.id)}
-                      disabled={isProcessing === participant.id}
+                      onClick={() => handleAdmit(participant.uid)}
+                      disabled={isProcessing === participant.uid}
                       className="px-3 py-1 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       Admit
                     </button>
                     <button
-                      onClick={() => handleDeny(participant.id)}
-                      disabled={isProcessing === participant.id}
+                      onClick={() => handleDeny(participant.uid)}
+                      disabled={isProcessing === participant.uid}
                       className="px-3 py-1 bg-red-600 text-white rounded text-xs font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       Deny
@@ -173,6 +242,11 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
             {admittedParticipants.map((participant) => {
               const isCurrentUser = participant.uid === user?.uid;
               const canModify = isHost && !isCurrentUser;
+              
+              // Check if participant is muted in LiveKit
+              const liveKitParticipant = liveKitParticipants.get(participant.uid);
+              const micPublication = liveKitParticipant?.getTrackPublication(Track.Source.Microphone) as RemoteTrackPublication | undefined;
+              const isMuted = micPublication?.isMuted ?? false;
 
               return (
                 <div
@@ -199,9 +273,19 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
                             Host
                           </span>
                         )}
+                        {participant.role === 'cohost' && (
+                          <span className="bg-blue-600 text-white px-2 py-1 rounded text-xs font-medium">
+                            Co-Host
+                          </span>
+                        )}
                         {participant.role === 'speaker' && (
                           <span className="bg-violetDeep text-cloud px-2 py-1 rounded text-xs font-medium">
                             Speaker
+                          </span>
+                        )}
+                        {participant.role === 'viewer' && (
+                          <span className="bg-gray-500 text-white px-2 py-1 rounded text-xs font-medium">
+                            Viewer
                           </span>
                         )}
                       </div>
@@ -214,10 +298,41 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
                   {/* Actions */}
                   {canModify && (
                     <div className="flex items-center space-x-1">
+                      {/* Mute/Unmute button */}
+                      <button
+                        onClick={() => {
+                          if (isMuted) {
+                            handleUnmute(participant.uid);
+                          } else {
+                            handleMute(participant.uid);
+                          }
+                        }}
+                        disabled={isProcessing === participant.uid}
+                        className={`p-1.5 rounded transition-colors disabled:opacity-50 ${
+                          isMuted 
+                            ? 'text-red-600 hover:bg-red-100' 
+                            : 'text-gray-600 hover:bg-gray-200'
+                        }`}
+                        title={isMuted ? 'Unmute participant' : 'Mute participant'}
+                      >
+                        {isMuted ? (
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+                          </svg>
+                        ) : (
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                          </svg>
+                        )}
+                      </button>
+                      
+                      {/* Role management */}
                       {participant.role === 'viewer' && (
                         <button
-                          onClick={() => handlePromote(participant.id, 'speaker')}
-                          className="p-1 text-violetDeep hover:bg-violetDeep hover:text-cloud rounded transition-colors"
+                          onClick={() => handlePromote(participant.uid, 'speaker')}
+                          disabled={isProcessing === participant.uid}
+                          className="p-1.5 text-violetDeep hover:bg-violetDeep hover:text-cloud rounded transition-colors disabled:opacity-50"
                           title="Promote to speaker"
                         >
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -226,19 +341,47 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
                         </button>
                       )}
                       {participant.role === 'speaker' && (
+                        <>
+                          <button
+                            onClick={() => handlePromote(participant.uid, 'cohost')}
+                            disabled={isProcessing === participant.uid}
+                            className="p-1.5 text-blue-600 hover:bg-blue-600 hover:text-white rounded transition-colors disabled:opacity-50"
+                            title="Promote to co-host"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+                            </svg>
+                          </button>
+                          <button
+                            onClick={() => handlePromote(participant.uid, 'viewer')}
+                            disabled={isProcessing === participant.uid}
+                            className="p-1.5 text-gray-600 hover:bg-gray-200 rounded transition-colors disabled:opacity-50"
+                            title="Demote to viewer"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 13l-5 5m0 0l-5-5m5 5V6" />
+                            </svg>
+                          </button>
+                        </>
+                      )}
+                      {participant.role === 'cohost' && (
                         <button
-                          onClick={() => handlePromote(participant.id, 'viewer')}
-                          className="p-1 text-gray-600 hover:bg-gray-600 hover:text-cloud rounded transition-colors"
-                          title="Demote to viewer"
+                          onClick={() => handlePromote(participant.uid, 'speaker')}
+                          disabled={isProcessing === participant.uid}
+                          className="p-1.5 text-gray-600 hover:bg-gray-200 rounded transition-colors disabled:opacity-50"
+                          title="Demote to speaker"
                         >
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 13l-5 5m0 0l-5-5m5 5V6" />
                           </svg>
                         </button>
                       )}
+                      
+                      {/* Remove button */}
                       <button
-                        onClick={() => handleRemove(participant.id)}
-                        className="p-1 text-red-600 hover:bg-red-600 hover:text-cloud rounded transition-colors"
+                        onClick={() => handleRemove(participant.uid)}
+                        disabled={isProcessing === participant.uid}
+                        className="p-1.5 text-red-600 hover:bg-red-600 hover:text-white rounded transition-colors disabled:opacity-50"
                         title="Remove participant"
                       >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

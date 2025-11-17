@@ -660,3 +660,11 @@ textarea::placeholder {
   padding: 0 !important;
   display: block !important;
 }
+
+/* Portrait video (9:16) - CONTAIN fit with letterboxing */
+.gallery-view video.portrait-video,
+.gallery-view .video-grid > div video.portrait-video,
+.gallery-view .gallery-grid > div video.portrait-video,
+.gallery-tile video.portrait-video {
+  object-fit: contain !important; /* CONTAIN shows full frame with letterboxing for portrait videos */
+}

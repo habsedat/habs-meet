@@ -640,6 +640,7 @@ interface VideoTileProps {
 
 const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPrimary, onPin, pinnedId }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const isLocal = participant instanceof LocalParticipant;
   const [videoPublication, setVideoPublication] = useState<TrackPublication | null>(null);
 
@@ -764,15 +765,41 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
     
     // Attach video for BOTH local and remote participants
     const element = videoPublication.track.attach() as HTMLVideoElement;
+    videoElementRef.current = element;
     element.autoplay = true;
     element.setAttribute('playsInline', 'true');
     element.setAttribute('playsinline', 'true');
     element.muted = isLocal; // Local is muted, remote is not
     element.controls = false;
-    // ✅ FILL TILE COMPLETELY: object-fit: cover (fills tile, no black bars inside)
+    
+    // ✅ Function to detect aspect ratio and apply correct styling
+    const updateVideoStyling = () => {
+      if (!element.videoWidth || !element.videoHeight) {
+        // Dimensions not available yet, use cover as default
+        element.classList.remove('portrait-video');
+        return;
+      }
+      
+      // Calculate aspect ratio (height/width)
+      const aspectRatio = element.videoHeight / element.videoWidth;
+      // 9:16 portrait = 16/9 = 1.777... 
+      // If aspect ratio is >= 1.5, consider it portrait (allows some tolerance)
+      const isPortraitVideo = aspectRatio >= 1.5;
+      
+      if (isPortraitVideo) {
+        // Portrait video (9:16): add class to use contain with letterboxing
+        element.classList.add('portrait-video');
+        console.log('[VideoTile] Portrait video detected (9:16) for', participant.identity, { width: element.videoWidth, height: element.videoHeight, aspectRatio });
+      } else {
+        // Landscape video (16:9): remove class to use cover
+        element.classList.remove('portrait-video');
+        console.log('[VideoTile] Landscape video detected (16:9) for', participant.identity, { width: element.videoWidth, height: element.videoHeight, aspectRatio });
+      }
+    };
+    
+    // ✅ Set initial styling (object-fit handled by CSS class)
     element.style.width = '100%';
     element.style.height = '100%';
-    element.style.objectFit = 'cover'; // COVER fills tile completely, no black bars
     element.style.objectPosition = 'center';
     element.style.backgroundColor = 'black';
     element.style.background = 'black';
@@ -811,9 +838,32 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
           console.warn('[VideoTile] Error removing existing video:', err);
         }
       } else {
-        // Same element already attached, skip re-attachment
+        // Same element already attached, skip re-attachment but still setup aspect ratio detection
+        // ✅ Listen for metadata to detect aspect ratio
+        const handleLoadedMetadata = () => {
+          updateVideoStyling();
+        };
+        
+        const handleResize = () => {
+          updateVideoStyling();
+        };
+        
+        // Check immediately if dimensions are already available
+        if (element.videoWidth && element.videoHeight) {
+          updateVideoStyling();
+        }
+        
+        // Add event listeners
+        element.addEventListener('loadedmetadata', handleLoadedMetadata);
+        element.addEventListener('resize', handleResize);
+        
         return () => {
-          // Cleanup will be handled by the main return below
+          // Remove event listeners
+          if (element) {
+            element.removeEventListener('loadedmetadata', handleLoadedMetadata);
+            element.removeEventListener('resize', handleResize);
+          }
+          videoElementRef.current = null;
         };
       }
     }
@@ -828,9 +878,27 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
       }
     }
     
+    // ✅ Define event handlers before appending (so they're accessible in cleanup)
+    const handleLoadedMetadata = () => {
+      updateVideoStyling();
+    };
+    
+    const handleResize = () => {
+      updateVideoStyling();
+    };
+    
     // Append the new element
     try {
       container.appendChild(element);
+      
+      // Check immediately if dimensions are already available
+      if (element.videoWidth && element.videoHeight) {
+        updateVideoStyling();
+      }
+      
+      // Add event listeners (after appending to DOM)
+      element.addEventListener('loadedmetadata', handleLoadedMetadata);
+      element.addEventListener('resize', handleResize);
       
       // Try to play (for remote tracks)
       if (!isLocal) {
@@ -844,7 +912,11 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
     }
 
     return () => {
-      // ✅ No event listeners to remove (removed orientation-based logic)
+      // ✅ Remove event listeners
+      if (element) {
+        element.removeEventListener('loadedmetadata', handleLoadedMetadata);
+        element.removeEventListener('resize', handleResize);
+      }
       
       if (videoPublication?.track && element) {
         console.log('[VideoTile] Detaching video track for', isLocal ? 'local' : 'remote');
@@ -864,6 +936,8 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
           }
         }
       }
+      
+      videoElementRef.current = null;
     };
   }, [videoPublication, isLocal, participant.identity]);
 

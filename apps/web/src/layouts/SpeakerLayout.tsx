@@ -89,3 +89,4 @@ const SpeakerLayout: React.FC<SpeakerLayoutProps> = ({
 
 export default SpeakerLayout;
 
+
