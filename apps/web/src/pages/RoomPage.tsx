@@ -15,12 +15,16 @@ import ParticipantsPanel from '../components/ParticipantsPanel';
 import SettingsPanel from '../components/SettingsPanel';
 import { recordingService, RecordingService } from '../lib/recordingService';
 import { ViewMode } from '../types/viewModes';
+import { useCostOptimizations } from '../hooks/useCostOptimizations';
 
 const RoomPage: React.FC = () => {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
   const { user, userProfile } = useAuth();
   const { connect, disconnect, isConnected, isConnecting, publishFromSavedSettings, room, participantCount, setMicrophoneEnabled } = useLiveKit();
+  
+  // Apply cost optimizations: active speaker quality, background pause, auto-disconnect
+  useCostOptimizations(room);
   
   const [roomData, setRoomData] = useState<any>(null);
   const [participants, setParticipants] = useState<any[]>([]);
@@ -483,6 +487,8 @@ const RoomPage: React.FC = () => {
       return;
     }
 
+    // IMPORTANT: Recording is only started on explicit host action to avoid burning LiveKit minutes.
+    // Never auto-start recording when host joins, first participant joins, or any other automatic trigger.
     // Start recording immediately - no options, just record everything
     try {
       await recordingService.startRecording({
