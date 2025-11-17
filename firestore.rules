@@ -9,7 +9,8 @@ service cloud.firestore {
     function isHost(roomId) {
       return isAuthenticated() && 
         exists(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid)).data.role == 'host';
+        (get(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid)).data.role == 'host' ||
+         get(/databases/$(database)/documents/rooms/$(roomId)/participants/$(request.auth.uid)).data.role == 'cohost');
     }
     
     function isParticipant(roomId) {
@@ -44,6 +45,14 @@ service cloud.firestore {
         allow update: if false; // Chat messages cannot be edited
         allow delete: if isAuthenticated() && 
           (isHost(roomId) || request.auth.uid == resource.data.uid); // Allow host or message owner to delete
+      }
+      
+      // Notifications subcollection
+      match /notifications/{notificationId} {
+        allow read: if isAuthenticated() && isParticipant(roomId);
+        allow create: if isHost(roomId); // Only hosts can create notifications
+        allow update: if isAuthenticated() && request.auth.uid == resource.data.participantId; // Participants can mark their own notifications as read
+        allow delete: if isHost(roomId);
       }
     }
     

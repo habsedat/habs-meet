@@ -77,7 +77,8 @@ const verifyHost = async (roomId: string, uid: string): Promise<boolean> => {
   }
 
   const participantData = participantDoc.data();
-  return participantData?.role === 'host';
+  // Both 'host' and 'cohost' have full host privileges
+  return participantData?.role === 'host' || participantData?.role === 'cohost';
 };
 
 const signInviteToken = (inviteId: string, roomId: string, role: string, expiresAt: string): string => {
@@ -303,6 +304,11 @@ export const getMeetingToken = functions.https.onRequest(async (req, res) => {
 
       const participantData = participantDoc.data()!;
 
+      // Check if participant is banned from this room
+      if (participantData.isBanned === true) {
+        return res.status(403).json({ error: 'You have been removed from this meeting and cannot rejoin' });
+      }
+
       // Create LiveKit access token
       const config = getConfig();
       const at = new AccessToken(config.livekitApiKey!, config.livekitApiSecret!, {
@@ -362,17 +368,28 @@ export const getRoomGuard = functions.https.onRequest(async (req, res) => {
 
       const isParticipant = participantDoc.exists;
       
+      // Check if participant is banned
+      let isBanned = false;
+      if (isParticipant) {
+        const participantData = participantDoc.data();
+        isBanned = participantData?.isBanned === true;
+      }
+      
       // If room is locked, only existing participants can join
-      // If room is open, anyone can join
+      // If room is open, anyone can join (unless banned)
       // If room is ended, no one can join
+      // Banned participants cannot join even if room is open
       let canJoin = false;
       if (roomData.status === 'ended') {
+        canJoin = false;
+      } else if (isBanned) {
+        // Banned participants cannot rejoin
         canJoin = false;
       } else if (roomData.status === 'locked') {
         // Locked: only existing participants can join
         canJoin = isParticipant;
       } else {
-        // Open: anyone can join
+        // Open: anyone can join (unless banned, checked above)
         canJoin = true;
       }
       
@@ -1080,6 +1097,26 @@ export const muteParticipant = functions.https.onRequest(async (req, res) => {
         return res.status(403).json({ error: 'Only hosts can mute participants' });
       }
 
+      // Prevent host/cohost from muting themselves
+      if (participantId === user.uid) {
+        return res.status(400).json({ error: 'You cannot mute yourself' });
+      }
+
+      // Check if target participant is also a host/cohost
+      const targetParticipantDoc = await admin.firestore()
+        .collection('rooms')
+        .doc(roomId)
+        .collection('participants')
+        .doc(participantId)
+        .get();
+      
+      if (targetParticipantDoc.exists) {
+        const targetRole = targetParticipantDoc.data()?.role;
+        if (targetRole === 'host' || targetRole === 'cohost') {
+          return res.status(403).json({ error: 'Cannot mute hosts or co-hosts' });
+        }
+      }
+
       // Mute participant in LiveKit
       const config = getConfig();
       const roomService = new RoomService(config.livekitWsUrl!, config.livekitApiKey!, config.livekitApiSecret!);
@@ -1093,47 +1130,99 @@ export const muteParticipant = functions.https.onRequest(async (req, res) => {
           return res.status(404).json({ error: 'Participant not found in room' });
         }
         
-        // Get published tracks - check different possible property names
-        const tracks = (targetParticipant as any).publishedTracks || (targetParticipant as any).tracks || [];
+        // Get published tracks - LiveKit SDK structure
+        const tracks = (targetParticipant as any).publishedTracks || [];
         
-        // Find microphone track
+        if (!tracks || tracks.length === 0) {
+          return res.status(404).json({ error: 'No published tracks found for participant' });
+        }
+        
+        // Find microphone track - check all possible property names
         let microphoneTrackSid: string | null = null;
         for (const track of tracks) {
-          const trackType = track.type || track.kind;
+          // Check different possible property names
+          const trackKind = track.kind || track.type;
           const trackSource = track.source || track.trackSource;
+          const trackSid = track.sid || track.trackSid;
           
-          if (trackType === 'audio' && trackSource === 'microphone') {
-            microphoneTrackSid = track.sid || track.trackSid;
-            break;
+          console.log('[Mute] Checking track:', { trackKind, trackSource, trackSid, track: JSON.stringify(track) });
+          
+          if (trackKind === 'audio' || trackKind === 1) { // 1 = Audio kind in LiveKit
+            // If it's audio, check if it's microphone
+            if (trackSource === 'microphone' || trackSource === 1 || !trackSource) { // 1 = Microphone source in LiveKit
+              microphoneTrackSid = trackSid;
+              console.log('[Mute] Found microphone track:', microphoneTrackSid);
+              break;
+            }
           }
         }
         
         if (!microphoneTrackSid) {
-          // Try to mute all audio tracks if we can't find specific microphone track
-          console.log('[Mute] Microphone track not found, attempting to mute all audio tracks');
+          // Try to mute the first audio track if we can't find specific microphone
+          console.log('[Mute] Microphone track not found, attempting to mute first audio track');
           for (const track of tracks) {
-            const trackType = track.type || track.kind;
-            if (trackType === 'audio') {
-              const trackSid = track.sid || track.trackSid;
-              if (trackSid) {
-                try {
-                  await roomService.mutePublishedTrack(roomId, participantId, trackSid, true);
-                  return res.json({ success: true, message: 'Participant muted successfully' });
-                } catch (err: any) {
-                  console.error('[Mute] Error muting track:', err);
-                }
-              }
+            const trackKind = track.kind || track.type;
+            const trackSid = track.sid || track.trackSid;
+            
+            if ((trackKind === 'audio' || trackKind === 1) && trackSid) { // 1 = Audio kind in LiveKit
+              microphoneTrackSid = trackSid;
+              console.log('[Mute] Using first audio track:', microphoneTrackSid);
+              break;
             }
           }
+        }
+        
+        if (!microphoneTrackSid) {
           return res.status(404).json({ error: 'Microphone track not found for participant' });
         }
         
-        // Mute the microphone track
-        await roomService.mutePublishedTrack(roomId, participantId, microphoneTrackSid, true);
-        return res.json({ success: true, message: 'Participant muted successfully' });
+        // Mute the microphone track using LiveKit RoomServiceClient API
+        try {
+          // Try the correct LiveKit SDK method - mutePublishedTrack(room, identity, trackSid, muted)
+          if (typeof (roomService as any).mutePublishedTrack === 'function') {
+            await (roomService as any).mutePublishedTrack(roomId, participantId, microphoneTrackSid, true);
+            console.log('[Mute] Successfully muted participant using mutePublishedTrack:', participantId, 'track:', microphoneTrackSid);
+          } else {
+            // Fallback: Use the API client directly
+            const api = (roomService as any).api;
+            if (api && typeof api.mutePublishedTrack === 'function') {
+              await api.mutePublishedTrack({
+                room: roomId,
+                identity: participantId,
+                trackSid: microphoneTrackSid,
+                muted: true
+              });
+              console.log('[Mute] Successfully muted participant using API.mutePublishedTrack:', participantId);
+            } else {
+              throw new Error('mutePublishedTrack method not found in RoomService');
+            }
+          }
+          
+          // Create Firestore notification for the participant
+          const notificationRef = admin.firestore()
+            .collection('rooms')
+            .doc(roomId)
+            .collection('notifications')
+            .doc();
+          
+          await notificationRef.set({
+            participantId: participantId,
+            type: 'muted',
+            message: 'Your microphone has been muted by the host',
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            read: false
+          });
+          
+          console.log('[Mute] Notification created for participant:', participantId);
+          
+          return res.json({ success: true, message: 'Participant muted successfully' });
+        } catch (muteError: any) {
+          console.error('[Mute] Error muting track:', muteError);
+          throw muteError;
+        }
       } catch (lkError: any) {
-        console.error('LiveKit API error:', lkError);
-        throw lkError;
+        console.error('[Mute] LiveKit API error:', lkError);
+        return res.status(500).json({ error: `Failed to mute participant: ${lkError.message}` });
       }
     } catch (error: any) {
       console.error('Error muting participant:', error);
@@ -1163,6 +1252,11 @@ export const unmuteParticipant = functions.https.onRequest(async (req, res) => {
         return res.status(403).json({ error: 'Only hosts can unmute participants' });
       }
 
+      // Prevent host/cohost from unmuting themselves (though this is less critical)
+      if (participantId === user.uid) {
+        return res.status(400).json({ error: 'You cannot unmute yourself' });
+      }
+
       // Unmute participant in LiveKit
       const config = getConfig();
       const roomService = new RoomService(config.livekitWsUrl!, config.livekitApiKey!, config.livekitApiSecret!);
@@ -1176,47 +1270,99 @@ export const unmuteParticipant = functions.https.onRequest(async (req, res) => {
           return res.status(404).json({ error: 'Participant not found in room' });
         }
         
-        // Get published tracks - check different possible property names
-        const tracks = (targetParticipant as any).publishedTracks || (targetParticipant as any).tracks || [];
+        // Get published tracks - LiveKit SDK structure
+        const tracks = (targetParticipant as any).publishedTracks || [];
         
-        // Find microphone track
+        if (!tracks || tracks.length === 0) {
+          return res.status(404).json({ error: 'No published tracks found for participant' });
+        }
+        
+        // Find microphone track - check all possible property names
         let microphoneTrackSid: string | null = null;
         for (const track of tracks) {
-          const trackType = track.type || track.kind;
+          // Check different possible property names
+          const trackKind = track.kind || track.type;
           const trackSource = track.source || track.trackSource;
+          const trackSid = track.sid || track.trackSid;
           
-          if (trackType === 'audio' && trackSource === 'microphone') {
-            microphoneTrackSid = track.sid || track.trackSid;
-            break;
+          console.log('[Unmute] Checking track:', { trackKind, trackSource, trackSid });
+          
+          if (trackKind === 'audio' || trackKind === 1) { // 1 = Audio kind in LiveKit
+            // If it's audio, check if it's microphone
+            if (trackSource === 'microphone' || trackSource === 1 || !trackSource) { // 1 = Microphone source in LiveKit
+              microphoneTrackSid = trackSid;
+              console.log('[Unmute] Found microphone track:', microphoneTrackSid);
+              break;
+            }
           }
         }
         
         if (!microphoneTrackSid) {
-          // Try to unmute all audio tracks if we can't find specific microphone track
-          console.log('[Unmute] Microphone track not found, attempting to unmute all audio tracks');
+          // Try to unmute the first audio track if we can't find specific microphone
+          console.log('[Unmute] Microphone track not found, attempting to unmute first audio track');
           for (const track of tracks) {
-            const trackType = track.type || track.kind;
-            if (trackType === 'audio') {
-              const trackSid = track.sid || track.trackSid;
-              if (trackSid) {
-                try {
-                  await roomService.mutePublishedTrack(roomId, participantId, trackSid, false);
-                  return res.json({ success: true, message: 'Participant unmuted successfully' });
-                } catch (err: any) {
-                  console.error('[Unmute] Error unmuting track:', err);
-                }
-              }
+            const trackKind = track.kind || track.type;
+            const trackSid = track.sid || track.trackSid;
+            
+            if ((trackKind === 'audio' || trackKind === 1) && trackSid) { // 1 = Audio kind in LiveKit
+              microphoneTrackSid = trackSid;
+              console.log('[Unmute] Using first audio track:', microphoneTrackSid);
+              break;
             }
           }
+        }
+        
+        if (!microphoneTrackSid) {
           return res.status(404).json({ error: 'Microphone track not found for participant' });
         }
         
-        // Unmute the microphone track
-        await roomService.mutePublishedTrack(roomId, participantId, microphoneTrackSid, false);
-        return res.json({ success: true, message: 'Participant unmuted successfully' });
+        // Unmute the microphone track using LiveKit RoomServiceClient API
+        try {
+          // Try the correct LiveKit SDK method - mutePublishedTrack(room, identity, trackSid, muted)
+          if (typeof (roomService as any).mutePublishedTrack === 'function') {
+            await (roomService as any).mutePublishedTrack(roomId, participantId, microphoneTrackSid, false);
+            console.log('[Unmute] Successfully unmuted participant using mutePublishedTrack:', participantId, 'track:', microphoneTrackSid);
+          } else {
+            // Fallback: Use the API client directly
+            const api = (roomService as any).api;
+            if (api && typeof api.mutePublishedTrack === 'function') {
+              await api.mutePublishedTrack({
+                room: roomId,
+                identity: participantId,
+                trackSid: microphoneTrackSid,
+                muted: false
+              });
+              console.log('[Unmute] Successfully unmuted participant using API.mutePublishedTrack:', participantId);
+            } else {
+              throw new Error('mutePublishedTrack method not found in RoomService');
+            }
+          }
+          
+          // Create Firestore notification for the participant
+          const notificationRef = admin.firestore()
+            .collection('rooms')
+            .doc(roomId)
+            .collection('notifications')
+            .doc();
+          
+          await notificationRef.set({
+            participantId: participantId,
+            type: 'unmuted',
+            message: 'Your microphone has been unmuted by the host',
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            read: false
+          });
+          
+          console.log('[Unmute] Notification created for participant:', participantId);
+          
+          return res.json({ success: true, message: 'Participant unmuted successfully' });
+        } catch (unmuteError: any) {
+          console.error('[Unmute] Error unmuting track:', unmuteError);
+          throw unmuteError;
+        }
       } catch (lkError: any) {
-        console.error('LiveKit API error:', lkError);
-        throw lkError;
+        console.error('[Unmute] LiveKit API error:', lkError);
+        return res.status(500).json({ error: `Failed to unmute participant: ${lkError.message}` });
       }
     } catch (error: any) {
       console.error('Error unmuting participant:', error);
@@ -1246,13 +1392,53 @@ export const removeParticipant = functions.https.onRequest(async (req, res) => {
         return res.status(403).json({ error: 'Only hosts can remove participants' });
       }
 
-      // Remove participant from LiveKit room
+      // Remove participant from LiveKit room (this will disconnect them)
       const config = getConfig();
       const roomService = new RoomService(config.livekitWsUrl!, config.livekitApiKey!, config.livekitApiSecret!);
       
-      await roomService.removeParticipant(roomId, participantId);
+      try {
+        // First, try to get the participant to ensure they exist
+        const participants = await roomService.listParticipants(roomId);
+        const targetParticipant = participants.find(p => p.identity === participantId);
+        
+        if (targetParticipant) {
+          // Use the correct method to remove participant
+          // Try different method names that might exist in the SDK
+          try {
+            // Method 1: removeParticipant(room, identity)
+            if (typeof (roomService as any).removeParticipant === 'function') {
+              await (roomService as any).removeParticipant(roomId, participantId);
+              console.log('[RemoveParticipant] Successfully removed participant using removeParticipant:', participantId);
+            }
+            // Method 2: removeParticipant(room, identity) - alternative
+            else if (typeof (roomService as any).removeParticipantFromRoom === 'function') {
+              await (roomService as any).removeParticipantFromRoom(roomId, participantId);
+              console.log('[RemoveParticipant] Successfully removed participant using removeParticipantFromRoom:', participantId);
+            }
+            // Method 3: Use RoomService API directly
+            else {
+              // Try using the room service's internal API
+              const roomServiceAny = roomService as any;
+              if (roomServiceAny.api) {
+                await roomServiceAny.api.removeParticipant({ room: roomId, identity: participantId });
+                console.log('[RemoveParticipant] Successfully removed participant using API:', participantId);
+              } else {
+                throw new Error('No removeParticipant method found');
+              }
+            }
+          } catch (removeError: any) {
+            console.error('[RemoveParticipant] Error calling removeParticipant:', removeError);
+            // Still continue to ban them in Firestore
+          }
+        } else {
+          console.log('[RemoveParticipant] Participant not found in LiveKit room, but will still ban them');
+        }
+      } catch (lkError: any) {
+        console.error('[RemoveParticipant] Error removing from LiveKit:', lkError);
+        // Continue to ban them in Firestore even if LiveKit removal fails
+      }
 
-      // Update participant document in Firestore
+      // Update participant document in Firestore - mark as banned and removed
       const participantRef = admin.firestore()
         .collection('rooms')
         .doc(roomId)
@@ -1262,9 +1448,12 @@ export const removeParticipant = functions.https.onRequest(async (req, res) => {
       await participantRef.update({
         leftAt: admin.firestore.FieldValue.serverTimestamp(),
         removedBy: user.uid,
+        removedAt: admin.firestore.FieldValue.serverTimestamp(),
+        isBanned: true, // Ban them from rejoining this specific meeting
+        isActive: false,
       });
 
-      return res.json({ success: true, message: 'Participant removed successfully' });
+      return res.json({ success: true, message: 'Participant removed and banned from rejoining' });
     } catch (error: any) {
       console.error('Error removing participant:', error);
       return res.status(500).json({ error: error.message });
@@ -1439,15 +1628,15 @@ export const api = functions.https.onRequest(async (req, res) => {
       return denyParticipant(req, res);
     } else if (path === '/api/lobby/admit-all' && method === 'POST') {
       return admitAllParticipants(req, res);
-    } else if (path === '/api/meet/mute-participant' && method === 'POST') {
+    } else if ((path === '/api/meet/mute-participant' || path === '/meet/mute-participant') && method === 'POST') {
       return muteParticipant(req, res);
-    } else if (path === '/api/meet/unmute-participant' && method === 'POST') {
+    } else if ((path === '/api/meet/unmute-participant' || path === '/meet/unmute-participant') && method === 'POST') {
       return unmuteParticipant(req, res);
-    } else if (path === '/api/meet/remove-participant' && method === 'POST') {
+    } else if ((path === '/api/meet/remove-participant' || path === '/meet/remove-participant') && method === 'POST') {
       return removeParticipant(req, res);
-    } else if (path === '/api/meet/update-role' && method === 'POST') {
+    } else if ((path === '/api/meet/update-role' || path === '/meet/update-role') && method === 'POST') {
       return updateParticipantRole(req, res);
-    } else if (path === '/api/meet/enforce-capacity' && method === 'POST') {
+    } else if ((path === '/api/meet/enforce-capacity' || path === '/meet/enforce-capacity') && method === 'POST') {
       return enforceParticipantCapacity(req, res);
     } else {
       console.log('[API Router] No route found for:', path);

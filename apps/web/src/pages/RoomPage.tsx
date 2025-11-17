@@ -20,7 +20,7 @@ const RoomPage: React.FC = () => {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
   const { user, userProfile } = useAuth();
-  const { connect, disconnect, isConnected, isConnecting, publishFromSavedSettings, room, participantCount } = useLiveKit();
+  const { connect, disconnect, isConnected, isConnecting, publishFromSavedSettings, room, participantCount, setMicrophoneEnabled } = useLiveKit();
   
   const [roomData, setRoomData] = useState<any>(null);
   const [participants, setParticipants] = useState<any[]>([]);
@@ -71,7 +71,7 @@ const RoomPage: React.FC = () => {
     return unsubscribe;
   }, [roomId, user, navigate, disconnect]);
 
-  // Check if user is host
+  // Check if user is host (including cohost) and if they're banned
   useEffect(() => {
     if (!roomId || !user) return;
 
@@ -79,12 +79,69 @@ const RoomPage: React.FC = () => {
     const unsubscribeParticipant = onSnapshot(participantRef, (participantDoc) => {
       if (participantDoc.exists()) {
         const participantData = participantDoc.data() as any;
-        setIsHost(participantData.role === 'host');
+        // Both host and cohost have host privileges
+        setIsHost(participantData.role === 'host' || participantData.role === 'cohost');
+        
+        // If user is banned, disconnect them immediately
+        if (participantData.isBanned === true) {
+          toast.error('You have been removed from this meeting');
+          disconnect();
+          setTimeout(() => navigate('/'), 2000);
+        }
       }
     });
 
     return unsubscribeParticipant;
-  }, [roomId, user]);
+  }, [roomId, user, disconnect, navigate]);
+
+  // Listen for mute/unmute notifications from host
+  useEffect(() => {
+    if (!roomId || !user || !isConnected) return;
+
+    const notificationsRef = collection(db, 'rooms', roomId, 'notifications');
+    const q = query(notificationsRef, orderBy('createdAt', 'desc'));
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === 'added') {
+          const notification = change.doc.data();
+          
+          // Only process notifications for this user
+          if (notification.participantId === user.uid && !notification.read) {
+            console.log('[RoomPage] Received mute notification:', notification);
+            
+            // Apply mute/unmute based on notification type
+            if (notification.type === 'muted') {
+              setMicrophoneEnabled(false).catch((err) => {
+                console.error('[RoomPage] Failed to mute microphone:', err);
+              });
+              // Show popup notification
+              toast.error(notification.message || 'Your microphone has been muted by the host', {
+                duration: 5000,
+                icon: '🔇'
+              });
+            } else if (notification.type === 'unmuted') {
+              setMicrophoneEnabled(true).catch((err) => {
+                console.error('[RoomPage] Failed to unmute microphone:', err);
+              });
+              // Show popup notification
+              toast.success(notification.message || 'Your microphone has been unmuted by the host', {
+                duration: 5000,
+                icon: '🔊'
+              });
+            }
+            
+            // Mark notification as read
+            updateDoc(change.doc.ref, { read: true }).catch((err) => {
+              console.error('[RoomPage] Failed to mark notification as read:', err);
+            });
+          }
+        }
+      });
+    });
+
+    return unsubscribe;
+  }, [roomId, user, isConnected, setMicrophoneEnabled]);
 
   // Load participants
   useEffect(() => {

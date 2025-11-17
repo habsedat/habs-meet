@@ -26,7 +26,7 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
   const waitingParticipants = allParticipants.filter(p => p.lobbyStatus === 'waiting');
   const admittedParticipants = allParticipants.filter(p => !p.lobbyStatus || p.lobbyStatus === 'admitted');
 
-  const handlePromote = async (participantId: string, newRole: 'speaker' | 'viewer' | 'cohost') => {
+  const handlePromote = async (participantId: string, newRole: 'speaker' | 'viewer' | 'cohost' | 'host') => {
     if (!isHost) {
       toast.error('Only hosts can update participant roles');
       return;
@@ -343,6 +343,16 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
                       {participant.role === 'speaker' && (
                         <>
                           <button
+                            onClick={() => handlePromote(participant.uid, 'host')}
+                            disabled={isProcessing === participant.uid}
+                            className="p-1.5 text-goldBright hover:bg-goldBright hover:text-midnight rounded transition-colors disabled:opacity-50"
+                            title="Promote to host"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" />
+                            </svg>
+                          </button>
+                          <button
                             onClick={() => handlePromote(participant.uid, 'cohost')}
                             disabled={isProcessing === participant.uid}
                             className="p-1.5 text-blue-600 hover:bg-blue-600 hover:text-white rounded transition-colors disabled:opacity-50"
@@ -365,16 +375,28 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
                         </>
                       )}
                       {participant.role === 'cohost' && (
-                        <button
-                          onClick={() => handlePromote(participant.uid, 'speaker')}
-                          disabled={isProcessing === participant.uid}
-                          className="p-1.5 text-gray-600 hover:bg-gray-200 rounded transition-colors disabled:opacity-50"
-                          title="Demote to speaker"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 13l-5 5m0 0l-5-5m5 5V6" />
-                          </svg>
-                        </button>
+                        <>
+                          <button
+                            onClick={() => handlePromote(participant.uid, 'host')}
+                            disabled={isProcessing === participant.uid}
+                            className="p-1.5 text-goldBright hover:bg-goldBright hover:text-midnight rounded transition-colors disabled:opacity-50"
+                            title="Promote to host"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" />
+                            </svg>
+                          </button>
+                          <button
+                            onClick={() => handlePromote(participant.uid, 'speaker')}
+                            disabled={isProcessing === participant.uid}
+                            className="p-1.5 text-gray-600 hover:bg-gray-200 rounded transition-colors disabled:opacity-50"
+                            title="Demote to speaker"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 13l-5 5m0 0l-5-5m5 5V6" />
+                            </svg>
+                          </button>
+                        </>
                       )}
                       
                       {/* Remove button */}

@@ -1,0 +1,9 @@
+# Don't ignore package-lock.json - Firebase needs it for npm ci
+# Only ignore unnecessary files
+firebase-debug.log
+*.log
+.DS_Store
+.vscode/
+.idea/
+
+
