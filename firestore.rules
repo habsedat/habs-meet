@@ -111,6 +111,22 @@ service cloud.firestore {
         allow update: if isAuthenticated() && request.auth.uid == userId;
         allow delete: if isAuthenticated() && request.auth.uid == userId;
       }
+      
+      // Settings subcollection - user preferences and settings
+      match /settings/{settingId} {
+        allow read: if isAuthenticated() && request.auth.uid == userId;
+        allow create: if isAuthenticated() && request.auth.uid == userId;
+        allow update: if isAuthenticated() && request.auth.uid == userId;
+        allow delete: if isAuthenticated() && request.auth.uid == userId;
+      }
+      
+      // Events subcollection - imported calendar events
+      match /events/{eventId} {
+        allow read: if isAuthenticated() && request.auth.uid == userId;
+        allow create: if isAuthenticated() && request.auth.uid == userId;
+        allow update: if isAuthenticated() && request.auth.uid == userId;
+        allow delete: if isAuthenticated() && request.auth.uid == userId;
+      }
     }
     
     // User uploads collection - for file storage metadata

@@ -53,6 +53,25 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
   // Detect mobile/tablet screen size
   const [isMobile, setIsMobile] = useState(false);
   const [isTablet, setIsTablet] = useState(false);
+
+  // Get optimized video constraints based on device type
+  const getVideoConstraints = useCallback(() => {
+    if (isMobile || isTablet) {
+      // Mobile/Tablet: Lower resolution and frame rate for better performance and bandwidth
+      return {
+        width: 640,
+        height: 360,
+        frameRate: 15, // Lower frame rate for mobile
+      };
+    } else {
+      // Desktop: Higher quality
+      return {
+        width: 1280,
+        height: 720,
+        frameRate: 30,
+      };
+    }
+  }, [isMobile, isTablet]);
   
   useEffect(() => {
     const checkScreenSize = () => {
@@ -144,7 +163,9 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
         // First, request permissions with getUserMedia to ensure devices are accessible
         // This is required for external devices to be enumerated properly
         const stream = await navigator.mediaDevices.getUserMedia({ 
-          video: { width: { ideal: 1280 }, height: { ideal: 720 } }, 
+          video: isMobile || isTablet 
+            ? { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 15 } }
+            : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }, 
           audio: true 
         });
         
@@ -393,9 +414,10 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
         if (selectedVideoDevice) {
           // Use exact constraint to force the specific device - this is required for external devices
           try {
+            const videoConstraints = getVideoConstraints();
             video = await createLocalVideoTrack({ 
               deviceId: { exact: selectedVideoDevice },
-              resolution: { width: 1280, height: 720 }
+              resolution: videoConstraints
             });
             
             // Verify the correct device is being used
@@ -409,9 +431,10 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
               
               // Try with ideal constraint instead (some devices need this)
               try {
+                const videoConstraints = getVideoConstraints();
                 video = await createLocalVideoTrack({ 
                   deviceId: { ideal: selectedVideoDevice },
-                  resolution: { width: 1280, height: 720 }
+                  resolution: videoConstraints
                 });
               } catch (idealError: any) {
                 throw new Error(`Failed to access camera: ${idealError?.message || 'Device unavailable'}`);
@@ -421,16 +444,18 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
             // If exact fails, try ideal constraint (less strict)
             if (exactError.name !== 'NotAllowedError' && exactError.name !== 'NotFoundError') {
               try {
+                const videoConstraints = getVideoConstraints();
                 video = await createLocalVideoTrack({ 
                   deviceId: { ideal: selectedVideoDevice },
-                  resolution: { width: 1280, height: 720 }
+                  resolution: videoConstraints
                 });
               } catch (idealError: any) {
                 // Try with just deviceId as string (fallback)
                 try {
+                  const videoConstraints = getVideoConstraints();
                   video = await createLocalVideoTrack({ 
                     deviceId: selectedVideoDevice,
-                    resolution: { width: 1280, height: 720 }
+                    resolution: videoConstraints
                   });
                 } catch (fallbackError: any) {
                   throw new Error(`Camera "${videoDevices.find(d => d.deviceId === selectedVideoDevice)?.label || selectedVideoDevice}" is unavailable: ${fallbackError?.message || 'Device access denied'}`);
@@ -443,16 +468,17 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
         } else {
           // No device selected - use facingMode for mobile/tablet, or default for desktop
           try {
+            const videoConstraints = getVideoConstraints();
             if (isMobile || isTablet) {
               // Use facingMode for mobile/tablet devices
               video = await createLocalVideoTrack({
                 facingMode: cameraFacingMode,
-                resolution: { width: 1280, height: 720 }
+                resolution: videoConstraints
               });
             } else {
               // Desktop - use default camera
               video = await createLocalVideoTrack({
-                resolution: { width: 1280, height: 720 }
+                resolution: videoConstraints
               });
             }
           } catch (defaultError: any) {
@@ -714,10 +740,11 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
           videoTrack.detach();
         }
         
-        // Create new track with new facing mode
+        // Create new track with new facing mode - optimized for device type
+        const videoConstraints = getVideoConstraints();
         const newVideo = await createLocalVideoTrack({
           facingMode: newFacingMode,
-          resolution: { width: 1280, height: 720 }
+          resolution: videoConstraints
         });
         
         setVideoTrack(newVideo);

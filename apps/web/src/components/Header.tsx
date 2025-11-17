@@ -1,6 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import ProfileSettingsModal from './ProfileSettingsModal';
+import AccountSwitcher from './AccountSwitcher';
 
 interface HeaderProps {
   title?: string;
@@ -11,6 +13,7 @@ interface HeaderProps {
 const Header: React.FC<HeaderProps> = ({ title, showUserMenu = true, onLeave }) => {
   const { user, userProfile, logout, isAdmin } = useAuth();
   const navigate = useNavigate();
+  const [showProfileModal, setShowProfileModal] = useState(false);
 
   return (
     <header className="bg-midnight border-b border-gray-800 px-3 sm:px-4 lg:px-6 py-2">
@@ -38,7 +41,7 @@ const Header: React.FC<HeaderProps> = ({ title, showUserMenu = true, onLeave }) 
           )}
 
           {showUserMenu && user && (
-            <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-2 sm:space-x-3">
               {/* Admin Link - only show for admins */}
               {isAdmin && (
                 <button
@@ -53,7 +56,7 @@ const Header: React.FC<HeaderProps> = ({ title, showUserMenu = true, onLeave }) 
                 </button>
               )}
               
-              <div className="text-right">
+              <div className="text-right hidden sm:block">
                 <p className="text-xs font-medium text-cloud">
                   {userProfile?.displayName || user.email}
                 </p>
@@ -61,16 +64,29 @@ const Header: React.FC<HeaderProps> = ({ title, showUserMenu = true, onLeave }) 
                   {userProfile?.displayName ? user.email : 'Host'}
                 </p>
               </div>
+              
+              {/* Account Switcher - Shows avatar and allows switching between accounts and profile settings */}
+              <AccountSwitcher onProfileClick={() => setShowProfileModal(true)} />
+              
               <button
                 onClick={logout}
                 className="btn btn-ghost text-xs px-2 sm:px-3"
               >
-                Sign Out
+                <span className="hidden sm:inline">Sign Out</span>
+                <span className="sm:hidden">Out</span>
               </button>
             </div>
           )}
         </div>
       </div>
+      
+      {/* Profile Settings Modal */}
+      {showUserMenu && user && (
+        <ProfileSettingsModal
+          isOpen={showProfileModal}
+          onClose={() => setShowProfileModal(false)}
+        />
+      )}
     </header>
   );
 };

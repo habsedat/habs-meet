@@ -11,6 +11,7 @@ import InvitePage from './pages/InvitePage';
 import JoinPage from './pages/JoinPage';
 import WaitingRoomPage from './pages/WaitingRoomPage';
 import AdminPage from './pages/AdminPage';
+import ResetPasswordPage from './pages/ResetPasswordPage';
 import ProtectedRoute from './components/ProtectedRoute';
 import SEOHead from './components/SEOHead';
 
@@ -36,6 +37,7 @@ function AppRoutes() {
       <SEOHead />
       <Routes>
         <Route path="/" element={<AuthPage />} />
+        <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route path="/home" element={
           <ProtectedRoute>
             <HomePage />

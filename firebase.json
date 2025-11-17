@@ -8,6 +8,14 @@
     ],
     "rewrites": [
       {
+        "source": "/api/meet/mute-participant",
+        "function": "muteParticipant"
+      },
+      {
+        "source": "/api/meet/unmute-participant",
+        "function": "unmuteParticipant"
+      },
+      {
         "source": "/api/**",
         "function": "api"
       },

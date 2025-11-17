@@ -9,6 +9,14 @@ service firebase.storage {
       allow read, write, delete: if request.auth != null && request.auth.uid == userId;
     }
     
+    // Profile pictures - users can only access their own profile pictures
+    match /profilePictures/{userId}/{fileName} {
+      // Allow read for all authenticated users (to display avatars)
+      allow read: if request.auth != null;
+      // Allow write and delete only if the user owns the file
+      allow write, delete: if request.auth != null && request.auth.uid == userId;
+    }
+    
     // Default media - available to all authenticated users
     match /defaultMedia/{category}/{fileName} {
       // Allow read, write, and delete for all authenticated users (for admin setup)

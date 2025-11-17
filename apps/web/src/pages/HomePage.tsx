@@ -5,7 +5,6 @@ import { MeetingService } from '../lib/meetingService';
 import toast from '../lib/toast';
 import Header from '../components/Header';
 import CalendarInterface from '../components/CalendarInterface';
-import ShareScreen from '../components/ShareScreen';
 import ScheduleMeetingForm from '../components/ScheduleMeetingForm';
 import { collection, query, getDocs, orderBy, limit, getDoc, doc, setDoc, updateDoc, arrayUnion, serverTimestamp } from 'firebase/firestore';
 import { db } from '../lib/firebase';
@@ -15,7 +14,7 @@ const HomePage: React.FC = () => {
   const navigate = useNavigate();
   const [inviteLink, setInviteLink] = useState('');
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
-  const [activeTab, setActiveTab] = useState<'calendar' | 'schedule' | 'share'>('calendar');
+  const [activeTab, setActiveTab] = useState<'calendar' | 'schedule'>('calendar');
   const [showSuccessDialog, setShowSuccessDialog] = useState(false);
   const [createdMeeting, setCreatedMeeting] = useState<{
     meetingId: string;
@@ -38,6 +37,8 @@ const HomePage: React.FC = () => {
   const [_deletedMessages, setDeletedMessages] = useState<Record<string, Set<string>>>({});
   // Track if persisted data has been loaded
   const [persistedDataLoaded, setPersistedDataLoaded] = useState(false);
+  const [calendarRefreshKey, setCalendarRefreshKey] = useState(0);
+  const [selectedScheduleDate, setSelectedScheduleDate] = useState<Date | undefined>(undefined);
 
   const handleCreateRoom = async () => {
     if (!user || !userProfile) return;
@@ -110,7 +111,7 @@ const HomePage: React.FC = () => {
     }
   };
 
-  const handleTabClick = (tab: 'calendar' | 'schedule' | 'share') => {
+  const handleTabClick = (tab: 'calendar' | 'schedule') => {
     if (activeTab === tab && isMobilePanelOpen) {
       // If clicking the same tab and panel is open, close it
       setIsMobilePanelOpen(false);
@@ -413,16 +414,6 @@ const HomePage: React.FC = () => {
               >
                 Schedule Meet
               </button>
-              <button
-                onClick={() => handleTabClick('share')}
-                className={`px-3 sm:px-6 py-2 sm:py-3 rounded-md font-medium transition-colors text-sm sm:text-base ${
-                  activeTab === 'share' && isMobilePanelOpen
-                    ? 'bg-techBlue text-cloud'
-                    : 'text-gray-600 hover:text-gray-800'
-                }`}
-              >
-                Share Screen
-              </button>
             </div>
           </div>
 
@@ -430,7 +421,16 @@ const HomePage: React.FC = () => {
           {isMobilePanelOpen && (
             <div className="lg:hidden mb-4">
               <div className="bg-cloud rounded-2xl shadow-2xl overflow-hidden">
-                {activeTab === 'calendar' && <CalendarInterface />}
+                {activeTab === 'calendar' && (
+                  <CalendarInterface 
+                    onScheduleMeeting={(selectedDate) => {
+                      setSelectedScheduleDate(selectedDate);
+                      setActiveTab('schedule');
+                      setIsMobilePanelOpen(true);
+                    }}
+                    refreshKey={calendarRefreshKey}
+                  />
+                )}
                 {activeTab === 'schedule' && (
                   <div className="p-4 sm:p-6 lg:p-8">
                     <div className="text-center mb-6 sm:mb-8">
@@ -446,29 +446,16 @@ const HomePage: React.FC = () => {
                     </div>
                     <div className="max-w-md mx-auto">
                       <ScheduleMeetingForm
+                        initialDate={selectedScheduleDate}
                         onSuccess={(meetingId, hostLink, participantLink, icsData, passcode) => {
                           setCreatedMeeting({ meetingId, hostLink, participantLink, icsData, passcode });
                           setShowSuccessDialog(true);
+                          setCalendarRefreshKey(prev => prev + 1); // Refresh calendar
+                          setActiveTab('calendar'); // Switch back to calendar to see the new meeting
+                          setIsMobilePanelOpen(true);
+                          setSelectedScheduleDate(undefined); // Clear selected date
                         }}
                       />
-                    </div>
-                  </div>
-                )}
-                {activeTab === 'share' && (
-                  <div className="p-4 sm:p-6 lg:p-8">
-                    <div className="text-center mb-6 sm:mb-8">
-                      <div className="w-12 h-12 sm:w-16 sm:h-16 bg-violetDeep rounded-full flex items-center justify-center mx-auto mb-3 sm:mb-4">
-                        <svg className="w-6 h-6 sm:w-8 sm:h-8 text-cloud" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                        </svg>
-                      </div>
-                      <h2 className="text-2xl sm:text-3xl font-bold text-midnight mb-2 sm:mb-4">Share Your Screen</h2>
-                      <p className="text-gray-600 mb-6 sm:mb-8 text-sm sm:text-base">
-                        Share your screen with meeting participants for presentations and collaboration
-                      </p>
-                    </div>
-                    <div className="max-w-md mx-auto">
-                      <ShareScreen />
                     </div>
                   </div>
                 )}
@@ -480,7 +467,15 @@ const HomePage: React.FC = () => {
           <div className={`hidden lg:grid grid-cols-1 xl:grid-cols-3 gap-4 sm:gap-6 lg:gap-8`}>
             {/* Main Content Area */}
             <div className="xl:col-span-2 order-2 xl:order-1">
-              {activeTab === 'calendar' && <CalendarInterface />}
+              {activeTab === 'calendar' && (
+                <CalendarInterface 
+                  onScheduleMeeting={(selectedDate) => {
+                    setSelectedScheduleDate(selectedDate);
+                    setActiveTab('schedule');
+                  }}
+                  refreshKey={calendarRefreshKey}
+                />
+              )}
               
               {activeTab === 'schedule' && (
                 <div className="bg-cloud rounded-2xl shadow-2xl p-4 sm:p-6 lg:p-8">
@@ -498,31 +493,15 @@ const HomePage: React.FC = () => {
 
                   <div className="max-w-md mx-auto">
                     <ScheduleMeetingForm
+                      initialDate={selectedScheduleDate}
                       onSuccess={(meetingId, hostLink, participantLink, icsData, passcode) => {
                         setCreatedMeeting({ meetingId, hostLink, participantLink, icsData, passcode });
                         setShowSuccessDialog(true);
+                        setCalendarRefreshKey(prev => prev + 1); // Refresh calendar
+                        setActiveTab('calendar'); // Switch back to calendar to see the new meeting
+                        setSelectedScheduleDate(undefined); // Clear selected date
                       }}
                     />
-                  </div>
-                </div>
-              )}
-
-              {activeTab === 'share' && (
-                <div className="bg-cloud rounded-2xl shadow-2xl p-4 sm:p-6 lg:p-8">
-                  <div className="text-center mb-6 sm:mb-8">
-                    <div className="w-12 h-12 sm:w-16 sm:h-16 bg-violetDeep rounded-full flex items-center justify-center mx-auto mb-3 sm:mb-4">
-                      <svg className="w-6 h-6 sm:w-8 sm:h-8 text-cloud" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                  </svg>
-                    </div>
-                    <h2 className="text-2xl sm:text-3xl font-bold text-midnight mb-2 sm:mb-4">Share Your Screen</h2>
-                    <p className="text-gray-600 mb-6 sm:mb-8 text-sm sm:text-base">
-                      Share your screen with meeting participants for presentations and collaboration
-                    </p>
-                  </div>
-
-                  <div className="max-w-md mx-auto">
-                    <ShareScreen />
                   </div>
                 </div>
               )}

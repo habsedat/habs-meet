@@ -3,8 +3,6 @@ import { useAuth } from '../contexts/AuthContext';
 import { Participant } from '../lib/meetingService';
 import { api } from '../lib/api';
 import toast from '../lib/toast';
-import { useLiveKit } from '../contexts/LiveKitContext';
-import { Track, RemoteTrackPublication } from 'livekit-client';
 
 interface ParticipantsPanelProps {
   participants: Participant[];
@@ -18,7 +16,6 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
   roomId,
 }) => {
   const { user } = useAuth();
-  const { participants: liveKitParticipants } = useLiveKit();
   const [isProcessing, setIsProcessing] = useState<string | null>(null);
   
   // Get all participants including waiting ones for hosts
@@ -72,47 +69,6 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
     }
   };
 
-  const handleMute = async (participantId: string) => {
-    if (!isHost) {
-      toast.error('Only hosts can mute participants');
-      return;
-    }
-    
-    setIsProcessing(participantId);
-    try {
-      console.log('[ParticipantsPanel] Muting participant:', participantId, 'in room:', roomId);
-      const result = await api.muteParticipant(roomId, participantId);
-      console.log('[ParticipantsPanel] Mute result:', result);
-      toast.success('Participant muted');
-    } catch (error: any) {
-      console.error('[ParticipantsPanel] Mute error:', error);
-      const errorMessage = error.message || error.error || 'Failed to mute participant';
-      toast.error(errorMessage);
-    } finally {
-      setIsProcessing(null);
-    }
-  };
-
-  const handleUnmute = async (participantId: string) => {
-    if (!isHost) {
-      toast.error('Only hosts can unmute participants');
-      return;
-    }
-    
-    setIsProcessing(participantId);
-    try {
-      console.log('[ParticipantsPanel] Unmuting participant:', participantId, 'in room:', roomId);
-      const result = await api.unmuteParticipant(roomId, participantId);
-      console.log('[ParticipantsPanel] Unmute result:', result);
-      toast.success('Participant unmuted');
-    } catch (error: any) {
-      console.error('[ParticipantsPanel] Unmute error:', error);
-      const errorMessage = error.message || error.error || 'Failed to unmute participant';
-      toast.error(errorMessage);
-    } finally {
-      setIsProcessing(null);
-    }
-  };
 
   const handleAdmit = async (participantId: string) => {
     if (!isHost) return;
@@ -242,11 +198,6 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
             {admittedParticipants.map((participant) => {
               const isCurrentUser = participant.uid === user?.uid;
               const canModify = isHost && !isCurrentUser;
-              
-              // Check if participant is muted in LiveKit
-              const liveKitParticipant = liveKitParticipants.get(participant.uid);
-              const micPublication = liveKitParticipant?.getTrackPublication(Track.Source.Microphone) as RemoteTrackPublication | undefined;
-              const isMuted = micPublication?.isMuted ?? false;
 
               return (
                 <div
@@ -298,35 +249,6 @@ const ParticipantsPanel: React.FC<ParticipantsPanelProps> = ({
                   {/* Actions */}
                   {canModify && (
                     <div className="flex items-center space-x-1">
-                      {/* Mute/Unmute button */}
-                      <button
-                        onClick={() => {
-                          if (isMuted) {
-                            handleUnmute(participant.uid);
-                          } else {
-                            handleMute(participant.uid);
-                          }
-                        }}
-                        disabled={isProcessing === participant.uid}
-                        className={`p-1.5 rounded transition-colors disabled:opacity-50 ${
-                          isMuted 
-                            ? 'text-red-600 hover:bg-red-100' 
-                            : 'text-gray-600 hover:bg-gray-200'
-                        }`}
-                        title={isMuted ? 'Unmute participant' : 'Mute participant'}
-                      >
-                        {isMuted ? (
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
-                          </svg>
-                        ) : (
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                          </svg>
-                        )}
-                      </button>
-                      
                       {/* Role management */}
                       {participant.role === 'viewer' && (
                         <button

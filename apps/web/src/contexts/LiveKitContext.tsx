@@ -95,6 +95,33 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
   const screenShareTrackRef = useRef<LocalVideoTrack | null>(null);
   const [, forceUpdate] = useState({});
 
+  // Helper function to detect mobile devices
+  const isMobileDevice = useCallback(() => {
+    if (typeof navigator === 'undefined') return false;
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
+           (typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches);
+  }, []);
+
+  // Get optimized video constraints based on device type
+  const getVideoConstraints = useCallback(() => {
+    const isMobile = isMobileDevice();
+    if (isMobile) {
+      // Mobile: Lower resolution and frame rate for better performance and bandwidth
+      return {
+        width: 640,
+        height: 360,
+        frameRate: 15, // Lower frame rate for mobile
+      };
+    } else {
+      // Desktop: Higher quality
+      return {
+        width: 1280,
+        height: 720,
+        frameRate: 30,
+      };
+    }
+  }, [isMobileDevice]);
+
   const connect = async (token: string) => {
     if (isConnecting || isConnected) return;
 
@@ -758,18 +785,16 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
         const raw = localStorage.getItem('preMeetingSettings');
         const saved = raw ? JSON.parse(raw) : {};
         
-        // ✅ Video constraints optimized for low latency
+        // ✅ Video constraints optimized for device type
+        const videoConstraints = getVideoConstraints();
         const vTrack = await createLocalVideoTrack({
           deviceId: saved.videoDeviceId ? { exact: saved.videoDeviceId } : undefined,
-          resolution: { 
-            width: 1280, 
-            height: 720,
-            frameRate: 30, // Lower frame rate = lower latency
-          },
+          resolution: videoConstraints,
         });
         
         await roomRef.current.localParticipant.publishTrack(vTrack, {
           source: Track.Source.Camera,
+          simulcast: true, // Enable simulcast for adaptive quality
         });
       } else if (videoTrack) {
         // Just enable/disable existing track
@@ -792,11 +817,6 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   }, []);
 
-    // Helper function to detect mobile devices
-  const isMobileDevice = useCallback(() => {
-    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
-           (typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches);
-  }, []);
 
   // Helper function to detect if screen sharing is supported
   // Computed once using useMemo since device type won't change during session
@@ -1096,10 +1116,11 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
         existingTrack.stop();
       }
 
-      // Create new track with new facing mode
+      // Create new track with new facing mode - optimized for device type
+      const videoConstraints = getVideoConstraints();
       const newTrack = await createLocalVideoTrack({
         facingMode: newFacingMode,
-        resolution: { width: 1280, height: 720, frameRate: 30 },
+        resolution: videoConstraints,
       });
 
       // Reapply background effects if enabled
@@ -1125,9 +1146,10 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
         }
       }
 
-      // Publish new track
+      // Publish new track with simulcast
       await localPart.publishTrack(newTrack, {
         source: Track.Source.Camera,
+        simulcast: true, // Enable simulcast for adaptive quality
       });
 
       // Force update to refresh UI
@@ -1218,12 +1240,8 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
       try {
         let vTrack: LocalVideoTrack;
         
-        // ✅ Video constraints optimized for low latency
-        const videoConstraints = {
-          width: 1280,
-          height: 720,
-          frameRate: 30, // Lower frame rate = lower latency
-        };
+        // ✅ Video constraints optimized for device type
+        const videoConstraints = getVideoConstraints();
         
         // Try with saved device first
         if (saved.videoDeviceId) {
@@ -1268,6 +1286,7 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
 
         await r.localParticipant.publishTrack(vTrack, {
           source: Track.Source.Camera,
+          simulcast: true, // Enable simulcast for adaptive quality
         });
         setIsCameraEnabled(true);
         

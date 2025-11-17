@@ -13,10 +13,13 @@
   "dependencies": {
     "@livekit/track-processors": "^0.6.1",
     "firebase": "^10.0.0",
+    "ical.js": "^2.2.1",
+    "ics": "^3.8.1",
     "livekit-client": "^1.15.1",
     "nanoid": "^5.1.6",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "react-easy-crop": "^5.5.3",
     "react-hot-toast": "^2.4.1",
     "react-router-dom": "^6.15.0"
   },

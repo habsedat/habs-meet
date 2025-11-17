@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import BiometricAuth from '../components/BiometricAuth';
+import ForgotPasswordModal from '../components/ForgotPasswordModal';
 import toast from '../lib/toast';
 
 const AuthPage: React.FC = () => {
@@ -18,6 +19,9 @@ const AuthPage: React.FC = () => {
   const [isSignUp, setIsSignUp] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [showForgotPasswordModal, setShowForgotPasswordModal] = useState(false);
+  const [loginError, setLoginError] = useState<string>('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   
   // Signup form data
   const [formData, setFormData] = useState({
@@ -101,18 +105,28 @@ const AuthPage: React.FC = () => {
     
     if (!validateForm()) return;
 
+    setIsSubmitting(true);
+    setLoginError('');
+
     try {
       if (isSignUp) {
         await signUp(formData.email, formData.password, formData.fullName, formData.phoneNumber, formData.dateOfBirth);
         toast.success('Account created successfully! Please check your email for verification.');
         navigate('/home');
       } else {
-        await signIn(loginData.email, loginData.password);
+        await signIn(loginData.email, loginData.password, loginData.rememberMe);
         toast.success('Welcome back!');
         navigate('/home');
       }
     } catch (error: any) {
-      toast.error(error.message || 'Authentication failed');
+      // Set error message for display in UI
+      setLoginError(error.message || 'Authentication failed. Please check your credentials and try again.');
+      // Toast is already shown in signIn function, but we keep it as backup
+      if (!error.message) {
+        toast.error('Authentication failed');
+      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -203,8 +217,16 @@ const AuthPage: React.FC = () => {
                 type="email"
                 name="email"
                 value={isSignUp ? formData.email : loginData.email}
-                onChange={handleInputChange}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-techBlue focus:border-transparent"
+                onChange={(e) => {
+                  handleInputChange(e);
+                  // Clear error when user starts typing
+                  if (!isSignUp && loginError) {
+                    setLoginError('');
+                  }
+                }}
+                className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-techBlue focus:border-transparent ${
+                  !isSignUp && loginError ? 'border-red-300 bg-red-50' : 'border-gray-300'
+                }`}
                 placeholder="Enter your email address"
                 required
               />
@@ -228,6 +250,30 @@ const AuthPage: React.FC = () => {
               </div>
             )}
 
+            {/* Login Error Message */}
+            {!isSignUp && loginError && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                <div className="flex items-start">
+                  <svg className="w-5 h-5 text-red-600 mr-2 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-red-800">Login Failed</p>
+                    <p className="text-sm text-red-700 mt-1">{loginError}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setLoginError('')}
+                    className="text-red-400 hover:text-red-600 ml-2"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Password */}
             <div>
               <label className="block text-sm font-medium text-midnight mb-2">
@@ -238,8 +284,16 @@ const AuthPage: React.FC = () => {
                   type={showPassword ? 'text' : 'password'}
                   name="password"
                   value={isSignUp ? formData.password : loginData.password}
-                  onChange={handleInputChange}
-                  className="w-full px-4 py-3 pr-12 border border-gray-300 rounded-lg focus:ring-2 focus:ring-techBlue focus:border-transparent"
+                  onChange={(e) => {
+                    handleInputChange(e);
+                    // Clear error when user starts typing
+                    if (!isSignUp && loginError) {
+                      setLoginError('');
+                    }
+                  }}
+                  className={`w-full px-4 py-3 pr-12 border rounded-lg focus:ring-2 focus:ring-techBlue focus:border-transparent ${
+                    !isSignUp && loginError ? 'border-red-300 bg-red-50' : 'border-gray-300'
+                  }`}
                   placeholder="Enter your password"
                   required
                 />
@@ -330,19 +384,23 @@ const AuthPage: React.FC = () => {
               )}
               
               {!isSignUp && (
-                <a href="#" className="text-sm text-techBlue hover:underline">
+                <button
+                  type="button"
+                  onClick={() => setShowForgotPasswordModal(true)}
+                  className="text-sm text-techBlue hover:underline"
+                >
                   Forgot password?
-                </a>
+                </button>
               )}
             </div>
 
             {/* Submit Button */}
             <button
               type="submit"
-              disabled={loading}
+              disabled={isSubmitting}
               className="w-full bg-gradient-to-r from-techBlue to-violetDeep text-cloud py-3 px-4 rounded-lg font-semibold hover:from-techBlue/90 hover:to-violetDeep/90 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {loading ? 'Please wait...' : (isSignUp ? 'Create Account' : 'Sign In')}
+              {isSubmitting ? 'Please wait...' : (isSignUp ? 'Create Account' : 'Sign In')}
             </button>
           </form>
 
@@ -373,6 +431,12 @@ const AuthPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Forgot Password Modal */}
+      <ForgotPasswordModal
+        isOpen={showForgotPasswordModal}
+        onClose={() => setShowForgotPasswordModal(false)}
+      />
     </div>
   );
 };
