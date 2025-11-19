@@ -875,11 +875,23 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
           } else if (type === 'image' && url) {
             await backgroundEngine.setImage?.(url);
           } else if (type === 'video' && url) {
+            // Validate video URL before attempting to load
+            if (!url || url.trim() === '' || url.includes('example.com')) {
+              toast.error('Video URL is not available. Please configure a valid video URL.');
+              return;
+            }
             await backgroundEngine.setVideo?.(url); // uses the new robust loader
           }
-        } catch (error) {
+        } catch (error: any) {
           console.error('[BG] Error setting background:', error);
-          toast.error('Failed to apply background effect');
+          const errorMessage = error?.message || 'Unknown error';
+          if (errorMessage.includes('Video URL is not available') || errorMessage.includes('example.com')) {
+            toast.error('Video URL is not available. Please configure a valid video URL.');
+          } else if (errorMessage.includes('fetch') || errorMessage.includes('CORS') || errorMessage.includes('404')) {
+            toast.error('Failed to load video background. Please check the video URL.');
+          } else {
+            toast.error('Failed to apply background effect: ' + errorMessage);
+          }
         }
       };
 

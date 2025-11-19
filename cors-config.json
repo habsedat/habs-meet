@@ -1,0 +1,10 @@
+[
+  {
+    "origin": ["https://habs-meet-dev.web.app", "https://habs-meet-dev.firebaseapp.com"],
+    "method": ["GET", "HEAD"],
+    "responseHeader": ["Content-Type", "Content-Length"],
+    "maxAgeSeconds": 3600
+  }
+]
+
+

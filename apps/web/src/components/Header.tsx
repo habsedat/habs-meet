@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { collection, onSnapshot, getDocs, doc, getDoc } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 import ProfileSettingsModal from './ProfileSettingsModal';
 import AccountSwitcher from './AccountSwitcher';
 
@@ -14,6 +16,76 @@ const Header: React.FC<HeaderProps> = ({ title, showUserMenu = true, onLeave }) 
   const { user, userProfile, logout, isAdmin } = useAuth();
   const navigate = useNavigate();
   const [showProfileModal, setShowProfileModal] = useState(false);
+  const [unreadInboxCount, setUnreadInboxCount] = useState(0);
+
+  // Load unread inbox count from all rooms
+  useEffect(() => {
+    if (!user) return;
+
+    const roomUnreadCounts = new Map<string, number>();
+
+    const updateTotalUnread = () => {
+      const total = Array.from(roomUnreadCounts.values()).reduce((sum, count) => sum + count, 0);
+      setUnreadInboxCount(total);
+    };
+
+    const loadUnreadCount = async () => {
+      try {
+        const roomsSnapshot = await getDocs(collection(db, 'rooms'));
+        const unsubscribes: Array<() => void> = [];
+        
+        // Check each room to see if user is a participant before subscribing
+        for (const roomDoc of roomsSnapshot.docs) {
+          const roomId = roomDoc.id;
+          
+          // Check if user is a participant in this room
+          try {
+            const participantDoc = await getDoc(doc(db, 'rooms', roomId, 'participants', user.uid));
+            if (!participantDoc.exists()) {
+              // User is not a participant, skip this room
+              continue;
+            }
+          } catch (error) {
+            // If we can't check participant status, skip this room
+            continue;
+          }
+          
+          // User is a participant, subscribe to messages
+          const messagesRef = collection(db, 'rooms', roomId, 'privateMessages');
+          const unsubscribe = onSnapshot(
+            messagesRef,
+            (snapshot) => {
+              const unreadCount = snapshot.docs
+                .map(doc => doc.data())
+                .filter((msg: any) => msg.receiverId === user.uid && !msg.read).length;
+              
+              roomUnreadCounts.set(roomId, unreadCount);
+              updateTotalUnread();
+            },
+            (error) => {
+              // Silently handle permission errors - user might not have access to this room
+              if (error.code !== 'permission-denied') {
+                console.error(`Error loading unread count for room ${roomId}:`, error);
+              }
+            }
+          );
+          
+          unsubscribes.push(unsubscribe);
+        }
+        
+        return () => {
+          unsubscribes.forEach(unsub => unsub());
+        };
+      } catch (error) {
+        console.error('Error loading unread count:', error);
+      }
+    };
+
+    const cleanup = loadUnreadCount();
+    return () => {
+      cleanup.then(cleanupFn => cleanupFn && cleanupFn());
+    };
+  }, [user]);
 
   return (
     <header className="bg-midnight border-b border-gray-800 px-3 sm:px-4 lg:px-6 py-2">
@@ -42,6 +114,23 @@ const Header: React.FC<HeaderProps> = ({ title, showUserMenu = true, onLeave }) 
 
           {showUserMenu && user && (
             <div className="flex items-center space-x-2 sm:space-x-3">
+              {/* Inbox Link */}
+              <button
+                onClick={() => navigate('/inbox')}
+                className="btn btn-ghost text-xs px-2 sm:px-3 relative"
+                title="Inbox"
+              >
+                <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+                <span className="hidden sm:inline">Inbox</span>
+                {unreadInboxCount > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full min-w-[18px] h-4.5 px-1 flex items-center justify-center">
+                    {unreadInboxCount > 99 ? '99+' : unreadInboxCount}
+                  </span>
+                )}
+              </button>
+              
               {/* Admin Link - only show for admins */}
               {isAdmin && (
                 <button

@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useLiveKit, RemoteControlEvent } from '../contexts/LiveKitContext';
 import { useAuth } from '../contexts/AuthContext';
 import { RemoteParticipant, LocalParticipant, Track, TrackPublication, ParticipantEvent, RemoteTrackPublication } from 'livekit-client';
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 
 // Interface for active screen share
 interface ActiveScreenShare {
@@ -642,7 +644,11 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
   const containerRef = useRef<HTMLDivElement>(null);
   const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const isLocal = participant instanceof LocalParticipant;
+  const { userProfile } = useAuth();
+  const { isCameraEnabled: localCameraEnabled } = useLiveKit();
   const [videoPublication, setVideoPublication] = useState<TrackPublication | null>(null);
+  const [participantProfile, setParticipantProfile] = useState<{ displayName: string; photoURL?: string } | null>(null);
+  const [isCameraEnabled, setIsCameraEnabled] = useState(true);
 
   // Listen for track publications
   useEffect(() => {
@@ -891,6 +897,13 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
     try {
       container.appendChild(element);
       
+      // ✅ Hide video element if camera is disabled
+      if (!isCameraEnabled) {
+        element.style.display = 'none';
+      } else {
+        element.style.display = 'block';
+      }
+      
       // Check immediately if dimensions are already available
       if (element.videoWidth && element.videoHeight) {
         updateVideoStyling();
@@ -941,8 +954,121 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
     };
   }, [videoPublication, isLocal, participant.identity]);
 
-  // Determine display name - log for debugging
-  const displayName = participant.name || participant.identity || 'Unknown';
+  // ✅ Fetch participant profile from Firestore (for remote participants)
+  useEffect(() => {
+    if (isLocal) {
+      // For local participant, use current user's profile
+      if (userProfile) {
+        setParticipantProfile({
+          displayName: userProfile.displayName || participant.name || 'You',
+          photoURL: userProfile.photoURL
+        });
+      } else {
+        setParticipantProfile({
+          displayName: participant.name || 'You'
+        });
+      }
+    } else {
+      // For remote participants, fetch from Firestore
+      const fetchProfile = async () => {
+        try {
+          const participantId = participant.identity;
+          if (!participantId) return;
+          
+          const userDocRef = doc(db, 'users', participantId);
+          const userDoc = await getDoc(userDocRef);
+          
+          if (userDoc.exists()) {
+            const data = userDoc.data();
+            setParticipantProfile({
+              displayName: data.displayName || participant.name || 'Unknown',
+              photoURL: data.photoURL
+            });
+          } else {
+            // Fallback to participant name if profile not found
+            setParticipantProfile({
+              displayName: participant.name || participant.identity || 'Unknown'
+            });
+          }
+        } catch (error) {
+          console.error('[VideoTile] Failed to fetch participant profile:', error);
+          // Fallback to participant name
+          setParticipantProfile({
+            displayName: participant.name || participant.identity || 'Unknown'
+          });
+        }
+      };
+      
+      fetchProfile();
+    }
+  }, [participant, isLocal, userProfile]);
+
+  // ✅ Check if camera is enabled and update video element visibility
+  useEffect(() => {
+    const checkCameraStatus = () => {
+      let hasVideo = false;
+      
+      if (isLocal) {
+        // For local participant, use the camera enabled state from LiveKit context
+        hasVideo = localCameraEnabled;
+      } else {
+        // For remote participant, check if video track exists, is subscribed, and is not muted
+        const vidPub = participant.getTrackPublication(Track.Source.Camera) as RemoteTrackPublication | null;
+        hasVideo = !!(vidPub && vidPub.track && !vidPub.isMuted);
+      }
+      
+      setIsCameraEnabled(hasVideo);
+      
+      // ✅ Update video element visibility when camera status changes
+      if (videoElementRef.current) {
+        videoElementRef.current.style.display = hasVideo ? 'block' : 'none';
+      }
+    };
+    
+    checkCameraStatus();
+    
+    // Listen for track changes
+    const handleTrackPublished = (publication: TrackPublication) => {
+      if (publication.kind === Track.Kind.Video && publication.source === Track.Source.Camera) {
+        checkCameraStatus();
+      }
+    };
+    
+    const handleTrackUnpublished = (publication: TrackPublication) => {
+      if (publication.kind === Track.Kind.Video && publication.source === Track.Source.Camera) {
+        checkCameraStatus();
+      }
+    };
+    
+    // Listen for track muted/unmuted events (for remote participants)
+    const handleTrackMuted = (publication: TrackPublication) => {
+      if (publication.kind === Track.Kind.Video && publication.source === Track.Source.Camera) {
+        checkCameraStatus();
+      }
+    };
+    
+    const handleTrackUnmuted = (publication: TrackPublication) => {
+      if (publication.kind === Track.Kind.Video && publication.source === Track.Source.Camera) {
+        checkCameraStatus();
+      }
+    };
+    
+    participant.on(ParticipantEvent.TrackPublished, handleTrackPublished);
+    participant.on(ParticipantEvent.TrackUnpublished, handleTrackUnpublished);
+    participant.on(ParticipantEvent.TrackMuted, handleTrackMuted);
+    participant.on(ParticipantEvent.TrackUnmuted, handleTrackUnmuted);
+    
+    return () => {
+      participant.off(ParticipantEvent.TrackPublished, handleTrackPublished);
+      participant.off(ParticipantEvent.TrackUnpublished, handleTrackUnpublished);
+      participant.off(ParticipantEvent.TrackMuted, handleTrackMuted);
+      participant.off(ParticipantEvent.TrackUnmuted, handleTrackUnmuted);
+    };
+  }, [participant, isLocal, videoPublication, localCameraEnabled]);
+
+  // Determine display name - use profile if available
+  const displayName = participantProfile?.displayName || participant.name || participant.identity || 'Unknown';
+  const photoURL = participantProfile?.photoURL;
   const isCurrentUser = currentUserUid && (participant.identity === currentUserUid || isLocal);
   
   // ✅ Reactive state for mic status - updates in real-time
@@ -1306,15 +1432,54 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
           justifyContent: 'center'
         }}
       >
-        {/* Placeholder when no video */}
-        <div className="text-center text-cloud">
-          <div className="w-12 h-12 sm:w-16 sm:h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-2">
-            <span className="text-xl sm:text-2xl font-bold">
-              {displayName.charAt(0).toUpperCase()}
-            </span>
+        {/* ✅ Show profile picture and name when camera is off */}
+        {!isCameraEnabled && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-gray-800 via-gray-900 to-black">
+            {photoURL ? (
+              <div className="relative mb-4">
+                <img
+                  src={photoURL}
+                  alt={displayName}
+                  className="w-24 h-24 sm:w-32 sm:h-32 rounded-full object-cover border-4 border-white/20 shadow-2xl"
+                  onError={(e) => {
+                    // Fallback to initials if image fails to load
+                    (e.target as HTMLImageElement).style.display = 'none';
+                    const fallback = (e.target as HTMLImageElement).nextElementSibling as HTMLElement;
+                    if (fallback) fallback.style.display = 'flex';
+                  }}
+                />
+                <div
+                  className="w-24 h-24 sm:w-32 sm:h-32 rounded-full bg-gradient-to-br from-techBlue to-violetDeep flex items-center justify-center text-white text-3xl sm:text-4xl font-bold shadow-2xl border-4 border-white/20"
+                  style={{ display: 'none' }}
+                >
+                  {displayName.charAt(0).toUpperCase()}
+                </div>
+              </div>
+            ) : (
+              <div className="w-24 h-24 sm:w-32 sm:h-32 rounded-full bg-gradient-to-br from-techBlue to-violetDeep flex items-center justify-center text-white text-3xl sm:text-4xl font-bold shadow-2xl border-4 border-white/20 mb-4">
+                {displayName.charAt(0).toUpperCase()}
+              </div>
+            )}
+            <p className="text-white text-lg sm:text-xl font-semibold drop-shadow-lg">
+              {displayName}
+            </p>
+            <p className="text-gray-400 text-xs sm:text-sm mt-1">
+              Camera is off
+            </p>
           </div>
-          <p className="text-xs sm:text-sm font-medium">Video Stream</p>
-        </div>
+        )}
+        
+        {/* Placeholder when no video track exists at all */}
+        {!videoPublication && (
+          <div className="text-center text-cloud">
+            <div className="w-12 h-12 sm:w-16 sm:h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-2">
+              <span className="text-xl sm:text-2xl font-bold">
+                {displayName.charAt(0).toUpperCase()}
+              </span>
+            </div>
+            <p className="text-xs sm:text-sm font-medium">Video Stream</p>
+          </div>
+        )}
       </div>
       
       {/* ✅ Participant info overlay - INSIDE video tile, bottom-left corner - ABSOLUTELY NO BORDERS */}

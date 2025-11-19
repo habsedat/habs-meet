@@ -148,8 +148,8 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
     if (!user) return;
     try {
       const files = await fileStorageService.getUserFiles(user.uid);
-      // Filter to only show images (videos disabled for now)
-      const mediaFiles = files.filter(file => file.type === 'image');
+      // Show both images and videos
+      const mediaFiles = files.filter(file => file.type === 'image' || file.type === 'video');
       setUserMedia(mediaFiles);
     } catch (error) {
       console.error('Error loading user media:', error);
@@ -160,56 +160,63 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
     const file = event.target.files?.[0];
     if (!file || !user) return;
 
-    // Validate file is an image
-    if (!file.type.startsWith('image/')) {
-      toast.error('Only image files are allowed for backgrounds');
+    // Validate file is an image or video
+    const isImage = file.type.startsWith('image/');
+    const isVideo = file.type.startsWith('video/');
+    
+    if (!isImage && !isVideo) {
+      toast.error('Only image and video files are allowed for backgrounds');
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
       return;
     }
 
-    // Validate image is landscape
-    const img = new Image();
-    let objectUrl: string | null = null;
-    const checkLandscape = () => {
-      return new Promise<void>((resolve, reject) => {
-        img.onload = () => {
-          if (objectUrl) {
-            URL.revokeObjectURL(objectUrl);
-            objectUrl = null;
-          }
-          if (img.width > img.height) {
-            resolve();
-          } else {
-            reject(new Error('Please upload a landscape (horizontal) image. Portrait images are not supported.'));
-          }
-        };
-        img.onerror = () => {
-          if (objectUrl) {
-            URL.revokeObjectURL(objectUrl);
-            objectUrl = null;
-          }
-          reject(new Error('Failed to load image'));
-        };
-        objectUrl = URL.createObjectURL(file);
-        img.src = objectUrl;
-      });
-    };
+    // For images, validate landscape orientation
+    if (isImage) {
+      const img = new Image();
+      let objectUrl: string | null = null;
+      const checkLandscape = () => {
+        return new Promise<void>((resolve, reject) => {
+          img.onload = () => {
+            if (objectUrl) {
+              URL.revokeObjectURL(objectUrl);
+              objectUrl = null;
+            }
+            if (img.width > img.height) {
+              resolve();
+            } else {
+              reject(new Error('Please upload a landscape (horizontal) image. Portrait images are not supported.'));
+            }
+          };
+          img.onerror = () => {
+            if (objectUrl) {
+              URL.revokeObjectURL(objectUrl);
+              objectUrl = null;
+            }
+            reject(new Error('Failed to load image'));
+          };
+          objectUrl = URL.createObjectURL(file);
+          img.src = objectUrl;
+        });
+      };
 
-    try {
-      await checkLandscape();
-    } catch (error: any) {
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
-        objectUrl = null;
+      try {
+        await checkLandscape();
+      } catch (error: any) {
+        if (objectUrl) {
+          URL.revokeObjectURL(objectUrl);
+          objectUrl = null;
+        }
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
+        toast.error(error.message);
+        return;
       }
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
-      toast.error(error.message);
-      return;
     }
+    
+    // For videos, duration validation is handled by fileStorageService (max 2 minutes)
 
     setUploading(true);
     setUploadProgress({
@@ -275,8 +282,21 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
       setSelectedBackground(bgId);
       if (bg.type === 'image') {
         await onBackgroundChange('image', bg.url);
+      } else if (bg.type === 'video') {
+        // Validate video URL before attempting to load
+        if (!bg.url || bg.url.trim() === '' || bg.url.includes('example.com')) {
+          toast.error('Video URL is not available. Please configure a valid video URL.');
+          setSelectedBackground(null); // Reset selection
+          return;
+        }
+        try {
+          await onBackgroundChange('video', bg.url);
+        } catch (error: any) {
+          console.error('Error loading video background:', error);
+          toast.error('Failed to load video background: ' + (error?.message || 'Unknown error'));
+          setSelectedBackground(null); // Reset selection on error
+        }
       }
-      // Video backgrounds are disabled for now
     }
   };
 
@@ -306,6 +326,7 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
       url: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjEyMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjEyMCIgZmlsbD0iI0Y5RkFGQiIvPjxjaXJjbGUgY3g9IjEwMCIgY3k9IjYwIiByPSIzMCIgZmlsbD0iI0ZGREMzNSIvPjwvc3ZnPg==',
     },
   ];
+
 
   const allBackgrounds = [
     ...(backgrounds.length > 0 ? backgrounds : defaultBackgrounds.map(bg => ({
@@ -437,7 +458,7 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept="image/*"
+                    accept="image/*,video/*"
                     onChange={handleFileUpload}
                     className="hidden"
                     id="background-upload"
@@ -452,7 +473,7 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
                     <svg className="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                     </svg>
-                    <span>{uploading ? 'Uploading...' : 'Upload Image'}</span>
+                    <span>{uploading ? 'Uploading...' : 'Upload Image/Video'}</span>
                   </label>
                   
                   {/* Upload Progress */}
@@ -501,6 +522,13 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
                               alt={file.name}
                               className="w-full h-full object-cover"
                             />
+                            {file.type === 'video' && (
+                              <div className="absolute bottom-1 left-1">
+                                <svg className="w-3 h-3 sm:w-4 sm:h-4 text-white drop-shadow-lg" fill="currentColor" viewBox="0 0 20 20">
+                                  <path d="M2 6a2 2 0 012-2h6a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V6zM14.553 7.106A1 1 0 0014 8v4a1 1 0 00.553.894l2 1A1 1 0 0018 13V7a1 1 0 00-1.447-.894l-2 1z" />
+                                </svg>
+                              </div>
+                            )}
                             <button
                               onClick={(e) => handleDeleteFile(file.id, e)}
                               className="absolute top-0.5 right-0.5 sm:top-1 sm:right-1 w-4 h-4 sm:w-5 sm:h-5 bg-red-500/80 hover:bg-red-500 rounded-full flex items-center justify-center transition-colors"
@@ -520,7 +548,7 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
                 )}
 
                 {/* Default Backgrounds */}
-                <div>
+                <div className="mb-3 sm:mb-4">
                   <h3 className="text-[10px] sm:text-xs font-semibold text-cloud mb-2 sm:mb-3">Default Backgrounds</h3>
                   {loading ? (
                     <div className="flex items-center justify-center py-6">
@@ -553,6 +581,7 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
                     </div>
                   )}
                 </div>
+
               </div>
             )}
 

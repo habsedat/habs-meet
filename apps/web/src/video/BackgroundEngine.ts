@@ -13,6 +13,7 @@ class BackgroundEngine {
   private bgVideo?: HTMLVideoElement | null = null;
   private bgVideoUrl?: string | null = null;
   private bgImageUrl?: string | null = null;
+  private currentVideoBlobUrl?: string | null = null; // Track current video blob URL for cleanup
 
   async init(track: LocalVideoTrack) {
     // Validate track is ready and not ended
@@ -614,40 +615,143 @@ class BackgroundEngine {
       this.bgVideoUrl = null;
     }
 
+    // Validate URL
+    if (!url || url.trim() === '' || url.includes('example.com')) {
+      throw new Error('Video URL is not available. Please provide a valid video URL.');
+    }
+
     const el = document.createElement('video');
     el.muted = true;          // required for autoplay
     el.loop = true;
     el.playsInline = true;
     el.preload = 'auto';
-    el.crossOrigin = 'anonymous'; // allow WebGL to sample it
-
-    // Fetch → blob → object URL (avoids taint)
-    const res = await fetch(url, { mode: 'cors' });
-    if (!res.ok) throw new Error(`Video fetch failed: ${res.status}`);
-    const blob = await res.blob();
-    const objectUrl = URL.createObjectURL(blob);
-    el.src = objectUrl;
-    this.bgVideoUrl = objectUrl;
-
-    // Wait for it to be actually decodable
-    await new Promise<void>((resolve, reject) => {
-      const onLoaded = () => resolve();
-      const onError = () => reject(new Error('video load error'));
-      el.addEventListener('loadeddata', onLoaded, { once: true });
-      el.addEventListener('error', onError, { once: true });
-    });
-
-    // Try to start (some browsers return a promise)
-    try { 
-      await el.play(); 
-    } catch { 
-      /* already muted, retry */ 
-      try { 
-        await el.play(); 
-      } catch {} 
+    
+    // Check if URL is from Firebase Storage
+    const isFirebaseStorageUrl = url.includes('firebasestorage.googleapis.com') || url.includes('firebase.storage');
+    
+    if (isFirebaseStorageUrl) {
+      // For Firebase Storage URLs, use Firebase SDK to get blob directly
+      // This avoids CORS issues since SDK handles authentication properly
+      try {
+        // Extract path from Firebase Storage URL
+        // URL format: https://firebasestorage.googleapis.com/v0/b/{bucket}/o/{path}?alt=media&token={token}
+        const urlObj = new URL(url);
+        const pathMatch = urlObj.pathname.match(/\/o\/(.+)$/);
+        if (!pathMatch) {
+          throw new Error('Invalid Firebase Storage URL format');
+        }
+        
+        // Decode the path (it's URL encoded)
+        const storagePath = decodeURIComponent(pathMatch[1].replace(/%2F/g, '/'));
+        
+        // Use Firebase Storage SDK to get blob (handles auth automatically)
+        const { getStorage, ref, getBlob } = await import('firebase/storage');
+        const storage = getStorage();
+        const storageRef = ref(storage, storagePath);
+        const blob = await getBlob(storageRef);
+        
+        // Create blob URL - no CORS issues since it's same-origin
+        const objectUrl = URL.createObjectURL(blob);
+        el.crossOrigin = 'anonymous'; // Safe to set for blob URLs
+        el.src = objectUrl;
+        this.bgVideoUrl = objectUrl;
+      } catch (error: any) {
+        // Fallback: try direct fetch without credentials
+        console.warn('[BG] Firebase SDK failed, trying direct fetch:', error.message);
+        try {
+          const res = await fetch(url, {
+            mode: 'cors',
+            // NO credentials - Firebase Storage doesn't support credentials mode
+          });
+          if (!res.ok) {
+            throw new Error(`Video fetch failed: ${res.status} ${res.statusText}`);
+          }
+          const blob = await res.blob();
+          const objectUrl = URL.createObjectURL(blob);
+          el.crossOrigin = 'anonymous';
+          el.src = objectUrl;
+          this.bgVideoUrl = objectUrl;
+        } catch (fetchError: any) {
+          throw new Error(`Failed to load video from Firebase Storage: ${fetchError.message}. Please ensure you have access to the file.`);
+        }
+      }
+    } else {
+      // For other URLs, fetch as blob to avoid CORS issues
+      el.crossOrigin = 'anonymous'; // allow WebGL to sample it
+      
+      try {
+        // Fetch → blob → object URL (avoids taint)
+        const res = await fetch(url, { mode: 'cors' });
+        if (!res.ok) {
+          throw new Error(`Video fetch failed: ${res.status} ${res.statusText}`);
+        }
+        const blob = await res.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        el.src = objectUrl;
+        this.bgVideoUrl = objectUrl;
+      } catch (error: any) {
+        // If fetch fails, try using URL directly as fallback
+        console.warn('[BG] Fetch failed, trying direct URL:', error.message);
+        el.crossOrigin = 'anonymous';
+        el.src = url;
+        this.bgVideoUrl = null;
+      }
     }
 
-    return el;
+    try {
+      // Wait for it to be actually decodable
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('Video load timeout'));
+        }, 30000); // 30 second timeout
+
+        const onLoaded = () => {
+          clearTimeout(timeout);
+          resolve();
+        };
+        const onError = (e: any) => {
+          clearTimeout(timeout);
+          reject(new Error(`Video load error: ${e.message || 'Unknown error'}`));
+        };
+        el.addEventListener('loadeddata', onLoaded, { once: true });
+        el.addEventListener('error', onError, { once: true });
+      });
+
+      // CRITICAL: Force video to play immediately and continuously
+      // Try multiple times to ensure it starts playing
+      let playAttempts = 0;
+      const maxPlayAttempts = 5;
+      while (playAttempts < maxPlayAttempts && (el.paused || el.ended)) {
+        try {
+          await el.play();
+          console.log(`[BG] Video play attempt ${playAttempts + 1} succeeded`);
+          break;
+        } catch (error: any) {
+          playAttempts++;
+          console.warn(`[BG] Video play attempt ${playAttempts} failed:`, error.message);
+          if (playAttempts < maxPlayAttempts) {
+            // Wait a bit before retrying
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+        }
+      }
+      
+      // Verify video is actually playing
+      if (el.paused) {
+        console.warn('[BG] Video is still paused after all play attempts');
+      } else {
+        console.log('[BG] Video is playing successfully');
+      }
+
+      return el;
+    } catch (error: any) {
+      // Clean up on error
+      if (this.bgVideoUrl) {
+        URL.revokeObjectURL(this.bgVideoUrl);
+        this.bgVideoUrl = null;
+      }
+      throw error;
+    }
   }
 
   async setVideo(url: string) {
@@ -746,16 +850,74 @@ class BackgroundEngine {
         return;
       }
       
-      // Hide video element
+      // Hide video element but keep it in DOM and playing
       vid.style.display = 'none';
       vid.style.width = '1px';
       vid.style.height = '1px';
       vid.style.opacity = '0';
       vid.style.position = 'absolute';
       vid.style.pointerEvents = 'none';
+      vid.style.top = '-9999px'; // Move off-screen
+      vid.style.left = '-9999px';
       
-      // Add to DOM (hidden) to ensure it works properly
+      // Add to DOM (hidden) to ensure it works properly and keeps playing
       document.body.appendChild(vid);
+      
+      // CRITICAL: Ensure video plays continuously
+      // Force play immediately and keep it playing
+      const ensurePlaying = async () => {
+        if (vid.paused && !vid.ended) {
+          try {
+            await vid.play();
+            console.log('[BG] Video resumed playback');
+          } catch (e) {
+            console.warn('[BG] Failed to resume video:', e);
+          }
+        }
+      };
+      
+      // Ensure playing immediately
+      await ensurePlaying();
+      
+      // Set up event listeners to keep video playing
+      vid.addEventListener('pause', async () => {
+        if (!vid.ended) {
+          console.log('[BG] Video paused, resuming...');
+          await ensurePlaying();
+        }
+      });
+      
+      vid.addEventListener('ended', async () => {
+        if (vid.loop) {
+          vid.currentTime = 0;
+          await ensurePlaying();
+        }
+      });
+      
+      // Also listen for timeupdate to ensure it's actually playing
+      vid.addEventListener('timeupdate', () => {
+        if (vid.paused && !vid.ended) {
+          ensurePlaying();
+        }
+      });
+      
+      // Periodic check to ensure video is playing (every 500ms)
+      const playCheckInterval = setInterval(() => {
+        if (vid && !vid.paused && !vid.ended) {
+          // Video is playing, good
+        } else if (vid && !vid.ended) {
+          // Video should be playing but isn't - force play
+          ensurePlaying();
+        } else {
+          // Video ended or removed - clear interval
+          clearInterval(playCheckInterval);
+        }
+      }, 500);
+      
+      // Store interval for cleanup
+      if (!this.playCheckIntervalId) {
+        this.playCheckIntervalId = playCheckInterval as any;
+      }
 
       // Wait for track to be fully stable
       await new Promise(resolve => setTimeout(resolve, 100));
@@ -805,14 +967,32 @@ class BackgroundEngine {
         drawY = 0;
       }
       
+      // Ensure video has crossOrigin set before drawing to canvas
+      if (!vid.crossOrigin) {
+        vid.crossOrigin = 'anonymous';
+        // Reload video if crossOrigin was just set
+        const currentSrc = vid.src;
+        vid.src = '';
+        vid.src = currentSrc;
+        // Wait for video to reload
+        await new Promise((resolve) => {
+          vid.addEventListener('loadeddata', resolve, { once: true });
+          vid.addEventListener('error', resolve, { once: true });
+        });
+      }
+      
       ctx.drawImage(vid, drawX, drawY, drawWidth, drawHeight);
       
       // Create blob from first frame
       const blob = await new Promise<Blob>((resolve, reject) => {
-        canvas.toBlob((b) => {
-          if (b) resolve(b);
-          else reject(new Error('Failed to create blob'));
-        }, 'image/jpeg', 0.95);
+        try {
+          canvas.toBlob((b) => {
+            if (b) resolve(b);
+            else reject(new Error('Failed to create blob - canvas may be tainted'));
+          }, 'image/jpeg', 0.95);
+        } catch (error: any) {
+          reject(new Error(`Canvas toBlob error: ${error.message}`));
+        }
       });
       
       const initialImageUrl = URL.createObjectURL(blob);
@@ -834,20 +1014,39 @@ class BackgroundEngine {
       this.canvasContexts.push(ctx);
       
       // Frame update loop for smooth video playback
-      // Use throttling to prevent VideoFrame GC warnings
+      // Update frequently for smooth video background (every 100ms = ~10fps)
       let lastUpdateTime = 0;
-      const UPDATE_THROTTLE = 200; // Update every 200ms (5fps) to reduce GC issues
+      const UPDATE_THROTTLE = 100; // Update every 100ms (10fps) for smooth video playback
+      let updateCount = 0;
+      const MAX_UPDATES = 3000; // Maximum updates before stopping (5 minutes at 10fps)
+      
+      // Log initial setup
+      console.log('[BG] Starting video frame update loop, throttle:', UPDATE_THROTTLE, 'ms');
       
       // Define updateVideoFrame in outer scope so it has access to canvas, vid, ctx, etc
       const updateVideoFrame = async () => {
-        // Throttle updates
+        // Throttle is handled by setInterval, but add safety check
         const now = Date.now();
         if (now - lastUpdateTime < UPDATE_THROTTLE) {
           return;
         }
         lastUpdateTime = now;
         
+        // Safety check: prevent infinite loops
+        updateCount++;
+        if (updateCount > MAX_UPDATES) {
+          console.warn('[BG] Maximum video update count reached, stopping updates');
+          this.stopVideoUpdates();
+          return;
+        }
+        
         if (!this.track || !vid || !ctx || !this.processor) {
+          return;
+        }
+        
+        // CRITICAL: Verify video is actually playing and advancing
+        if (vid.paused || vid.ended) {
+          console.warn('[BG] Video is paused/ended, skipping frame update');
           return;
         }
 
@@ -864,24 +1063,74 @@ class BackgroundEngine {
         }
 
         try {
+          // Ensure video has crossOrigin set before drawing to canvas
+          if (!vid.crossOrigin) {
+            vid.crossOrigin = 'anonymous';
+          }
+          
+          // CRITICAL: Check if video time has actually advanced (video is playing)
+          const currentTime = vid.currentTime;
+          const lastTime = (vid as any).__lastFrameTime || 0;
+          
+          // Only update if video time has advanced (video is actually playing)
+          // Use smaller threshold (0.05 seconds) to allow for frame updates
+          if (Math.abs(currentTime - lastTime) < 0.05 && lastTime > 0) {
+            // Video time hasn't advanced much - might be paused or stuck
+            // But still try to update frame in case it's just slow
+            console.log(`[BG] Video time check: current=${currentTime.toFixed(3)}, last=${lastTime.toFixed(3)}, diff=${Math.abs(currentTime - lastTime).toFixed(3)}`);
+            
+            // If video is definitely paused, try to play it
+            if (vid.paused) {
+              console.warn('[BG] Video is paused, forcing play');
+              try {
+                await vid.play();
+              } catch (e) {
+                console.warn('[BG] Failed to play video:', e);
+              }
+            }
+            
+            // Don't skip frame update - still update even if time hasn't changed much
+            // This ensures we get frames even if video is slow
+          }
+          
+          // Store current time for next check
+          (vid as any).__lastFrameTime = currentTime;
+          
           // Draw current video frame to canvas
           ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = '#000000';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
           ctx.drawImage(vid, drawX, drawY, drawWidth, drawHeight);
           
-          // Create blob from current frame
+          // Create blob from current frame with balanced quality
           const blob = await new Promise<Blob>((resolve, reject) => {
-            canvas.toBlob((b) => {
-              if (b) resolve(b);
-              else reject(new Error('Failed to create blob'));
-            }, 'image/jpeg', 0.95);
+            try {
+              canvas.toBlob((b) => {
+                if (b) resolve(b);
+                else reject(new Error('Failed to create blob - canvas may be tainted'));
+              }, 'image/jpeg', 0.8); // Balanced quality for smooth playback
+            } catch (error: any) {
+              reject(new Error(`Canvas toBlob error: ${error.message}`));
+            }
           });
 
+          // Clean up previous blob URL before creating new one
+          if (this.currentVideoBlobUrl) {
+            try {
+              URL.revokeObjectURL(this.currentVideoBlobUrl);
+            } catch (e) {
+              // Ignore cleanup errors
+            }
+          }
+
           const newImageUrl = URL.createObjectURL(blob);
+          this.currentVideoBlobUrl = newImageUrl;
 
           // Validate track is still valid
           const tracksCheck = this.track.mediaStream?.getVideoTracks();
           if (!tracksCheck || tracksCheck.length === 0 || tracksCheck[0].readyState === 'ended') {
             URL.revokeObjectURL(newImageUrl);
+            this.currentVideoBlobUrl = null;
             this.stopVideoUpdates();
             return;
           }
@@ -895,6 +1144,7 @@ class BackgroundEngine {
               const finalTracks = this.track.mediaStream?.getVideoTracks();
               if (!finalTracks || finalTracks.length === 0 || finalTracks[0].readyState === 'ended') {
                 URL.revokeObjectURL(newImageUrl);
+                this.currentVideoBlobUrl = null;
                 return;
               }
 
@@ -908,21 +1158,31 @@ class BackgroundEngine {
                   });
                 }
 
+                // CRITICAL: Update processor reference immediately
                 this.processor = newProcessor;
+                
+                // Log successful frame update for debugging
+                if (updateCount % 10 === 0) { // Log every 10th frame to avoid spam
+                  console.log(`[BG] Frame ${updateCount} updated successfully, video time: ${vid.currentTime.toFixed(2)}s`);
+                }
 
-                // Revoke old blob URL after short delay
-                setTimeout(() => {
-                  URL.revokeObjectURL(newImageUrl);
-                }, 100);
+                // Revoke old blob URL after delay (but keep currentBlobUrl for next cleanup)
+                // Don't revoke immediately - let it be cleaned up on next update
               } catch (setError) {
+                console.error('[BG] Error setting processor:', setError);
                 URL.revokeObjectURL(newImageUrl);
+                this.currentVideoBlobUrl = null;
                 // Silently handle set processor errors
               }
             } else {
+              console.error('[BG] Failed to create processor from blob URL');
               URL.revokeObjectURL(newImageUrl);
+              this.currentVideoBlobUrl = null;
             }
           } catch (processorError) {
+            console.error('[BG] Processor creation error:', processorError);
             URL.revokeObjectURL(newImageUrl);
+            this.currentVideoBlobUrl = null;
             // Silently handle processor creation errors
           }
         } catch (error) {
@@ -930,28 +1190,49 @@ class BackgroundEngine {
         }
       };
 
-      // Use requestAnimationFrame for smooth updates
-      const animate = async () => {
+      // Use setInterval for consistent frame updates
+      // Update frequently to show smooth video playback
+      const videoUpdateInterval = setInterval(async () => {
         if (!this.track || !vid) {
+          clearInterval(videoUpdateInterval);
           this.stopVideoUpdates();
           return;
         }
 
-        // Only update if video is actually playing and not paused
-        if (vid && !vid.paused && vid.readyState >= 2) {
+        // CRITICAL: Ensure video is playing before updating frames
+        if (vid.paused && !vid.ended) {
+          try {
+            await vid.play();
+            console.log('[BG] Video resumed in update loop');
+          } catch (e) {
+            console.warn('[BG] Failed to play video in update loop:', e);
+          }
+        }
+
+        // Only update if video is actually playing and has loaded enough data
+        if (vid && !vid.paused && !vid.ended && vid.readyState >= 2 && vid.videoWidth > 0 && vid.videoHeight > 0) {
+          // Video is playing - update frame
           await updateVideoFrame();
+        } else {
+          // Video not ready - log status and try to ensure it's playing
+          if (vid) {
+            console.log(`[BG] Video not ready: paused=${vid.paused}, ended=${vid.ended}, readyState=${vid.readyState}, dimensions=${vid.videoWidth}x${vid.videoHeight}`);
+            if (!vid.ended) {
+              try {
+                await vid.play();
+                console.log('[BG] Forced video play in update loop');
+              } catch (e) {
+                console.warn('[BG] Failed to play video:', e);
+              }
+            }
+          }
         }
+      }, UPDATE_THROTTLE); // Update at throttled rate (100ms = 10fps for smooth video)
 
-        // Schedule next frame
-        this.animationFrameId = requestAnimationFrame(animate);
-      };
+      // Store interval ID for cleanup (use existing updateIntervalId property)
+      this.updateIntervalId = videoUpdateInterval;
 
-      // Also ensure video keeps playing
-      const ensurePlaying = () => {
-        if (vid && vid.paused && !vid.ended) {
-          vid.play().catch(() => {});
-        }
-      };
+      // Video play enforcement is already handled above with the playCheckInterval
 
       // Set processor with comprehensive error handling
       await new Promise<void>((resolve) => {
@@ -995,8 +1276,7 @@ class BackgroundEngine {
                 await setResult;
               }
 
-              // Start animation loop
-              this.animationFrameId = requestAnimationFrame(animate);
+              // Video update interval is already started above
 
               // Check every second if video is still playing
               this.playCheckIntervalId = setInterval(ensurePlaying, 1000);
@@ -1028,7 +1308,8 @@ class BackgroundEngine {
         });
       });
     } catch (error: any) {
-      console.error('[BG] Error setting video background:', error);
+      const errorMessage = error?.message || 'Unknown error';
+      console.error('[BG] Error setting video background:', errorMessage);
       
       // Clean up on error
       if (this.bgVideo) {
@@ -1044,6 +1325,15 @@ class BackgroundEngine {
           }
         } catch {}
         this.bgVideo = null;
+      }
+      // Clean up video blob URL
+      if (this.currentVideoBlobUrl) {
+        try {
+          URL.revokeObjectURL(this.currentVideoBlobUrl);
+          this.currentVideoBlobUrl = null;
+        } catch (e) {
+          // Ignore cleanup errors
+        }
       }
 
       try {
@@ -1072,6 +1362,15 @@ class BackgroundEngine {
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId);
       this.animationFrameId = null;
+    }
+    // Clean up any video-specific blob URLs
+    if (this.currentVideoBlobUrl) {
+      try {
+        URL.revokeObjectURL(this.currentVideoBlobUrl);
+        this.currentVideoBlobUrl = null;
+      } catch (e) {
+        // Ignore cleanup errors
+      }
     }
   }
 

@@ -12,8 +12,10 @@ import JoinPage from './pages/JoinPage';
 import WaitingRoomPage from './pages/WaitingRoomPage';
 import AdminPage from './pages/AdminPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
+import InboxPage from './pages/InboxPage';
 import ProtectedRoute from './components/ProtectedRoute';
 import SEOHead from './components/SEOHead';
+import AppRedirectHandler from './components/AppRedirectHandler';
 
 function AppRoutes() {
   const { loading } = useAuth();
@@ -35,6 +37,7 @@ function AppRoutes() {
   return (
     <div className="min-h-screen bg-midnight text-cloud">
       <SEOHead />
+      <AppRedirectHandler />
       <Routes>
         <Route path="/" element={<AuthPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
@@ -81,6 +84,14 @@ function AppRoutes() {
           element={
             <ProtectedRoute>
               <HistoryPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/inbox"
+          element={
+            <ProtectedRoute>
+              <InboxPage />
             </ProtectedRoute>
           }
         />

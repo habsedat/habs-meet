@@ -591,8 +591,8 @@ const CalendarInterface: React.FC<CalendarInterfaceProps> = ({ onScheduleMeeting
             title="Calendar options"
           >
             <svg className="w-5 h-5 sm:w-6 sm:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
-            </svg>
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+          </svg>
           </button>
           
           {/* Options menu dropdown */}
@@ -815,26 +815,26 @@ const CalendarInterface: React.FC<CalendarInterfaceProps> = ({ onScheduleMeeting
           </div>
         ) : scheduledMeetings.length === 0 ? (
           <div className="text-center">
-            <div className="w-24 h-24 sm:w-32 sm:h-32 mx-auto mb-4 sm:mb-6 flex items-center justify-center">
-              <svg className="w-16 h-16 sm:w-24 sm:h-24 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2H5a2 2 0 00-2-2V7a2 2 0 012-2h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M8 3v4M16 3v4M3 7h18" />
-              </svg>
-            </div>
-            
-            <h3 className="text-xl font-semibold text-midnight mb-4">No meetings scheduled.</h3>
-            
-            <button
+        <div className="w-24 h-24 sm:w-32 sm:h-32 mx-auto mb-4 sm:mb-6 flex items-center justify-center">
+          <svg className="w-16 h-16 sm:w-24 sm:h-24 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2H5a2 2 0 00-2-2V7a2 2 0 012-2h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M8 3v4M16 3v4M3 7h18" />
+          </svg>
+        </div>
+        
+        <h3 className="text-xl font-semibold text-midnight mb-4">No meetings scheduled.</h3>
+        
+        <button
               onClick={handleScheduleMeeting}
-              disabled={isCreatingRoom}
-              className="inline-flex items-center px-6 py-3 bg-techBlue text-cloud rounded-lg font-semibold hover:bg-techBlue/90 transition-colors disabled:opacity-50"
-            >
-              <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-              </svg>
-              {isCreatingRoom ? 'Scheduling...' : 'Schedule a meeting'}
-            </button>
-          </div>
+          disabled={isCreatingRoom}
+          className="inline-flex items-center px-6 py-3 bg-techBlue text-cloud rounded-lg font-semibold hover:bg-techBlue/90 transition-colors disabled:opacity-50"
+        >
+          <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+          </svg>
+          {isCreatingRoom ? 'Scheduling...' : 'Schedule a meeting'}
+        </button>
+      </div>
         ) : (
           <div>
             <div className="flex items-center justify-between mb-4">

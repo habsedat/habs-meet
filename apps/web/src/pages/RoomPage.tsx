@@ -11,6 +11,7 @@ import MeetingControls from '../components/MeetingControls';
 import MeetingShell from '../meeting/MeetingShell';
 import ViewMenu from '../components/ViewMenu';
 import ChatPanel from '../components/ChatPanel';
+import PrivateMessagesPanel from '../components/PrivateMessagesPanel';
 import ParticipantsPanel from '../components/ParticipantsPanel';
 import SettingsPanel from '../components/SettingsPanel';
 import { recordingService, RecordingService } from '../lib/recordingService';
@@ -29,7 +30,8 @@ const RoomPage: React.FC = () => {
   const [roomData, setRoomData] = useState<any>(null);
   const [participants, setParticipants] = useState<any[]>([]);
   const [chatMessages, setChatMessages] = useState<any[]>([]);
-  const [activePanel, setActivePanel] = useState<'chat' | 'participants' | 'settings' | null>(null);
+  const [privateMessages, setPrivateMessages] = useState<any[]>([]);
+  const [activePanel, setActivePanel] = useState<'chat' | 'inbox' | 'participants' | 'settings' | null>(null);
   const [isHost, setIsHost] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
@@ -201,6 +203,46 @@ const RoomPage: React.FC = () => {
 
     return unsubscribe;
   }, [roomId, activePanel, lastSeenMessageId]);
+
+  // Load private messages
+  useEffect(() => {
+    if (!roomId || !user) return;
+
+    const privateMessagesRef = collection(db, 'rooms', roomId, 'privateMessages');
+    
+    // Firestore doesn't support OR queries directly, so we need to fetch all and filter
+    // The Firestore rules ensure users can only read their own messages
+    // We don't use orderBy here to avoid index requirements - we'll sort client-side
+    const q = query(privateMessagesRef);
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const allMessages = snapshot.docs.map(doc => ({
+        id: doc.id,
+        roomId: roomId, // Ensure roomId is included for delete functionality
+        ...doc.data()
+      }));
+      
+      // Filter to only show messages where current user is sender or receiver
+      // Firestore rules already enforce this, but we filter client-side for safety
+      const userMessages = allMessages.filter(
+        (msg: any) => msg.senderId === user.uid || msg.receiverId === user.uid
+      );
+      
+      // Sort by createdAt client-side (ascending for chronological order)
+      userMessages.sort((a: any, b: any) => {
+        const timeA = a.createdAt?.toDate?.() || new Date(0);
+        const timeB = b.createdAt?.toDate?.() || new Date(0);
+        return timeA.getTime() - timeB.getTime();
+      });
+      
+      setPrivateMessages(userMessages);
+    }, (error) => {
+      console.error('[PrivateMessages] Error loading messages:', error);
+      toast.error('Failed to load private messages: ' + error.message);
+    });
+
+    return unsubscribe;
+  }, [roomId, user]);
   
   // ✅ Clear unread count when chat panel is opened
   useEffect(() => {
@@ -540,6 +582,73 @@ const RoomPage: React.FC = () => {
     }
   };
 
+  const sendPrivateMessage = async (
+    text: string,
+    receiverId: string,
+    files?: Array<{ url: string; type: 'image' | 'video' | 'pdf'; name: string }>,
+    replyTo?: { messageId: string; senderName: string; text?: string; fileCount?: number }
+  ) => {
+    if (!user || !userProfile || !roomId || !receiverId) {
+      toast.error('Cannot send private message: Missing user info or recipient');
+      return;
+    }
+
+    // Must have either text or files
+    if (!text.trim() && (!files || files.length === 0)) {
+      toast.error('Please enter a message or attach a file');
+      return;
+    }
+
+    try {
+      // Get receiver's display name
+      const receiver = participants.find(p => p.uid === receiverId);
+      const receiverName = receiver?.displayName || receiverId;
+
+      // ✅ Save private message to Firestore
+      const messageData: any = {
+        senderId: user.uid,
+        receiverId: receiverId,
+        senderName: userProfile.displayName || user.email || 'Anonymous',
+        receiverName: receiverName,
+        read: false,
+        createdAt: serverTimestamp(),
+      };
+
+      if (text.trim()) {
+        messageData.text = text.trim();
+      }
+
+      if (files && files.length > 0) {
+        messageData.files = files;
+      }
+
+      if (replyTo) {
+        messageData.replyTo = replyTo;
+      }
+
+      await addDoc(collection(db, 'rooms', roomId, 'privateMessages'), messageData);
+      
+      console.log('[PrivateMessage] Message sent successfully');
+      toast.success(`Message sent to ${receiverName}`, { duration: 2000 });
+    } catch (error: any) {
+      console.error('[PrivateMessage] Failed to send message:', error);
+      toast.error('Failed to send private message: ' + (error.message || 'Unknown error'));
+    }
+  };
+
+  const markPrivateMessageAsRead = async (messageId: string) => {
+    if (!roomId || !messageId) return;
+
+    try {
+      const messageRef = doc(db, 'rooms', roomId, 'privateMessages', messageId);
+      await updateDoc(messageRef, {
+        read: true,
+      });
+    } catch (error: any) {
+      console.error('[PrivateMessage] Failed to mark as read:', error);
+    }
+  };
+
   const handleShareLink = async () => {
     // Don't allow sharing if room is locked
     if (isLocked || !roomId) {
@@ -624,14 +733,23 @@ const RoomPage: React.FC = () => {
 
         {/* Side panel - slide in from right when active - NO BORDERS */}
         {activePanel && (
-          <div className="absolute right-0 top-0 bottom-0 w-full sm:w-80 bg-cloud flex flex-col overflow-hidden shadow-2xl z-30" style={{ border: 'none', borderLeft: 'none' }}>
+          <div className={`absolute right-0 top-0 bottom-0 bg-cloud flex flex-col overflow-hidden shadow-2xl z-30 ${activePanel === 'inbox' ? 'w-full sm:w-[600px]' : 'w-full sm:w-80'}`} style={{ border: 'none', borderLeft: 'none' }}>
             {/* Panel header - NO BORDERS */}
             <div className="h-12 bg-gray-800 flex items-center justify-between px-4" style={{ border: 'none', borderBottom: 'none' }}>
-              <h3 className="text-cloud font-semibold text-sm uppercase">
-                {activePanel === 'chat' && 'Chat'}
-                {activePanel === 'participants' && 'Participants'}
-                {activePanel === 'settings' && 'Settings'}
-              </h3>
+              <div className="flex items-center space-x-2">
+                {activePanel === 'chat' && (
+                  <h3 className="text-cloud font-semibold text-sm uppercase">Chat</h3>
+                )}
+                {activePanel === 'inbox' && (
+                  <h3 className="text-cloud font-semibold text-sm uppercase">Inbox</h3>
+                )}
+                {activePanel === 'participants' && (
+                  <h3 className="text-cloud font-semibold text-sm uppercase">Participants</h3>
+                )}
+                {activePanel === 'settings' && (
+                  <h3 className="text-cloud font-semibold text-sm uppercase">Settings</h3>
+                )}
+              </div>
               <button
                 onClick={() => setActivePanel(null)}
                 className="text-gray-400 hover:text-white p-1"
@@ -648,6 +766,16 @@ const RoomPage: React.FC = () => {
                 <ChatPanel
                   messages={chatMessages}
                   onSendMessage={sendChatMessage}
+                />
+              )}
+              {activePanel === 'inbox' && (
+                <PrivateMessagesPanel
+                  messages={privateMessages}
+                  participants={admittedParticipants}
+                  currentUserId={user?.uid || ''}
+                  roomId={roomId!}
+                  onSendMessage={sendPrivateMessage}
+                  onMarkAsRead={markPrivateMessageAsRead}
                 />
               )}
               {activePanel === 'participants' && (
@@ -711,10 +839,31 @@ const RoomPage: React.FC = () => {
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"> 
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />                               
             </svg>
-            {/* ✅ Unread message badge */}
+            {/* ✅ Unread message badge (public chat) */}
             {unreadChatCount > 0 && (
               <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center animate-pulse">                   
                 {unreadChatCount > 99 ? '99+' : unreadChatCount}
+              </span>
+            )}
+          </button>
+          
+          {/* Private Messages / Inbox button */}
+          <button
+            onClick={() => setActivePanel(activePanel === 'inbox' ? null : 'inbox')}
+            className={`relative p-1.5 sm:p-2 hover:bg-gray-700 rounded transition-colors flex-shrink-0 ${
+              activePanel === 'inbox' ? 'text-techBlue' : 'text-gray-400 hover:text-white'   
+            }`}
+            title="Private Messages / Inbox"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"> 
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />                               
+            </svg>
+            {/* ✅ Unread private message badge */}
+            {privateMessages.filter((m: any) => !m.read && m.receiverId === user?.uid).length > 0 && (
+              <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center animate-pulse">                   
+                {privateMessages.filter((m: any) => !m.read && m.receiverId === user?.uid).length > 99 
+                  ? '99+' 
+                  : privateMessages.filter((m: any) => !m.read && m.receiverId === user?.uid).length}
               </span>
             )}
           </button>

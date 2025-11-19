@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@livekit/track-processors": "^0.6.1",
+    "emoji-picker-react": "^4.15.1",
     "firebase": "^10.0.0",
     "ical.js": "^2.2.1",
     "ics": "^3.8.1",

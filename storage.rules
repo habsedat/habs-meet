@@ -29,6 +29,15 @@ service firebase.storage {
       allow read, write, delete: if request.auth != null;
     }
     
+    // Private messages media - only sender and receiver can access
+    match /rooms/{roomId}/privateMessages/{senderId}/{receiverId}/{fileName} {
+      // Allow read if user is sender or receiver
+      allow read: if request.auth != null && 
+        (request.auth.uid == senderId || request.auth.uid == receiverId);
+      // Allow write only if user is the sender
+      allow write: if request.auth != null && request.auth.uid == senderId;
+    }
+    
     // Default rule - deny all other access
     match /{allPaths=**} {
       allow read, write: if false;
