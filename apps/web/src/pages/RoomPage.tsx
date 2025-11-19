@@ -285,6 +285,34 @@ const RoomPage: React.FC = () => {
     return unsubscribe;
   }, [roomId, user, navigate]);
 
+  // ✅ Fix 4: Prevent multiple tabs from opening the same meeting
+  useEffect(() => {
+    const meetingKey = `meeting-active-${roomId}`;
+    
+    // Check if meeting is already open in another tab
+    if (localStorage.getItem(meetingKey)) {
+      console.warn('[RoomPage] Meeting already open in another tab');
+      toast.error('This meeting is already open in another tab. Please close the other tab first.');
+      navigate('/home');
+      return;
+    }
+    
+    // Mark this tab as active
+    localStorage.setItem(meetingKey, 'true');
+    
+    // Clean up on page unload
+    const handleBeforeUnload = () => {
+      localStorage.removeItem(meetingKey);
+    };
+    
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      localStorage.removeItem(meetingKey);
+    };
+  }, [roomId, navigate]);
+
   // Connect to LiveKit room (only if admitted)
   useEffect(() => {
     if (!roomId || !user || isConnected || isConnecting) return;
@@ -337,7 +365,9 @@ const RoomPage: React.FC = () => {
     };
 
     connectToRoom();
-  }, [roomId, user, isConnected, isConnecting, connect, navigate]);
+    // ✅ Removed isConnected and isConnecting from dependencies to prevent multiple connection attempts
+    // Only reconnect if roomId or user changes, not when connection state changes
+  }, [roomId, user, connect, navigate]);
 
   // Create and publish local tracks after connecting
   useEffect(() => {
@@ -407,6 +437,11 @@ const RoomPage: React.FC = () => {
   }, []);
 
   const handleLeave = useCallback(async () => {
+    // ✅ Fix 4: Clean up meeting-active flag when leaving
+    if (roomId) {
+      localStorage.removeItem(`meeting-active-${roomId}`);
+    }
+    
     // If host is leaving, generate a host join key so they can rejoin as host
     if (isHost && roomId && user) {
       try {

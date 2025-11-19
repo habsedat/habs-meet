@@ -327,6 +327,9 @@ export const getMeetingToken = functions.https.onRequest(async (req, res) => {
 
       const token = await at.toJwt();
 
+      // ✅ Fix 2: Add rate-limit protection with Cache-Control header
+      res.set('Cache-Control', 'private, max-age=10');
+      
       return res.json({ token });
     } catch (error: any) {
       console.error('Error getting meeting token:', error);

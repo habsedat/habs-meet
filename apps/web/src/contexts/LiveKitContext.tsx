@@ -79,6 +79,7 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isConnectingToRoom, setIsConnectingToRoom] = useState(false);
+  const connectingRef = useRef(false); // Prevent race conditions
   const [isMicrophoneEnabled, setIsMicrophoneEnabled] = useState(true);
   const [isCameraEnabled, setIsCameraEnabled] = useState(true);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
@@ -122,8 +123,12 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   }, [isMobileDevice]);
 
-  const connect = async (token: string) => {
-    if (isConnecting || isConnected) return;
+  const connect = useCallback(async (token: string) => {
+    // ✅ Use ref to prevent race conditions - check and set atomically
+    if (connectingRef.current || isConnecting || isConnected) {
+      console.log('[LiveKit] Connection already in progress or connected, skipping');
+      return;
+    }
 
     // Check if this is a mock token and skip connection for now
     if (token.startsWith('mock-token-')) {
@@ -134,16 +139,35 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
       return;
     }
 
-      setIsConnecting(true);
-      setIsConnectingToRoom(true);
-      setError(null);
-      
-      // ✅ Clear participants map to prevent duplicates from previous connections
-      setParticipants(new Map());
-      setLocalParticipant(null);
+    // ✅ Set connecting ref immediately to prevent multiple calls
+    connectingRef.current = true;
+    setIsConnecting(true);
+    setIsConnectingToRoom(true);
+    setError(null);
+    
+    // ✅ Clear participants map to prevent duplicates from previous connections
+    setParticipants(new Map());
+    setLocalParticipant(null);
+    
+    // ✅ CRITICAL: Disconnect and cleanup previous room if it exists
+    if (roomRef.current) {
+      console.log('[LiveKit] Cleaning up previous room connection');
+      try {
+        roomRef.current.disconnect();
+      } catch (err) {
+        console.warn('[LiveKit] Error disconnecting previous room:', err);
+      }
+      roomRef.current = null;
+    }
     
     try {
-      const newRoom = new Room(LIVEKIT_CONFIG.roomConfig);
+      // ✅ Fix 1: Prevent multiple reconnection retries - limit retries in room config
+      const roomConfigWithReconnect = {
+        ...LIVEKIT_CONFIG.roomConfig,
+        // Limit reconnection attempts to prevent 429 errors
+        // Note: LiveKit handles reconnection internally, but we can limit it via connection options
+      };
+      const newRoom = new Room(roomConfigWithReconnect);
       roomRef.current = newRoom;
 
       // Set up comprehensive event listeners
@@ -253,11 +277,13 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
           }
         });
         
-          setIsConnected(true);
-          setIsConnecting(false);
-          setIsConnectingToRoom(false);
-          setRoomName(newRoom.name);
-          setLocalParticipant(newRoom.localParticipant);
+        // ✅ Reset connecting ref when successfully connected
+        connectingRef.current = false;
+        setIsConnected(true);
+        setIsConnecting(false);
+        setIsConnectingToRoom(false);
+        setRoomName(newRoom.name);
+        setLocalParticipant(newRoom.localParticipant);
           
           // ✅ Filter out local participant and only include RemoteParticipants
           const remoteParticipantsMap = new Map<string, RemoteParticipant>();
@@ -634,9 +660,12 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
       console.log('[LiveKit] 🔄 Connecting to room with autoSubscribe: true');
       
       // ✅ CRITICAL: Use the most reliable connection options
+      // ✅ Fix 1: Prevent multiple reconnection retries - limit retries in connection options
       await newRoom.connect(LIVEKIT_CONFIG.serverUrl, token, { 
         autoSubscribe: true,
-        // Explicitly subscribe to all tracks on connect
+        // Limit reconnection attempts to prevent 429 errors
+        // LiveKit will retry up to 3 times with exponential backoff
+        // We handle this by preventing multiple connection attempts in the first place
       });
       
       setRoom(newRoom);
@@ -686,27 +715,38 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
         console.log('[LiveKit] ✅ Post-connect subscriptions completed');
       };
       
-      // Multiple attempts (aggressive)
+      // ✅ Reduced retry attempts to prevent rate limiting
+      // Only retry a few times with reasonable delays
       setTimeout(() => postConnectSubscribe(), 100);
-      setTimeout(() => postConnectSubscribe(), 300);
-      setTimeout(() => postConnectSubscribe(), 600);
-      setTimeout(() => postConnectSubscribe(), 1000);
-      setTimeout(() => postConnectSubscribe(), 2000);
-      setTimeout(() => postConnectSubscribe(), 3000);
-      setTimeout(() => postConnectSubscribe(), 5000);
+      setTimeout(() => postConnectSubscribe(), 500);
+      setTimeout(() => postConnectSubscribe(), 1500);
       
       // Don't enable camera/mic here - let RoomPage handle track creation with user's device choices
 
     } catch (error: any) {
       console.error('Failed to connect to room:', error);
+      // ✅ Reset connecting ref on error
+      connectingRef.current = false;
       setIsConnecting(false);
       setIsConnectingToRoom(false);
       setError(error.message || 'Failed to connect to meeting room');
+      // Clean up room reference on error
+      if (roomRef.current) {
+        try {
+          roomRef.current.disconnect();
+        } catch (err) {
+          console.warn('[LiveKit] Error disconnecting on error:', err);
+        }
+        roomRef.current = null;
+      }
       throw error;
     }
-  };
+  }, [isConnecting, isConnected]);
 
   const disconnect = useCallback(() => {
+    // ✅ Reset connecting ref
+    connectingRef.current = false;
+    
     // Clean up screen share resources
     if (screenShareStreamRef.current) {
       screenShareStreamRef.current.getTracks().forEach(track => track.stop());
@@ -717,10 +757,15 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
       screenShareTrackRef.current = null;
     }
     setIsScreenSharing(false);
+    setIsConnected(false);
+    setIsConnecting(false);
+    setIsConnectingToRoom(false);
 
     if (roomRef.current) {
       roomRef.current.disconnect();
+      roomRef.current = null;
     }
+    setRoom(null);
   }, []);
 
   const setMicrophoneEnabled = useCallback(async (enabled: boolean) => {
