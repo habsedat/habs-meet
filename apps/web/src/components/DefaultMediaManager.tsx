@@ -71,10 +71,11 @@ const DefaultMediaManager: React.FC<DefaultMediaManagerProps> = ({ isOpen, onClo
   };
 
   const handleDeleteMedia = async (mediaId: string) => {
-    if (!user) return;
+    if (!user || !isAdmin) return;
 
     try {
-      await defaultMediaService.deleteDefaultMedia(mediaId, user.uid);
+      // Pass isAdmin=true to allow deletion of any media (including hardcoded defaults)
+      await defaultMediaService.deleteDefaultMedia(mediaId, user.uid, true);
       setDefaultMedia(prev => prev.filter(media => media.id !== mediaId));
       toast.success('Default media deleted successfully!');
     } catch (error: any) {

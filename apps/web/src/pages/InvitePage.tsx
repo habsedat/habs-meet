@@ -39,12 +39,22 @@ const InvitePage: React.FC = () => {
     try {
       const result = await api.redeemInvite(token);
       
-      // Check if room is locked before allowing join
+      // ✅ CRITICAL: Check if room is ended or locked before allowing join
       const roomRef = doc(db, 'rooms', result.roomId);
       const roomSnap = await getDoc(roomRef);
       
       if (roomSnap.exists()) {
         const roomData = roomSnap.data();
+        
+        // Check if room is ended - reject immediately
+        if (roomData?.status === 'ended') {
+          toast.error('This meeting has ended. The meeting link has expired.');
+          navigate('/');
+          setIsRedeeming(false);
+          return;
+        }
+        
+        // Check if room is locked
         if (roomData?.status === 'locked') {
           toast.error('This meeting is locked. The host has locked the meeting. Please wait for the host to unlock it.');
           navigate('/');

@@ -290,7 +290,23 @@ export const getMeetingToken = functions.https.onRequest(async (req, res) => {
         return res.status(400).json({ error: 'Missing roomId' });
       }
 
-      // Verify user is participant
+      // Check if room exists
+      const roomDoc = await admin.firestore().collection('rooms').doc(roomId).get();
+      if (!roomDoc.exists) {
+        return res.status(404).json({ error: 'Room not found' });
+      }
+
+      const roomData = roomDoc.data()!;
+
+      // ✅ CRITICAL: Check if room is ended - reject token requests for ended meetings
+      if (roomData.status === 'ended') {
+        return res.status(403).json({ error: 'This meeting has ended. The meeting link has expired.' });
+      }
+
+      // Check if user is the room creator (host) - allow them even if participant doc doesn't exist yet
+      const isRoomCreator = roomData.createdBy === user.uid;
+
+      // Verify user is participant OR is room creator
       const participantDoc = await admin.firestore()
         .collection('rooms')
         .doc(roomId)
@@ -298,34 +314,82 @@ export const getMeetingToken = functions.https.onRequest(async (req, res) => {
         .doc(user.uid)
         .get();
 
-      if (!participantDoc.exists) {
+      // If not room creator and not a participant, deny access
+      if (!isRoomCreator && !participantDoc.exists) {
         return res.status(403).json({ error: 'User is not a participant in this room' });
       }
 
-      const participantData = participantDoc.data()!;
-
-      // Check if participant is banned from this room
-      if (participantData.isBanned === true) {
-        return res.status(403).json({ error: 'You have been removed from this meeting and cannot rejoin' });
+      // Check if participant is banned (only if participant doc exists)
+      if (participantDoc.exists) {
+        const participantData = participantDoc.data()!;
+        if (participantData.isBanned === true) {
+          return res.status(403).json({ error: 'You have been removed from this meeting and cannot rejoin' });
+        }
       }
 
-      // Create LiveKit access token
+      // Get LiveKit config
       const config = getConfig();
-      const at = new AccessToken(config.livekitApiKey!, config.livekitApiSecret!, {
-        identity: user.uid,
-        name: user.name || user.email || 'Anonymous',
+      
+      // Validate LiveKit configuration - check for both existence and non-empty strings
+      const apiKey = config.livekitApiKey?.trim();
+      const apiSecret = config.livekitApiSecret?.trim();
+      
+      if (!apiKey || !apiSecret || apiKey.length === 0 || apiSecret.length === 0) {
+        console.error('LiveKit configuration missing or invalid:', {
+          hasApiKey: !!config.livekitApiKey,
+          apiKeyLength: config.livekitApiKey?.length || 0,
+          hasApiSecret: !!config.livekitApiSecret,
+          apiSecretLength: config.livekitApiSecret?.length || 0,
+          hasWsUrl: !!config.livekitWsUrl,
+          configKeys: Object.keys(functions.config()),
+          livekitConfig: functions.config().livekit ? Object.keys(functions.config().livekit) : 'missing',
+        });
+        return res.status(500).json({ 
+          error: 'LiveKit configuration is missing or invalid. Please configure LiveKit API key and secret in Firebase Functions config.',
+          details: {
+            hasApiKey: !!apiKey && apiKey.length > 0,
+            hasApiSecret: !!apiSecret && apiSecret.length > 0,
+            hasWsUrl: !!config.livekitWsUrl,
+          }
+        });
+      }
+
+      // Log configuration (without exposing secrets)
+      console.log('LiveKit config check:', {
+        hasApiKey: !!apiKey,
+        apiKeyLength: apiKey.length,
+        apiKeyPrefix: apiKey.substring(0, 5) + '...',
+        hasApiSecret: !!apiSecret,
+        apiSecretLength: apiSecret.length,
+        wsUrl: config.livekitWsUrl,
       });
 
-      at.addGrant({
-        room: roomId,
-        roomJoin: true,
-        canPublish: true,
-        canSubscribe: true,
-        canPublishData: true,
-        canUpdateOwnMetadata: true,
-      });
+      // Create LiveKit access token
+      let token: string;
+      try {
+        const at = new AccessToken(apiKey, apiSecret, {
+          identity: user.uid,
+          name: user.name || user.email || 'Anonymous',
+        });
 
-      const token = await at.toJwt();
+        at.addGrant({
+          room: roomId,
+          roomJoin: true,
+          canPublish: true,
+          canSubscribe: true,
+          canPublishData: true,
+          canUpdateOwnMetadata: true,
+        });
+
+        token = await at.toJwt();
+        console.log('LiveKit token generated successfully for room:', roomId, 'user:', user.uid, 'expires in 6 hours');
+      } catch (tokenError: any) {
+        console.error('Failed to generate LiveKit token:', tokenError);
+        return res.status(500).json({ 
+          error: 'Failed to generate LiveKit access token',
+          details: tokenError.message || 'Unknown error during token generation'
+        });
+      }
 
       // ✅ Fix 2: Add rate-limit protection with Cache-Control header
       res.set('Cache-Control', 'private, max-age=10');
@@ -333,7 +397,17 @@ export const getMeetingToken = functions.https.onRequest(async (req, res) => {
       return res.json({ token });
     } catch (error: any) {
       console.error('Error getting meeting token:', error);
-      return res.status(500).json({ error: error.message });
+      console.error('Error stack:', error.stack);
+      
+      // Provide more detailed error messages
+      if (error.code === 'unauthenticated') {
+        return res.status(401).json({ error: 'Authentication failed: ' + error.message });
+      }
+      
+      return res.status(500).json({ 
+        error: error.message || 'Internal server error',
+        details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      });
     }
   });
 });
@@ -876,6 +950,99 @@ export const endMeeting = functions.https.onRequest(async (req, res) => {
       return res.json({ success: true, message: 'Meeting ended' });
     } catch (error: any) {
       console.error('Error ending meeting:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  });
+});
+
+// POST /api/meet/end - End a regular room (not scheduled meeting)
+export const endRoom = functions.https.onRequest(async (req, res) => {
+  return corsHandler(req, res, async () => {
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
+    }
+
+    try {
+      const user = await verifyAuth(req);
+      const { roomId } = req.body;
+
+      if (!roomId) {
+        return res.status(400).json({ error: 'Missing roomId' });
+      }
+
+      // Verify user is host
+      const isHost = await verifyHost(roomId, user.uid);
+      if (!isHost) {
+        return res.status(403).json({ error: 'Only hosts can end meetings' });
+      }
+
+      // Get room document
+      const roomDoc = await admin.firestore().collection('rooms').doc(roomId).get();
+      if (!roomDoc.exists) {
+        return res.status(404).json({ error: 'Room not found' });
+      }
+
+      const roomData = roomDoc.data()!;
+      
+      // Check if already ended
+      if (roomData.status === 'ended') {
+        return res.json({ success: true, message: 'Meeting already ended' });
+      }
+
+      // ✅ CRITICAL: Update room status to 'ended' FIRST - this will trigger disconnection for all participants
+      // This MUST happen before disconnecting participants so Firestore listeners can react
+      await admin.firestore().collection('rooms').doc(roomId).update({
+        status: 'ended',
+        endedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      
+      console.log(`[EndRoom] ✅ Room status updated to 'ended' in Firestore`);
+
+      // ✅ CRITICAL: Disconnect all participants from LiveKit room using RoomService
+      const config = getConfig();
+      if (config.livekitApiKey && config.livekitApiSecret && config.livekitWsUrl) {
+        try {
+          const roomService = new RoomService(config.livekitWsUrl, config.livekitApiKey, config.livekitApiSecret);
+          
+          // List all participants in the LiveKit room
+          const participants = await roomService.listParticipants(roomId);
+          
+          console.log(`[EndRoom] Found ${participants.length} participant(s) to disconnect`);
+          
+          // ✅ CRITICAL: Disconnect all participants in parallel for faster execution
+          const disconnectPromises = participants.map(async (participant) => {
+            try {
+              await roomService.removeParticipant(roomId, participant.identity);
+              console.log(`[EndRoom] ✅ Disconnected participant: ${participant.identity}`);
+            } catch (err: any) {
+              console.warn(`[EndRoom] ⚠️ Failed to disconnect participant ${participant.identity}:`, err);
+              // Continue with other participants even if one fails
+            }
+          });
+          
+          await Promise.allSettled(disconnectPromises);
+          console.log(`[EndRoom] ✅ Disconnected ${participants.length} participant(s) from LiveKit room`);
+          
+          // ✅ CRITICAL: Try to delete/close the room entirely (if supported)
+          try {
+            // Some LiveKit versions support deleteRoom - try it
+            if (typeof (roomService as any).deleteRoom === 'function') {
+              await (roomService as any).deleteRoom(roomId);
+              console.log(`[EndRoom] ✅ Deleted LiveKit room: ${roomId}`);
+            }
+          } catch (deleteError: any) {
+            // deleteRoom might not be available in all versions - that's OK
+            console.log(`[EndRoom] Note: deleteRoom not available or failed (this is OK):`, deleteError.message);
+          }
+        } catch (livekitError: any) {
+          console.error('[EndRoom] ❌ Error disconnecting participants from LiveKit:', livekitError);
+          // Continue even if LiveKit disconnection fails - Firestore status update will still trigger client-side disconnection
+        }
+      }
+
+      return res.json({ success: true, message: 'Meeting ended and all participants disconnected' });
+    } catch (error: any) {
+      console.error('Error ending room:', error);
       return res.status(500).json({ error: error.message });
     }
   });
@@ -1641,8 +1808,11 @@ export const api = functions.https.onRequest(async (req, res) => {
       return updateParticipantRole(req, res);
     } else if ((path === '/api/meet/enforce-capacity' || path === '/meet/enforce-capacity') && method === 'POST') {
       return enforceParticipantCapacity(req, res);
+    } else if ((path === '/api/meet/end' || path === '/meet/end') && method === 'POST') {
+      // ✅ CRITICAL: Route to endRoom function
+      return endRoom(req, res);
     } else {
-      console.log('[API Router] No route found for:', path);
+      console.log('[API Router] No route found for:', path, 'Method:', method);
       return res.status(404).json({ error: 'Endpoint not found' });
     }
   });

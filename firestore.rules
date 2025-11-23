@@ -108,11 +108,20 @@ service cloud.firestore {
       allow update, delete: if false; // Recordings are immutable
     }
     
-        // Users collection - CRITICAL for user authentication and profiles
+        // Helper function to check if user is admin
+    function isAdmin() {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'superadmin'];
+    }
+    
+    // Users collection - CRITICAL for user authentication and profiles
     match /users/{userId} {
       allow read: if isAuthenticated(); // Allow reading all users for admin checking       
       allow create: if isAuthenticated() && request.auth.uid == userId;
-      allow update: if isAuthenticated() && request.auth.uid == userId;
+      // Allow users to update their own profile OR admins to update any user (for role assignment)
+      allow update: if isAuthenticated() && 
+        (request.auth.uid == userId || isAdmin());
       allow delete: if false; // Users cannot delete their own profiles
       
       // Deleted messages subcollection - per-user message deletion tracking
@@ -160,8 +169,21 @@ service cloud.firestore {
     match /defaultMedia/{mediaId} {
       allow read: if isAuthenticated();
       allow create: if isAuthenticated(); // Allow any authenticated user to create (for first admin setup)
-      allow update: if isAuthenticated() && request.auth.uid == resource.data.uploadedBy;
-      allow delete: if isAuthenticated() && request.auth.uid == resource.data.uploadedBy;
+      allow update: if isAuthenticated() && (request.auth.uid == resource.data.uploadedBy || isAdmin());
+      // Allow deletion if: user uploaded it OR user is admin OR uploadedBy is empty/missing (hardcoded defaults)
+      allow delete: if isAuthenticated() && 
+        (request.auth.uid == resource.data.uploadedBy || 
+         isAdmin() || 
+         !resource.data.uploadedBy || 
+         resource.data.uploadedBy == '');
+    }
+    
+    // Active meetings collection - track one meeting per user at a time
+    match /activeMeetings/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+      allow update: if isAuthenticated() && request.auth.uid == userId;
+      allow delete: if isAuthenticated() && request.auth.uid == userId;
     }
   }
 }

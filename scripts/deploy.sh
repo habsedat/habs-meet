@@ -30,7 +30,13 @@ firebase use $PROJECT
 # Build web app
 echo "🔨 Building web application..."
 cd apps/web
-pnpm build
+if [ "$ENVIRONMENT" = "prod" ]; then
+    echo "Building for PRODUCTION with production environment variables..."
+    pnpm build:prod
+else
+    echo "Building for DEVELOPMENT with development environment variables..."
+    pnpm build:dev
+fi
 cd ../..
 
 # Deploy to Firebase

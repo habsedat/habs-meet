@@ -14,6 +14,8 @@ class BackgroundEngine {
   private bgVideoUrl?: string | null = null;
   private bgImageUrl?: string | null = null;
   private currentVideoBlobUrl?: string | null = null; // Track current video blob URL for cleanup
+  private currentImageLoadAbortController: AbortController | null = null; // Cancel in-flight image loads
+  private isSettingImage: boolean = false; // Prevent concurrent setImage calls
 
   async init(track: LocalVideoTrack) {
     // Validate track is ready and not ended
@@ -39,10 +41,15 @@ class BackgroundEngine {
       await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => {
           reject(new Error('Track did not become live in time'));
-        }, 2000);
+        }, 3000); // Increased timeout
 
         const checkState = () => {
-          const currentTracks = track.mediaStream?.getVideoTracks();
+          if (!track || !track.mediaStream) {
+            clearTimeout(timeout);
+            reject(new Error('Track or mediaStream is null'));
+            return;
+          }
+          const currentTracks = track.mediaStream.getVideoTracks();
           if (currentTracks && currentTracks.length > 0) {
             if (currentTracks[0].readyState === 'live') {
               clearTimeout(timeout);
@@ -51,7 +58,7 @@ class BackgroundEngine {
               clearTimeout(timeout);
               reject(new Error('Track ended while waiting'));
             } else {
-              setTimeout(checkState, 50);
+              setTimeout(checkState, 100); // Increased interval
             }
           } else {
             clearTimeout(timeout);
@@ -59,7 +66,7 @@ class BackgroundEngine {
           }
         };
         
-        setTimeout(checkState, 50);
+        setTimeout(checkState, 100);
       });
     }
 
@@ -169,9 +176,7 @@ class BackgroundEngine {
     this.releaseSources();
     
     try {
-      // Wait for track to be fully stable
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
+      // ✅ CRITICAL: No delays - apply immediately
       // Validate track is still valid before creating processor
       const currentTracksBefore = this.track.mediaStream?.getVideoTracks();
       if (!currentTracksBefore || currentTracksBefore.length === 0 || currentTracksBefore[0].readyState === 'ended') {
@@ -200,7 +205,7 @@ class BackgroundEngine {
         return;
       }
       
-      // Set processor with comprehensive error handling
+      // Set processor IMMEDIATELY - no animation frame delays
       try {
         // Ensure processor is valid object with required structure
         if (!processor || typeof processor !== 'object') {
@@ -218,62 +223,38 @@ class BackgroundEngine {
         // Store processor reference before setting
         this.processor = processor;
         
-        // Set processor with comprehensive error handling
-        // Use requestAnimationFrame to ensure DOM/track is fully ready
-        await new Promise<void>((resolve) => {
-          requestAnimationFrame(() => {
-            requestAnimationFrame(async () => {
-              if (!this.track) {
-                this.processor = null;
-                resolve();
-                return;
-              }
-              
-              // Final comprehensive check
-              const finalTracks = this.track.mediaStream?.getVideoTracks();
-              if (!finalTracks || finalTracks.length === 0 || finalTracks[0].readyState !== 'live') {
-                this.processor = null;
-                resolve();
-                return;
-              }
-              
-              // Ensure processor is valid
-              if (!processor || typeof processor !== 'object') {
-                this.processor = null;
-                resolve();
-                return;
-              }
-              
-              try {
-                // Set processor - it may return a promise that can reject
-                const setResult = this.track.setProcessor(processor);
-                
-                // If setProcessor returns a promise, handle it
-                if (setResult && typeof setResult.then === 'function') {
-                  setResult.catch((_setError: any) => {
-                    // Handle promise rejection (init errors happen here)
-                    this.processor = null;
-                    // Silently ignore init/undefined errors
-                  });
-                  await setResult;
-                }
-                
-                console.log('[BG] Blur applied successfully');
-                resolve();
-              } catch (setError: any) {
-                // Clear processor reference if setting failed
-                this.processor = null;
-                // Silently handle init/undefined errors
-                if (!setError?.message?.includes('init') && 
-                    !setError?.message?.includes('undefined') &&
-                    !setError?.message?.includes('Cannot read properties')) {
-                  console.error('[BG] Error setting blur processor:', setError);
-                }
-                resolve(); // Always resolve to prevent hanging
-              }
-            });
+        // ✅ CRITICAL: Set processor IMMEDIATELY - no delays
+        if (!this.track) {
+          this.processor = null;
+          return;
+        }
+        
+        // Final check
+        const finalTracks = this.track.mediaStream?.getVideoTracks();
+        if (!finalTracks || finalTracks.length === 0 || finalTracks[0].readyState !== 'live') {
+          this.processor = null;
+          return;
+        }
+        
+        // Ensure processor is valid
+        if (!processor || typeof processor !== 'object') {
+          this.processor = null;
+          return;
+        }
+        
+        // Set processor IMMEDIATELY
+        const setResult = this.track.setProcessor(processor);
+        
+        // If setProcessor returns a promise, handle it
+        if (setResult && typeof setResult.then === 'function') {
+          setResult.catch((_setError: any) => {
+            // Handle promise rejection (init errors happen here)
+            this.processor = null;
           });
-        });
+          await setResult;
+        }
+        
+        console.log('[BG] ✅ Blur applied INSTANTLY');
       } catch (error: any) {
         console.error('[BG] Unexpected error in setBlur:', error);
         this.processor = null;
@@ -295,40 +276,272 @@ class BackgroundEngine {
   async setImage(url: string) {
     if (!this.track) {
       console.warn('[BG] No track available for setImage');
-      return;
+      return; // Just return, don't throw
     }
 
-    // Validate track is ready
+    // Basic validation - don't block if track exists
     if (!this.track.mediaStream) {
-      console.warn('[BG] Track has no media stream in setImage');
+      console.warn('[BG] Track has no media stream');
       return;
     }
 
     const videoTracks = this.track.mediaStream.getVideoTracks();
     if (videoTracks.length === 0 || videoTracks[0].readyState === 'ended') {
-      console.warn('[BG] Track is ended, cannot apply image background');
-      return;
+      console.warn('[BG] Track is ended');
+      return; // Just return, don't throw
     }
+    
+    // Cancel any in-flight image load
+    if (this.currentImageLoadAbortController) {
+      this.currentImageLoadAbortController.abort();
+      this.currentImageLoadAbortController = null;
+    }
+    
+    // Prevent concurrent setImage calls
+    if (this.isSettingImage) {
+      console.log('[BG] setImage already in progress, cancelling previous and starting new');
+      // Cancel previous and proceed immediately - no delay
+    }
+    
+    this.isSettingImage = true;
+    const abortController = new AbortController();
+    this.currentImageLoadAbortController = abortController;
     
     // Stop any video updates if switching from video background
     this.stopVideoUpdates();
     
+    // Clear previous processor FIRST - ensure it's fully cleared before loading new image
     try {
-      // Clean up previous image blob URL if exists
-      if (this.bgImageUrl) {
-        URL.revokeObjectURL(this.bgImageUrl);
-        this.bgImageUrl = null;
+      if (this.processor) {
+        const currentTracks = this.track.mediaStream?.getVideoTracks();
+        if (currentTracks && currentTracks.length > 0 && currentTracks[0].readyState !== 'ended') {
+          try {
+            await this.track.setProcessor(undefined as any);
+            // No delay - proceed immediately
+          } catch (e) {
+            // Ignore errors
+          }
+        }
+        this.processor = null;
+      }
+    } catch {}
+    
+    // Store the new URL we're trying to set - don't revoke old one until new one is successfully applied
+    let newImageBlobUrl: string | null = null;
+    let oldImageBlobUrl: string | null = this.bgImageUrl || null;
+    
+    try {
+      // Check if operation was cancelled
+      if (abortController.signal.aborted) {
+        console.log('[BG] Image load cancelled');
+        this.isSettingImage = false;
+        return;
+      }
+      
+      // Check if URL is from Firebase Storage (may be cross-project)
+      const isFirebaseStorageUrl = url.includes('firebasestorage.googleapis.com') || url.includes('firebase.storage');
+      
+      let imageBlobUrl: string = url; // Default to original URL
+      
+      if (isFirebaseStorageUrl) {
+        // For Firebase Storage URLs, use Image element with crossOrigin first
+        // This works better than fetch for CORS issues
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        
+        try {
+          // Try loading image directly first (works if CORS is configured)
+          await new Promise<void>((resolve, reject) => {
+            // Check if cancelled before starting
+            if (abortController.signal.aborted) {
+              reject(new Error('Cancelled'));
+              return;
+            }
+            
+            const timeout = setTimeout(() => {
+              reject(new Error('Image load timeout'));
+            }, 10000); // 10 second timeout
+            
+            img.onload = () => {
+              // Check if cancelled
+              if (abortController.signal.aborted) {
+                clearTimeout(timeout);
+                reject(new Error('Cancelled'));
+                return;
+              }
+              
+              clearTimeout(timeout);
+              // Create canvas and convert to blob URL to avoid CORS issues
+              const canvas = document.createElement('canvas');
+              canvas.width = img.width;
+              canvas.height = img.height;
+              const ctx = canvas.getContext('2d');
+              if (ctx) {
+                ctx.drawImage(img, 0, 0);
+                canvas.toBlob((blob) => {
+                  if (abortController.signal.aborted) {
+                    reject(new Error('Cancelled'));
+                    return;
+                  }
+                  if (blob) {
+                    imageBlobUrl = URL.createObjectURL(blob);
+                    newImageBlobUrl = imageBlobUrl; // Store for later assignment
+                    console.log('[BG] Successfully loaded image via canvas (CORS-safe)');
+                    resolve();
+                  } else {
+                    // Fallback: use image directly if canvas conversion fails
+                    imageBlobUrl = url;
+                    newImageBlobUrl = url; // Store original URL
+                    resolve();
+                  }
+                }, 'image/jpeg', 0.95);
+              } else {
+                // Fallback: use image directly if canvas fails
+                imageBlobUrl = url;
+                newImageBlobUrl = url; // Store original URL
+                resolve();
+              }
+            };
+            
+            img.onerror = (err) => {
+              clearTimeout(timeout);
+              if (abortController.signal.aborted) {
+                reject(new Error('Cancelled'));
+                return;
+              }
+              console.warn('[BG] Image load failed, trying fetch fallback:', err);
+              reject(new Error('Image load failed'));
+            };
+            
+            // Listen for abort
+            abortController.signal.addEventListener('abort', () => {
+              clearTimeout(timeout);
+              img.src = ''; // Stop loading
+              reject(new Error('Cancelled'));
+            });
+            
+            // Add cache-busting to URL
+            const urlWithCacheBust = url.includes('?') 
+              ? `${url}&t=${Date.now()}` 
+              : `${url}?t=${Date.now()}`;
+            img.src = urlWithCacheBust;
+          });
+        } catch (imgError: any) {
+          // Check if cancelled
+          if (abortController.signal.aborted || imgError.message === 'Cancelled') {
+            throw imgError;
+          }
+          
+          // If image element fails, try fetch as last resort
+          console.warn('[BG] Image element method failed, trying fetch:', imgError.message);
+          try {
+            const urlWithCacheBust = url.includes('?') 
+              ? `${url}&t=${Date.now()}` 
+              : `${url}?t=${Date.now()}`;
+            
+            const res = await fetch(urlWithCacheBust, {
+              mode: 'cors',
+              cache: 'no-cache',
+              signal: abortController.signal, // Support cancellation
+            });
+            
+            if (!res.ok) {
+              throw new Error(`Image fetch failed: ${res.status} ${res.statusText}`);
+            }
+            
+            const blob = await res.blob();
+            
+            // Check if cancelled after fetch
+            if (abortController.signal.aborted) {
+              throw new Error('Cancelled');
+            }
+            
+            imageBlobUrl = URL.createObjectURL(blob);
+            newImageBlobUrl = imageBlobUrl; // Store for later assignment
+            console.log('[BG] Successfully loaded image via fetch fallback');
+          } catch (fetchError: any) {
+            if (abortController.signal.aborted || fetchError.name === 'AbortError') {
+              throw new Error('Cancelled');
+            }
+            console.error('[BG] All image loading methods failed:', fetchError);
+            // Last resort: use URL directly (will fail if CORS not configured, but worth trying)
+            imageBlobUrl = url;
+            newImageBlobUrl = url; // Store original URL
+            console.warn('[BG] Using URL directly as last resort - CORS may prevent this from working');
+          }
+        }
+      } else {
+        // Not a Firebase Storage URL - use directly
+        newImageBlobUrl = url;
+      }
+      
+      // Check if cancelled before proceeding
+      if (abortController.signal.aborted) {
+        if (newImageBlobUrl && newImageBlobUrl.startsWith('blob:') && newImageBlobUrl !== oldImageBlobUrl) {
+          URL.revokeObjectURL(newImageBlobUrl);
+        }
+        this.isSettingImage = false;
+        return;
+      }
+      
+      // Ensure we have a valid URL
+      if (!newImageBlobUrl) {
+        throw new Error('Failed to get valid image URL');
       }
       
       const img = new Image();
       img.crossOrigin = 'anonymous';
       img.decoding = 'async';
       const loaded = new Promise<void>((res, rej) => {
-        img.onload = () => res();
+        if (abortController.signal.aborted) {
+          rej(new Error('Cancelled'));
+          return;
+        }
+        
+        img.onload = () => {
+          if (abortController.signal.aborted) {
+            rej(new Error('Cancelled'));
+            return;
+          }
+          res();
+        };
         img.onerror = (e) => rej(e);
+        
+        // Listen for abort
+        abortController.signal.addEventListener('abort', () => {
+          img.src = '';
+          rej(new Error('Cancelled'));
+        }, { once: true });
       });
-      img.src = url;
+      img.src = newImageBlobUrl;
       await loaded;
+      
+      // Check if cancelled after image loaded
+      if (abortController.signal.aborted) {
+        if (newImageBlobUrl && newImageBlobUrl.startsWith('blob:') && newImageBlobUrl !== oldImageBlobUrl) {
+          URL.revokeObjectURL(newImageBlobUrl);
+        }
+        this.isSettingImage = false;
+        return;
+      }
+
+      // Quick check - if track ended or cancelled, just return
+      if (abortController.signal.aborted) {
+        if (newImageBlobUrl && newImageBlobUrl.startsWith('blob:') && newImageBlobUrl !== oldImageBlobUrl) {
+          URL.revokeObjectURL(newImageBlobUrl);
+        }
+        this.isSettingImage = false;
+        return;
+      }
+      
+      const videoTracksCheck = this.track.mediaStream?.getVideoTracks();
+      if (!videoTracksCheck || videoTracksCheck.length === 0 || videoTracksCheck[0].readyState === 'ended') {
+        if (newImageBlobUrl && newImageBlobUrl.startsWith('blob:') && newImageBlobUrl !== oldImageBlobUrl) {
+          URL.revokeObjectURL(newImageBlobUrl);
+        }
+        this.isSettingImage = false;
+        return;
+      }
 
       this.vidEl = null;
       const canvas = document.createElement('canvas');
@@ -368,45 +581,63 @@ class BackgroundEngine {
           }, 'image/png');
         });
         
-        const imageUrl = URL.createObjectURL(blob);
-        this.bgImageUrl = imageUrl; // Store for cleanup
+        // Clean up image reference to prevent memory leaks
+        img.src = '';
         
-        // Wait for track to be fully stable
-        await new Promise(resolve => setTimeout(resolve, 100));
+        // Ensure newImageBlobUrl is not null
+        if (!newImageBlobUrl) {
+          throw new Error('Failed to get valid image URL');
+        }
         
-        // Validate track is still valid before creating processor
-        const currentTracksBefore = this.track.mediaStream?.getVideoTracks();
-        if (!currentTracksBefore || currentTracksBefore.length === 0 || currentTracksBefore[0].readyState === 'ended') {
-          URL.revokeObjectURL(imageUrl);
-          this.bgImageUrl = null;
+        // Use the blob URL we created (or create new one from canvas blob)
+        // If newImageBlobUrl is already a blob URL, use it; otherwise create one from the canvas blob
+        const imageUrl: string = newImageBlobUrl.startsWith('blob:') ? newImageBlobUrl : URL.createObjectURL(blob);
+        
+        // Check if cancelled before creating processor
+        if (abortController.signal.aborted) {
+          if (imageUrl.startsWith('blob:') && imageUrl !== oldImageBlobUrl) {
+            URL.revokeObjectURL(imageUrl);
+          }
+          this.isSettingImage = false;
           return;
         }
         
-        // Create processor - ensure it's properly initialized
+        // Create processor - just do it, don't over-validate
         let processor;
         try {
           processor = VirtualBackground(imageUrl);
-          
-          // Validate processor was created
           if (!processor || typeof processor !== 'object') {
-            URL.revokeObjectURL(imageUrl);
-            this.bgImageUrl = null;
-            throw new Error('Failed to create image background processor');
+            if (imageUrl.startsWith('blob:') && imageUrl !== oldImageBlobUrl) {
+              URL.revokeObjectURL(imageUrl);
+            }
+            this.isSettingImage = false;
+            return; // Just return if processor creation failed
           }
         } catch (createError: any) {
           console.error('[BG] Error creating image processor:', createError);
-          URL.revokeObjectURL(imageUrl);
-          this.bgImageUrl = null;
+          if (imageUrl.startsWith('blob:') && imageUrl !== oldImageBlobUrl) {
+            URL.revokeObjectURL(imageUrl);
+          }
+          this.isSettingImage = false;
+          return; // Just return, don't throw
+        }
+        
+        // NOW that we're about to successfully apply, revoke the old blob URL
+        if (oldImageBlobUrl && oldImageBlobUrl.startsWith('blob:') && oldImageBlobUrl !== imageUrl) {
+          URL.revokeObjectURL(oldImageBlobUrl);
+        }
+        
+        // Check if cancelled before setting processor
+        if (abortController.signal.aborted) {
+          if (imageUrl.startsWith('blob:') && imageUrl !== oldImageBlobUrl) {
+            URL.revokeObjectURL(imageUrl);
+          }
+          this.isSettingImage = false;
           return;
         }
         
-        // Double-check track is still valid before setting processor
-        const currentTracks = this.track.mediaStream?.getVideoTracks();
-        if (!currentTracks || currentTracks.length === 0 || currentTracks[0].readyState === 'ended') {
-          URL.revokeObjectURL(imageUrl);
-          this.bgImageUrl = null;
-          return;
-        }
+        // Store the new blob URL - this keeps it alive while the background is active
+        this.bgImageUrl = imageUrl;
         
         // Set processor with comprehensive error handling
         try {
@@ -418,10 +649,22 @@ class BackgroundEngine {
           await new Promise<void>((resolve) => {
             requestAnimationFrame(() => {
               requestAnimationFrame(async () => {
+                // Check if cancelled
+                if (abortController.signal.aborted) {
+                  this.processor = null;
+                  if (imageUrl.startsWith('blob:') && imageUrl !== oldImageBlobUrl) {
+                    URL.revokeObjectURL(imageUrl);
+                  }
+                  this.bgImageUrl = oldImageBlobUrl; // Restore old
+                  this.isSettingImage = false;
+                  resolve();
+                  return;
+                }
+                
                 if (!this.track) {
                   this.processor = null;
-                  URL.revokeObjectURL(imageUrl);
-                  this.bgImageUrl = null;
+                  // Don't revoke - keep URL in case we need to retry
+                  this.isSettingImage = false;
                   resolve();
                   return;
                 }
@@ -430,8 +673,8 @@ class BackgroundEngine {
                 const finalTracks = this.track.mediaStream?.getVideoTracks();
                 if (!finalTracks || finalTracks.length === 0 || finalTracks[0].readyState !== 'live') {
                   this.processor = null;
-                  URL.revokeObjectURL(imageUrl);
-                  this.bgImageUrl = null;
+                  // Don't revoke - keep URL in case we need to retry
+                  this.isSettingImage = false;
                   resolve();
                   return;
                 }
@@ -439,8 +682,8 @@ class BackgroundEngine {
                 // Ensure processor is valid
                 if (!processor || typeof processor !== 'object') {
                   this.processor = null;
-                  URL.revokeObjectURL(imageUrl);
-                  this.bgImageUrl = null;
+                  // Don't revoke - keep URL in case we need to retry
+                  this.isSettingImage = false;
                   resolve();
                   return;
                 }
@@ -454,19 +697,28 @@ class BackgroundEngine {
                     setResult.catch((_setError: any) => {
                       // Handle promise rejection (init errors happen here)
                       this.processor = null;
-                      URL.revokeObjectURL(imageUrl);
-                      this.bgImageUrl = null;
+                      if (imageUrl.startsWith('blob:') && imageUrl !== oldImageBlobUrl) {
+                        URL.revokeObjectURL(imageUrl);
+                      }
+                      this.bgImageUrl = oldImageBlobUrl; // Restore old
                       // Silently ignore init/undefined errors
                     });
                     await setResult;
                   }
                   
+                  // Success - clear abort controller and reset flag
+                  this.currentImageLoadAbortController = null;
+                  this.isSettingImage = false;
+                  console.log('[BG] Image background applied successfully');
                   resolve();
                 } catch (setError: any) {
                   // Clear processor reference if setting failed
                   this.processor = null;
-                  URL.revokeObjectURL(imageUrl);
-                  this.bgImageUrl = null;
+                  if (imageUrl.startsWith('blob:') && imageUrl !== oldImageBlobUrl) {
+                    URL.revokeObjectURL(imageUrl);
+                  }
+                  this.bgImageUrl = oldImageBlobUrl; // Restore old
+                  this.isSettingImage = false;
                   // Silently handle init/undefined errors
                   if (!setError?.message?.includes('init') && 
                       !setError?.message?.includes('undefined') &&
@@ -481,19 +733,34 @@ class BackgroundEngine {
         } catch (error: any) {
           console.error('[BG] Unexpected error in setImage:', error);
           this.processor = null;
-          URL.revokeObjectURL(imageUrl);
-          this.bgImageUrl = null;
+          // Restore old image URL if we had one
+          this.bgImageUrl = oldImageBlobUrl;
+          this.isSettingImage = false;
+          throw error; // Re-throw so caller knows it failed
         }
         
         // Don't revoke URL here - it needs to stay valid while the background is active
       } else {
+        // Check if cancelled
+        if (abortController.signal.aborted) {
+          this.isSettingImage = false;
+          return;
+        }
+        
         // Wait for track to be fully stable
         await new Promise(resolve => setTimeout(resolve, 100));
+        
+        // Check if cancelled after wait
+        if (abortController.signal.aborted) {
+          this.isSettingImage = false;
+          return;
+        }
         
         // Validate track is still valid before creating processor
         const currentTracksBefore = this.track.mediaStream?.getVideoTracks();
         if (!currentTracksBefore || currentTracksBefore.length === 0 || currentTracksBefore[0].readyState === 'ended') {
           console.warn('[BG] Track ended before creating image processor');
+          this.isSettingImage = false;
           return;
         }
         
@@ -508,6 +775,13 @@ class BackgroundEngine {
           }
         } catch (createError: any) {
           console.error('[BG] Error creating image processor:', createError);
+          this.isSettingImage = false;
+          return;
+        }
+        
+        // Check if cancelled before proceeding
+        if (abortController.signal.aborted) {
+          this.isSettingImage = false;
           return;
         }
         
@@ -515,6 +789,7 @@ class BackgroundEngine {
         const currentTracks = this.track.mediaStream?.getVideoTracks();
         if (!currentTracks || currentTracks.length === 0 || currentTracks[0].readyState === 'ended') {
           console.warn('[BG] Track ended before setting image processor');
+          this.isSettingImage = false;
           return;
         }
         
@@ -522,12 +797,14 @@ class BackgroundEngine {
         try {
           // Ensure processor is valid object
           if (!processor || typeof processor !== 'object') {
+            this.isSettingImage = false;
             return;
           }
           
           // Final track validation
           const finalCheck = this.track.mediaStream?.getVideoTracks();
           if (!finalCheck || finalCheck.length === 0 || finalCheck[0].readyState === 'ended') {
+            this.isSettingImage = false;
             return;
           }
           
@@ -539,8 +816,17 @@ class BackgroundEngine {
           await new Promise<void>((resolve) => {
             requestAnimationFrame(() => {
               requestAnimationFrame(async () => {
+                // Check if cancelled
+                if (abortController.signal.aborted) {
+                  this.processor = null;
+                  this.isSettingImage = false;
+                  resolve();
+                  return;
+                }
+                
                 if (!this.track) {
                   this.processor = null;
+                  this.isSettingImage = false;
                   resolve();
                   return;
                 }
@@ -549,6 +835,7 @@ class BackgroundEngine {
                 const finalTracks = this.track.mediaStream?.getVideoTracks();
                 if (!finalTracks || finalTracks.length === 0 || finalTracks[0].readyState !== 'live') {
                   this.processor = null;
+                  this.isSettingImage = false;
                   resolve();
                   return;
                 }
@@ -556,6 +843,7 @@ class BackgroundEngine {
                 // Ensure processor is valid
                 if (!processor || typeof processor !== 'object') {
                   this.processor = null;
+                  this.isSettingImage = false;
                   resolve();
                   return;
                 }
@@ -574,10 +862,15 @@ class BackgroundEngine {
                     await setResult;
                   }
                   
+                  // Success - clear abort controller and reset flag
+                  this.currentImageLoadAbortController = null;
+                  this.isSettingImage = false;
+                  console.log('[BG] Image background applied successfully (non-Firebase URL)');
                   resolve();
                 } catch (setError: any) {
                   // Clear processor reference if setting failed
                   this.processor = null;
+                  this.isSettingImage = false;
                   // Silently handle init/undefined errors
                   if (!setError?.message?.includes('init') && 
                       !setError?.message?.includes('undefined') &&
@@ -592,10 +885,18 @@ class BackgroundEngine {
         } catch (error: any) {
           console.error('[BG] Unexpected error in setImage:', error);
           this.processor = null;
+          this.isSettingImage = false;
         }
       }
-    } catch (error) {
-      console.error('[BG] Error setting image:', error);
+    } catch (error: any) {
+      // Only log non-track-related and non-cancellation errors
+      const errorMsg = error?.message || '';
+      if (!errorMsg.includes('Track ended') && 
+          !errorMsg.includes('not ready') && 
+          !errorMsg.includes('Cancelled') &&
+          !errorMsg.includes('aborted')) {
+        console.error('[BG] Error setting image:', error);
+      }
       try {
         // Only try to clear processor if track is still valid
         const currentTracks = this.track.mediaStream?.getVideoTracks();
@@ -604,6 +905,10 @@ class BackgroundEngine {
         }
       } catch (clearError) {
         // Silently ignore cleanup errors
+      } finally {
+        // Always reset flags
+        this.isSettingImage = false;
+        this.currentImageLoadAbortController = null;
       }
     }
   }
@@ -645,16 +950,28 @@ class BackgroundEngine {
         const storagePath = decodeURIComponent(pathMatch[1].replace(/%2F/g, '/'));
         
         // Use Firebase Storage SDK to get blob (handles auth automatically)
+        // This will use the current project's storage, which may be different from the URL's bucket
+        // If the file doesn't exist in current project, fall back to direct fetch
         const { getStorage, ref, getBlob } = await import('firebase/storage');
         const storage = getStorage();
         const storageRef = ref(storage, storagePath);
-        const blob = await getBlob(storageRef);
         
-        // Create blob URL - no CORS issues since it's same-origin
-        const objectUrl = URL.createObjectURL(blob);
-        el.crossOrigin = 'anonymous'; // Safe to set for blob URLs
-        el.src = objectUrl;
-        this.bgVideoUrl = objectUrl;
+        try {
+          const blob = await getBlob(storageRef);
+          // Create blob URL - no CORS issues since it's same-origin
+          const objectUrl = URL.createObjectURL(blob);
+          el.crossOrigin = 'anonymous'; // Safe to set for blob URLs
+          el.src = objectUrl;
+          this.bgVideoUrl = objectUrl;
+          // Success - video element is set up, continue to wait for load
+        } catch (storageError: any) {
+          // If file doesn't exist in current project's storage, fall back to direct fetch
+          console.warn('[BG] File not found in current project storage, trying direct fetch:', storageError.message);
+          // Continue to fallback below
+          el.crossOrigin = 'anonymous';
+          el.src = url;
+          this.bgVideoUrl = null;
+        }
       } catch (error: any) {
         // Fallback: try direct fetch without credentials
         console.warn('[BG] Firebase SDK failed, trying direct fetch:', error.message);
@@ -1375,6 +1692,15 @@ class BackgroundEngine {
   }
 
   private releaseSources() {
+    // Cancel any in-flight image loads
+    if (this.currentImageLoadAbortController) {
+      this.currentImageLoadAbortController.abort();
+      this.currentImageLoadAbortController = null;
+    }
+    
+    // Reset image setting flag
+    this.isSettingImage = false;
+    
     // Clear intervals
     if (this.updateIntervalId) {
       clearInterval(this.updateIntervalId);

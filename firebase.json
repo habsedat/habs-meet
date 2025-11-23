@@ -73,9 +73,16 @@
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"
   },
-  "storage": {
-    "rules": "storage.rules"
-  },
+  "storage": [
+    {
+      "bucket": "habs-meet-dev.firebasestorage.app",
+      "rules": "storage.rules"
+    },
+    {
+      "bucket": "habs-meet-prod.firebasestorage.app",
+      "rules": "storage.rules"
+    }
+  ],
   "emulators": {
     "auth": {
       "port": 9099

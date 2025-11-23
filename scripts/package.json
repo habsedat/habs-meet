@@ -1,0 +1,15 @@
+{
+  "name": "habs-meet-scripts",
+  "version": "1.0.0",
+  "description": "Utility scripts for Habs Meet",
+  "main": "copy-background-assets.js",
+  "scripts": {
+    "copy-assets": "node copy-background-assets.js",
+    "setup-cors": "node setup-storage-cors.js",
+    "sync-default-media": "node sync-default-media-to-prod.js"
+  },
+  "dependencies": {
+    "@google-cloud/storage": "^7.17.3",
+    "firebase-admin": "^12.0.0"
+  }
+}

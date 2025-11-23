@@ -18,6 +18,7 @@ lib/
 .firebase/
 firebase-debug.log
 firebase-debug.*.log
+serviceAccountKey*.json
 
 # IDE
 .vscode/

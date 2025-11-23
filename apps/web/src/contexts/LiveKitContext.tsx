@@ -1,5 +1,5 @@
-import React, { createContext, useContext, useState, useCallback, useRef, useMemo } from 'react';
-import { Room, RoomEvent, Track, RemoteParticipant, LocalParticipant, LocalTrackPublication, LocalVideoTrack, createLocalVideoTrack, createLocalAudioTrack, ParticipantEvent, TrackPublication, RemoteTrackPublication, DataPacket_Kind } from 'livekit-client';
+import React, { createContext, useContext, useState, useCallback, useRef, useMemo, useEffect } from 'react';
+import { Room, RoomEvent, Track, RemoteParticipant, LocalParticipant, LocalTrackPublication, LocalVideoTrack, createLocalVideoTrack, createLocalAudioTrack, ParticipantEvent, DataPacket_Kind } from 'livekit-client';
 
 // ✅ Remote control event types
 export interface RemoteControlEvent {
@@ -15,6 +15,8 @@ export interface RemoteControlEvent {
 }
 import { LIVEKIT_CONFIG } from '../lib/livekitConfig';
 import { backgroundEngine } from '../video/BackgroundEngine';
+import { useAuth } from './AuthContext';
+import { auth } from '../lib/firebase';
 import toast from '../lib/toast';
 
 interface LiveKitContextType {
@@ -75,6 +77,7 @@ export const useLiveKit = () => {
 export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
+  const { userProfile } = useAuth(); // Get userProfile to access savedBackground
   const [room, setRoom] = useState<Room | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
@@ -103,241 +106,145 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
            (typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches);
   }, []);
 
-  // Get optimized video constraints based on device type
+  // ✅ NETWORK QUALITY DETECTION: Detect network quality and adjust accordingly
+  const getNetworkQuality = useCallback(() => {
+    if (typeof navigator === 'undefined' || !('connection' in navigator)) {
+      return 'unknown';
+    }
+    
+    const connection = (navigator as any).connection || (navigator as any).mozConnection || (navigator as any).webkitConnection;
+    if (!connection) {
+      return 'unknown';
+    }
+    
+    // Check effective type (4g, 3g, 2g, slow-2g)
+    const effectiveType = connection.effectiveType;
+    const downlink = connection.downlink || 0; // Mbps
+    
+    if (effectiveType === 'slow-2g' || effectiveType === '2g' || downlink < 0.5) {
+      return 'poor';
+    } else if (effectiveType === '3g' || downlink < 2) {
+      return 'medium';
+    } else {
+      return 'good';
+    }
+  }, []);
+
+  // Get optimized video constraints based on device type AND network quality
   const getVideoConstraints = useCallback(() => {
     const isMobile = isMobileDevice();
-    if (isMobile) {
-      // Mobile: Lower resolution and frame rate for better performance and bandwidth
+    const networkQuality = getNetworkQuality();
+    
+    // ✅ NETWORK-BASED OPTIMIZATION: Adjust quality based on network conditions
+    if (isMobile || networkQuality === 'poor') {
+      // Mobile OR poor network: Lowest quality for maximum compatibility
+      return {
+        width: 320, // Very low for poor networks
+        height: 180, // Very low for poor networks
+        frameRate: 10, // Very low frame rate for poor networks
+      };
+    } else if (networkQuality === 'medium') {
+      // Medium network: Moderate quality
       return {
         width: 640,
         height: 360,
-        frameRate: 15, // Lower frame rate for mobile
+        frameRate: 15,
       };
     } else {
-      // Desktop: Higher quality
-      return {
-        width: 1280,
-        height: 720,
-        frameRate: 30,
-      };
+      // Good network: Higher quality (but still optimized)
+      if (isMobile) {
+        return {
+          width: 480,
+          height: 270,
+          frameRate: 12,
+        };
+      } else {
+        return {
+          width: 1280,
+          height: 720,
+          frameRate: 30,
+        };
+      }
     }
-  }, [isMobileDevice]);
+  }, [isMobileDevice, getNetworkQuality]);
 
+  // LIVEKIT CONNECTION – CLEAN, STABLE VERSION
   const connect = useCallback(async (token: string) => {
-    // ✅ Use ref to prevent race conditions - check and set atomically
+    // prevent double connections
     if (connectingRef.current || isConnecting || isConnected) {
-      console.log('[LiveKit] Connection already in progress or connected, skipping');
+      console.log('[LiveKit] connect() skipped – already connecting/connected');
       return;
     }
 
-    // Check if this is a mock token and skip connection for now
+    // mock token check (keep this for dev if you use it)
     if (token.startsWith('mock-token-')) {
-      console.log('Mock token detected, skipping LiveKit connection for now');
+      console.log('[LiveKit] Mock token detected, skipping real connection');
       setIsConnecting(false);
       setIsConnectingToRoom(false);
-      setError('LiveKit connection requires a real token. This is a demo with mock token.');
+      setError('LiveKit connection requires a real token.');
       return;
     }
 
-    // ✅ Set connecting ref immediately to prevent multiple calls
     connectingRef.current = true;
     setIsConnecting(true);
     setIsConnectingToRoom(true);
     setError(null);
-    
-    // ✅ Clear participants map to prevent duplicates from previous connections
-    setParticipants(new Map());
-    setLocalParticipant(null);
-    
-    // ✅ CRITICAL: Disconnect and cleanup previous room if it exists
+
+    // clear previous room
     if (roomRef.current) {
-      console.log('[LiveKit] Cleaning up previous room connection');
       try {
         roomRef.current.disconnect();
       } catch (err) {
-        console.warn('[LiveKit] Error disconnecting previous room:', err);
+        console.warn('[LiveKit] error disconnecting old room', err);
       }
       roomRef.current = null;
     }
-    
+
+    // reset state
+    setRoom(null);
+    setRoomName('');
+    setParticipants(new Map());
+    setLocalParticipant(null);
+    setParticipantCount(0);
+    hasPublishedRef.current = false;
+
     try {
-      // ✅ Fix 1: Prevent multiple reconnection retries - limit retries in room config
-      const roomConfigWithReconnect = {
-        ...LIVEKIT_CONFIG.roomConfig,
-        // Limit reconnection attempts to prevent 429 errors
-        // Note: LiveKit handles reconnection internally, but we can limit it via connection options
-      };
-      const newRoom = new Room(roomConfigWithReconnect);
+      // create room with your existing config
+      const newRoom = new Room(LIVEKIT_CONFIG.roomConfig);
       roomRef.current = newRoom;
 
-      // Set up comprehensive event listeners
-      // SIMPLIFIED, DIRECT subscription helper - uses the most reliable method
-      const subscribeToParticipantTracks = async (participant: RemoteParticipant) => {
-        const participantId = participant.identity || participant.sid;
-        console.log('[LiveKit] 📹 Subscribing to ALL tracks from:', participantId, 'Name:', participant.name);
-        
-        try {
-          // Direct method: Get trackPublications map and subscribe to everything
-          const trackPublications = (participant as any).trackPublications as Map<string, RemoteTrackPublication> | undefined;
-          
-          if (trackPublications && trackPublications.size > 0) {
-            console.log('[LiveKit] Found', trackPublications.size, 'publications for', participantId);
-            
-            for (const [, pub] of trackPublications.entries()) {
-              if (!pub) continue;
-              
-              // ✅ Subscribe to video, audio, AND screen share tracks
-              if (pub.kind !== Track.Kind.Video && pub.kind !== Track.Kind.Audio) continue;
-              // Note: ScreenShare tracks are also Track.Kind.Video with source ScreenShare
-              
-              // Skip if already subscribed
-              if (pub.isSubscribed) {
-                console.log('[LiveKit] Already subscribed to', pub.kind, 'from', participantId);
-                continue;
-              }
-              
-              // Subscribe!
-              try {
-                await pub.setSubscribed(true);
-                console.log('[LiveKit] ✅✅✅ SUCCESSFULLY SUBSCRIBED to', pub.kind, 'track from', participantId);
-              } catch (err: any) {
-                console.error('[LiveKit] ❌❌❌ FAILED to subscribe to', pub.kind, 'from', participantId, ':', err?.message || err);
-              }
-            }
-          } else {
-            // Fallback: Try Camera and Microphone sources directly
-            console.log('[LiveKit] No trackPublications map, trying direct sources for', participantId);
-            
-            const videoPub = participant.getTrackPublication(Track.Source.Camera) as RemoteTrackPublication | null;
-            if (videoPub && !videoPub.isSubscribed) {
-              try {
-                await videoPub.setSubscribed(true);
-                console.log('[LiveKit] ✅✅✅ SUBSCRIBED to video (fallback) from', participantId);
-              } catch (err: any) {
-                console.error('[LiveKit] ❌ Failed video subscription (fallback):', err);
-              }
-            }
-            
-            const audioPub = participant.getTrackPublication(Track.Source.Microphone) as RemoteTrackPublication | null;
-            if (audioPub && !audioPub.isSubscribed) {
-              try {
-                await audioPub.setSubscribed(true);
-                console.log('[LiveKit] ✅✅✅ SUBSCRIBED to audio (fallback) from', participantId);
-              } catch (err: any) {
-                console.error('[LiveKit] ❌ Failed audio subscription (fallback):', err);
-              }
-            }
-          }
-        } catch (err: any) {
-          console.error('[LiveKit] ❌❌❌ CRITICAL ERROR subscribing to', participantId, ':', err?.message || err);
-        }
-      };
+      // helper to rebuild participants map from the room
+      const rebuildParticipants = () => {
+        if (!roomRef.current) return;
+        const map = new Map<string, RemoteParticipant>();
 
-      // Helper function to set up track published listener for a participant (backup)
-      const setupTrackPublishedListener = (participant: RemoteParticipant) => {
-        const handleTrackPublished = async (publication: TrackPublication) => {
-          console.log('[LiveKit] Participant-level track published:', publication.kind, 'from', participant.identity);
-          if ((publication.kind === Track.Kind.Video || publication.kind === Track.Kind.Audio)) {
-            const remotePub = publication as RemoteTrackPublication;
-            if (!remotePub.isSubscribed) {
-              try {
-                await remotePub.setSubscribed(true);
-                console.log('[LiveKit] ✅ Participant-level auto-subscribed to', publication.kind, 'from', participant.identity);
-              } catch (err) {
-                console.warn('[LiveKit] Participant-level subscription failed:', err);
-                // Retry
-                setTimeout(async () => {
-                  try {
-                    await remotePub.setSubscribed(true);
-                  } catch (e) {
-                    console.error('[LiveKit] Retry failed:', e);
-                  }
-                }, 300);
-              }
-            }
-          }
-        };
-        
-        participant.on(ParticipantEvent.TrackPublished, handleTrackPublished);
-        return handleTrackPublished;
-      };
-
-      newRoom.on(RoomEvent.Connected, () => {
-        console.log('✅✅✅ CONNECTED to room:', newRoom.name);
-        console.log('✅ Existing participants in room:', newRoom.participants.size);
-        newRoom.participants.forEach((p) => {
-          const trackCount = (p as any).trackPublications?.size || 0;
-          console.log('  - Participant:', p.identity, 'Name:', p.name, 'Tracks:', trackCount);
-          
-          // Log all track publications
-          if (trackCount > 0) {
-            (p as any).trackPublications.forEach((pub: any, key: string) => {
-              console.log('    Track:', key, 'Kind:', pub.kind, 'Subscribed:', pub.isSubscribed);
-            });
+        roomRef.current.participants.forEach((p) => {
+          if (p instanceof RemoteParticipant) {
+            map.set(p.identity, p);
           }
         });
-        
-        // ✅ Reset connecting ref when successfully connected
-        connectingRef.current = false;
+
+        setParticipants(map);
+        // +1 for local participant
+        setParticipantCount(map.size + 1);
+        console.log('[LiveKit] participants updated:', Array.from(map.keys()));
+      };
+
+      // CONNECTION EVENTS
+      newRoom.on(RoomEvent.Connected, () => {
+        console.log('[LiveKit] ✅ Connected to room:', newRoom.name);
+        setRoom(newRoom);
+        setRoomName(newRoom.name || '');
+        setLocalParticipant(newRoom.localParticipant);
         setIsConnected(true);
         setIsConnecting(false);
         setIsConnectingToRoom(false);
-        setRoomName(newRoom.name);
-        setLocalParticipant(newRoom.localParticipant);
-          
-          // ✅ Filter out local participant and only include RemoteParticipants
-          const remoteParticipantsMap = new Map<string, RemoteParticipant>();
-          newRoom.participants.forEach((participant) => {
-            // Only add RemoteParticipants, exclude LocalParticipant
-            if (participant instanceof RemoteParticipant) {
-              remoteParticipantsMap.set(participant.identity, participant);
-            }
-          });
-          // ✅ Force new Map reference to ensure React detects change
-          setParticipants(new Map(remoteParticipantsMap));
-          // ✅ Update count based on remote participants map size + 1 (local participant)
-          setParticipantCount(remoteParticipantsMap.size + 1);
-          console.log('[LiveKit] ✅✅✅ CONNECTED: Set', remoteParticipantsMap.size, 'remote participants in state');
-
-        // ✅ SIMPLIFIED AND DIRECT: Subscribe to ALL tracks from ALL participants
-        const subscribeToAll = () => {
-          console.log('[LiveKit] 🔄 CONNECTED EVENT: Subscribing to ALL participants');
-          
-          newRoom.participants.forEach((participant) => {
-            const trackPublications = Array.from((participant as any).trackPublications?.values() || []);
-            console.log('[LiveKit] Participant', participant.identity, 'has', trackPublications.length, 'publications');
-            
-            trackPublications.forEach((pub: any) => {
-              // ✅ Subscribe to video, audio, AND screen share tracks
-              if (pub && ((pub.kind === Track.Kind.Video || pub.kind === Track.Kind.Audio) || 
-                          (pub.kind === Track.Kind.Video && pub.source === Track.Source.ScreenShare))) {
-                if (!pub.isSubscribed) {
-                  console.log('[LiveKit] ⚡ SUBSCRIBING to', pub.kind, pub.source === Track.Source.ScreenShare ? '(ScreenShare)' : '', 'from', participant.identity);
-                  pub.setSubscribed(true).catch((err: any) => {
-                    console.error('[LiveKit] Subscription error:', err);
-                  });
-                } else {
-                  console.log('[LiveKit] Already subscribed to', pub.kind, pub.source === Track.Source.ScreenShare ? '(ScreenShare)' : '', 'from', participant.identity);
-                }
-              }
-            });
-            
-            setupTrackPublishedListener(participant);
-          });
-        };
-        
-        // Immediate
-        subscribeToAll();
-        
-        // Aggressive retries
-        const retries = [100, 300, 500, 800, 1000, 1500, 2000, 3000, 5000];
-        retries.forEach((delay) => {
-          setTimeout(subscribeToAll, delay);
-        });
+        connectingRef.current = false;
+        rebuildParticipants();
       });
 
       newRoom.on(RoomEvent.Disconnected, (reason) => {
-        console.log('Disconnected from room:', reason);
+        console.log('[LiveKit] 🔴 Disconnected from room:', reason);
         setIsConnected(false);
         setIsConnecting(false);
         setIsConnectingToRoom(false);
@@ -346,6 +253,8 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
         setParticipants(new Map());
         setLocalParticipant(null);
         setParticipantCount(0);
+        roomRef.current = null;
+        hasPublishedRef.current = false;
         
         // Clean up screen share resources
         if (screenShareStreamRef.current) {
@@ -357,208 +266,28 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
           screenShareTrackRef.current = null;
         }
         setIsScreenSharing(false);
-        
-        roomRef.current = null;
-        hasPublishedRef.current = false;
       });
 
+      // PARTICIPANT EVENTS
       newRoom.on(RoomEvent.ParticipantConnected, (participant) => {
-        console.log('[LiveKit] ✅✅✅ NEW PARTICIPANT CONNECTED:', participant.identity, 'Name:', participant.name);
-        
-        // ✅ Only add RemoteParticipants, exclude LocalParticipant
-        // ✅ Replace if exists (handles refresh scenarios where same identity reconnects)
+        console.log('[LiveKit] ➕ Participant connected:', participant.identity);
         if (participant instanceof RemoteParticipant) {
-          setParticipants(prev => {
-            const newMap = new Map(prev);
-            // Replace if exists to handle refresh scenarios
-            newMap.set(participant.identity, participant);
-            console.log('[LiveKit] 📊 Updated participants map. Total remote participants:', newMap.size);
-            console.log('[LiveKit] 📋 Participant IDs:', Array.from(newMap.keys()));
-            // ✅ Update count based on the new map size (remote participants) + 1 (local participant)
-            setParticipantCount(newMap.size + 1);
-            // Force new Map reference to ensure React detects change
-            return new Map(newMap);
-          });
-          
-          // ✅ IMMEDIATELY subscribe to all tracks from this new participant
-          const subscribeToNewParticipant = async () => {
-            console.log('[LiveKit] 🔄 Subscribing to ALL tracks from NEW participant:', participant.identity);
-            const trackPublications = Array.from((participant as any).trackPublications?.values() || []) as RemoteTrackPublication[];
-            console.log('[LiveKit] Found', trackPublications.length, 'track publications from', participant.identity);
-            
-            for (const pub of trackPublications) {
-              if (pub && (pub.kind === Track.Kind.Video || pub.kind === Track.Kind.Audio)) {
-                if (!pub.isSubscribed) {
-                  try {
-                    await pub.setSubscribed(true);
-                    console.log('[LiveKit] ✅ Subscribed to', pub.kind, 'track from', participant.identity);
-                  } catch (err: any) {
-                    console.error('[LiveKit] ❌ Failed to subscribe to', pub.kind, 'from', participant.identity, ':', err);
-                  }
-                } else {
-                  console.log('[LiveKit] Already subscribed to', pub.kind, 'from', participant.identity);
-                }
-              }
-            }
-          };
-          
-          // Subscribe immediately and retry
-          subscribeToNewParticipant();
-          setTimeout(subscribeToNewParticipant, 300);
-          setTimeout(subscribeToNewParticipant, 1000);
+          rebuildParticipants();
         }
-        
-        // ✅ SIMPLIFIED: Make NEW participant subscribe to ALL EXISTING participants
-        const newJoinerSubscribe = () => {
-          console.log('[LiveKit] 🔑 NEW JOINER subscribing to existing participants');
-          
-          newRoom.participants.forEach((existing) => {
-            if (existing.identity === participant.identity) return; // Skip self
-            
-            const tracks = Array.from((existing as any).trackPublications?.values() || []);
-            tracks.forEach((pub: any) => {
-              // ✅ Subscribe to video, audio, AND screen share tracks
-              if (pub && ((pub.kind === Track.Kind.Video || pub.kind === Track.Kind.Audio) || 
-                          (pub.kind === Track.Kind.Video && pub.source === Track.Source.ScreenShare))) {
-                if (!pub.isSubscribed) {
-                  console.log('[LiveKit] ⚡ New joiner subscribing to', pub.kind, pub.source === Track.Source.ScreenShare ? '(ScreenShare)' : '', 'from', existing.identity);
-                  pub.setSubscribed(true).catch((err: any) => console.error('Subscribe error:', err));
-                }
-              }
-            });
-          });
-        };
-        
-        // ✅ Make ALL existing participants subscribe to NEW participant
-        const existingSubscribeToNew = () => {
-          console.log('[LiveKit] 🔄 Existing participants subscribing to NEW joiner');
-          const tracks = Array.from((participant as any).trackPublications?.values() || []);
-          tracks.forEach((pub: any) => {
-            if (pub && (pub.kind === Track.Kind.Video || pub.kind === Track.Kind.Audio)) {
-              if (!pub.isSubscribed) {
-                console.log('[LiveKit] ⚡ Existing subscribing to new joiner', pub.kind);
-                pub.setSubscribed(true).catch((err: any) => console.error('Subscribe error:', err));
-              }
-            }
-          });
-        };
-        
-        // Immediate subscriptions
-        newJoinerSubscribe();
-        existingSubscribeToNew();
-        
-        // Aggressive retries
-        [200, 400, 600, 1000, 1500, 2000, 3000, 5000].forEach((delay) => {
-          setTimeout(newJoinerSubscribe, delay);
-          setTimeout(existingSubscribeToNew, delay);
-        });
-        
-        setupTrackPublishedListener(participant);
       });
 
       newRoom.on(RoomEvent.ParticipantDisconnected, (participant) => {
-        setParticipants(prev => {
-          const newMap = new Map(prev);
-          newMap.delete(participant.identity);
-          // ✅ Update count based on the new map size (remote participants) + 1 (local participant)
-          setParticipantCount(newMap.size + 1);
-          return newMap;
-        });
-      });
-
-      // ✅ CRITICAL: Listen for TrackPublished - when ANY participant publishes a track
-      // This ensures automatic subscription to newly published tracks
-      newRoom.on(RoomEvent.TrackPublished, (publication, participant) => {
-        console.log('[LiveKit] 🎥📢 TRACK PUBLISHED:', publication.kind, 'from', participant.identity, 'Name:', participant.name);
-        
-        // Only handle remote participants (not our own tracks)
+        console.log('[LiveKit] ➖ Participant disconnected:', participant.identity);
         if (participant instanceof RemoteParticipant) {
-          const remotePub = publication as RemoteTrackPublication;
-          
-          // ✅ Subscribe to video, audio, AND screen share tracks
-          if (publication.kind === Track.Kind.Video || publication.kind === Track.Kind.Audio) {
-            if (!remotePub.isSubscribed) {
-              const sourceInfo = publication.source === Track.Source.ScreenShare ? ' (ScreenShare)' : '';
-              console.log('[LiveKit] ⚡ AUTO-SUBSCRIBING to newly published', publication.kind + sourceInfo, 'from', participant.identity);
-              (async () => {
-                try {
-                  await remotePub.setSubscribed(true);
-                  console.log('[LiveKit] ✅✅✅ AUTO-SUBSCRIBED to', publication.kind, publication.source === Track.Source.ScreenShare ? '(ScreenShare)' : '', 'from', participant.identity);
-                } catch (err: any) {
-                  console.error('[LiveKit] ❌ Auto-subscribe failed:', err);
-                  // Retry after delay
-                  setTimeout(async () => {
-                    try {
-                      await remotePub.setSubscribed(true);
-                    } catch (e: any) {
-                      console.error('[LiveKit] Retry failed:', e);
-                    }
-                  }, 500);
-                }
-              })();
-            } else {
-              console.log('[LiveKit] Already subscribed to', publication.kind, publication.source === Track.Source.ScreenShare ? '(ScreenShare)' : '', 'from', participant.identity);
-            }
-          }
+          rebuildParticipants();
         }
       });
 
-      newRoom.on(RoomEvent.TrackSubscribed, (track, _publication, participant) => {
-        console.log('[LiveKit] ✅ Track subscribed:', track.kind, 'from', participant.identity, 'Name:', participant.name);
-        
-        // Handle VIDEO tracks
-        if (track.kind === Track.Kind.Video) {
-          const el = track.attach() as HTMLVideoElement;
 
-          // ✅ universal video settings
-          el.autoplay = true;
-          (el as any).playsInline = true;
-          el.setAttribute('playsinline', 'true'); // iOS Safari requires lowercase too
-          el.muted = false;
-          el.controls = false;
-          (el as any).disablePictureInPicture = true;
-          el.style.width = '100%';
-          el.style.height = '100%';
-          // Use 'contain' to show full video without cropping - ensures everyone sees the same thing
-          el.style.objectFit = 'contain';
-          el.style.objectPosition = 'center';
-
-          // ✅ mobile-safe auto play: retry once if blocked
-          const tryPlay = () => {
-            const playPromise = el.play();
-            if (playPromise !== undefined) {
-              playPromise.catch(() => {
-                // user gesture may be required
-                console.warn('[LiveKit] Mobile autoplay blocked, waiting for tap');
-                el.addEventListener('touchstart', () => el.play(), { once: true });
-                el.addEventListener('click', () => el.play(), { once: true });
-              });
-            }
-          };
-          tryPlay();
-
-          // Find the inner video container (not the outer one that has the name overlay)
-          const outerContainer = document.getElementById(`participant-${participant.sid}`);
-          if (outerContainer) {
-            // Find the inner div using data attribute for precise targeting
-            const innerContainer = outerContainer.querySelector('[data-video-container="true"]') as HTMLElement;
-            if (innerContainer) {
-              innerContainer.innerHTML = '';
-              innerContainer.appendChild(el);
-              console.log('[LiveKit] ✅ Video attached to inner container, name overlay preserved');
-            } else {
-              // Fallback: Try finding by gradient class
-              const fallbackContainer = outerContainer.querySelector('div[class*="bg-gradient"]') as HTMLElement;
-              if (fallbackContainer) {
-                fallbackContainer.innerHTML = '';
-                fallbackContainer.appendChild(el);
-                console.log('[LiveKit] ✅ Video attached via fallback method');
-              } else {
-                console.error('[LiveKit] ❌ Could not find video container!');
-              }
-            }
-          }
-        }
+      // TRACK EVENTS – only used to force React re-renders
+      newRoom.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
+        console.log('[LiveKit] 🟢 Track subscribed:', publication.kind, 'from', participant.identity);
+        forceUpdate({});
         
         // Handle AUDIO tracks - attach and play them with LOW LATENCY settings
         if (track.kind === Track.Kind.Audio) {
@@ -566,54 +295,35 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
           el.autoplay = true;
           el.muted = false;
           el.volume = 1.0;
+          el.preload = 'none';
+          el.crossOrigin = 'anonymous';
           
-          // ✅ CRITICAL: Optimize audio element for low latency
-          // Reduce preload and buffer settings
-          el.preload = 'none'; // Don't preload - reduces latency
-          el.crossOrigin = 'anonymous'; // Help with audio processing
-          
-          // Play audio track immediately (no delay)
-          const tryPlayAudio = () => {
-            const playPromise = el.play();
-            if (playPromise !== undefined) {
-              playPromise
-                .then(() => {
-                  console.log('[LiveKit] ✅ Audio track playing from', participant.identity, '(low latency)');
-                })
-                .catch((err) => {
-                  console.warn('[LiveKit] Audio autoplay blocked, waiting for user interaction:', err);
-                  // Audio will play after user interaction
-                  document.addEventListener('click', () => {
-                    el.play().catch(e => console.warn('Audio play failed:', e));
-                  }, { once: true });
-                });
-            }
-          };
-          tryPlayAudio();
+          const playPromise = el.play();
+          if (playPromise !== undefined) {
+            playPromise.catch((err) => {
+              console.warn('[LiveKit] Audio autoplay blocked:', err);
+              document.addEventListener('click', () => {
+                el.play().catch(e => console.warn('Audio play failed:', e));
+              }, { once: true });
+            });
+          }
         }
       });
 
-      newRoom.on(RoomEvent.TrackUnsubscribed, (track, _publication, participant) => {
-        console.log('[LiveKit] Track unsubscribed:', track.kind, 'from', participant.identity);
+      newRoom.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
+        console.log('[LiveKit] ⚪ Track unsubscribed:', publication.kind, 'from', participant.identity);
         track.detach().forEach((el) => el.remove());
+        forceUpdate({});
       });
 
       newRoom.on(RoomEvent.TrackMuted, (publication, participant) => {
-        // Track muted - force update to reflect mute status changes
-        console.log('[LiveKit] Track muted:', publication.kind, 'from', participant.identity);
-        if (publication.kind === Track.Kind.Audio) {
-          // Force re-render to update mic status indicators
-          forceUpdate({});
-        }
+        console.log('[LiveKit] 🔇 Track muted:', publication.kind, 'from', participant.identity);
+        forceUpdate({});
       });
 
       newRoom.on(RoomEvent.TrackUnmuted, (publication, participant) => {
-        // Track unmuted - force update to reflect mute status changes
-        console.log('[LiveKit] Track unmuted:', publication.kind, 'from', participant.identity);
-        if (publication.kind === Track.Kind.Audio) {
-          // Force re-render to update mic status indicators
-          forceUpdate({});
-        }
+        console.log('[LiveKit] 🔊 Track unmuted:', publication.kind, 'from', participant.identity);
+        forceUpdate({});
       });
 
       newRoom.on(RoomEvent.LocalTrackPublished, (publication) => {
@@ -656,116 +366,112 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
         }
       });
 
-      // Connect to room with autoSubscribe enabled
-      console.log('[LiveKit] 🔄 Connecting to room with autoSubscribe: true');
-      
-      // ✅ CRITICAL: Use the most reliable connection options
-      // ✅ Fix 1: Prevent multiple reconnection retries - limit retries in connection options
-      await newRoom.connect(LIVEKIT_CONFIG.serverUrl, token, { 
+      // REAL CONNECTION – let LiveKit auto-subscribe to all remote tracks
+      console.log('[LiveKit] 🔄 Connecting with autoSubscribe: true');
+      await newRoom.connect(LIVEKIT_CONFIG.serverUrl, token, {
         autoSubscribe: true,
-        // Limit reconnection attempts to prevent 429 errors
-        // LiveKit will retry up to 3 times with exponential backoff
-        // We handle this by preventing multiple connection attempts in the first place
       });
-      
-      setRoom(newRoom);
-      console.log('[LiveKit] ✅ Connection established! Participants:', newRoom.participants.size);
-      
-      // ✅ FORCE subscription to all existing participants' tracks immediately after connect
-      // This happens BEFORE the Connected event, so it's the earliest possible subscription
-      const forceSubscribeAllTracks = () => {
-        console.log('[LiveKit] 🚀 FORCE SUBSCRIBE ALL TRACKS - Participants:', newRoom.participants.size);
-        
-        newRoom.participants.forEach((participant) => {
-          console.log('[LiveKit] Force subscribing to participant:', participant.identity, participant.name);
-          
-          // Get ALL track publications for this participant
-          const trackPublications = Array.from((participant as any).trackPublications?.values() || []);
-          console.log('[LiveKit] Found', trackPublications.length, 'track publications for', participant.identity);
-          
-          trackPublications.forEach((pub: any) => {
-            if (pub && (pub.kind === Track.Kind.Video || pub.kind === Track.Kind.Audio)) {
-              if (!pub.isSubscribed) {
-                console.log('[LiveKit] ⚡ FORCE SUBSCRIBING to', pub.kind, 'from', participant.identity);
-                pub.setSubscribed(true).catch((err: any) => {
-                  console.error('[LiveKit] ❌ Force subscribe failed:', err);
-                });
-              }
-            }
-          });
-        });
-      };
-      
-      // Immediate force subscribe (before Connected event)
-      forceSubscribeAllTracks();
-      
-      // ✅ CRITICAL: Post-connect subscription (before Connected event fires)
-      // This ensures we subscribe immediately after connection
-      const postConnectSubscribe = async () => {
-        console.log('[LiveKit] 🔄 POST-CONNECT: Subscribing to all existing participants');
-        const subscriptions: Promise<void>[] = [];
-        
-        newRoom.participants.forEach((participant) => {
-          console.log('[LiveKit] Post-connect subscribing to:', participant.identity, 'Name:', participant.name);
-          subscriptions.push(subscribeToParticipantTracks(participant));
-          setupTrackPublishedListener(participant);
-        });
-        
-        await Promise.allSettled(subscriptions);
-        console.log('[LiveKit] ✅ Post-connect subscriptions completed');
-      };
-      
-      // ✅ Reduced retry attempts to prevent rate limiting
-      // Only retry a few times with reasonable delays
-      setTimeout(() => postConnectSubscribe(), 100);
-      setTimeout(() => postConnectSubscribe(), 500);
-      setTimeout(() => postConnectSubscribe(), 1500);
-      
-      // Don't enable camera/mic here - let RoomPage handle track creation with user's device choices
+
+      // NOTE: after connect resolves, RoomEvent.Connected will fire and update state
 
     } catch (error: any) {
-      console.error('Failed to connect to room:', error);
-      // ✅ Reset connecting ref on error
+      console.error('[LiveKit] ❌ Failed to connect:', error);
       connectingRef.current = false;
       setIsConnecting(false);
       setIsConnectingToRoom(false);
       setError(error.message || 'Failed to connect to meeting room');
-      // Clean up room reference on error
+
       if (roomRef.current) {
         try {
           roomRef.current.disconnect();
-        } catch (err) {
-          console.warn('[LiveKit] Error disconnecting on error:', err);
-        }
+        } catch {}
         roomRef.current = null;
       }
+
       throw error;
     }
   }, [isConnecting, isConnected]);
 
   const disconnect = useCallback(() => {
-    // ✅ Reset connecting ref
-    connectingRef.current = false;
+    console.log('[LiveKit] 🔴 DISCONNECTING - Starting immediate cleanup...');
     
-    // Clean up screen share resources
-    if (screenShareStreamRef.current) {
-      screenShareStreamRef.current.getTracks().forEach(track => track.stop());
-      screenShareStreamRef.current = null;
+    // ✅ CRITICAL: Disconnect from room FIRST - this is the most important step
+    if (roomRef.current) {
+      try {
+        console.log('[LiveKit] 🔴 Disconnecting from room immediately...');
+        roomRef.current.disconnect();
+        console.log('[LiveKit] ✅ Room disconnected');
+      } catch (e) {
+        console.error('[LiveKit] ❌ Error disconnecting room:', e);
+      }
     }
-    if (screenShareTrackRef.current) {
-      screenShareTrackRef.current.stop();
-      screenShareTrackRef.current = null;
-    }
-    setIsScreenSharing(false);
+    
+    // ✅ Reset connecting ref IMMEDIATELY
+    connectingRef.current = false;
     setIsConnected(false);
     setIsConnecting(false);
     setIsConnectingToRoom(false);
-
-    if (roomRef.current) {
-      roomRef.current.disconnect();
-      roomRef.current = null;
+    
+    // Clean up screen share resources
+    if (screenShareStreamRef.current) {
+      try {
+        screenShareStreamRef.current.getTracks().forEach(track => track.stop());
+        screenShareStreamRef.current = null;
+      } catch (e) {
+        console.warn('[LiveKit] Error stopping screen share stream:', e);
+      }
     }
+    if (screenShareTrackRef.current) {
+      try {
+        screenShareTrackRef.current.stop();
+        screenShareTrackRef.current = null;
+      } catch (e) {
+        console.warn('[LiveKit] Error stopping screen share track:', e);
+      }
+    }
+    setIsScreenSharing(false);
+    
+    // Clean up background engine
+    if (backgroundEngine && typeof backgroundEngine.setNone === 'function') {
+      try {
+        backgroundEngine.setNone().catch(() => {
+          // Ignore errors during cleanup
+        });
+      } catch (e) {
+        // Ignore errors during cleanup
+      }
+    }
+    
+    // Stop all local tracks before disconnecting
+    if (roomRef.current && roomRef.current.localParticipant) {
+      try {
+        const cameraTrack = roomRef.current.localParticipant.getTrack(Track.Source.Camera);
+        const micTrack = roomRef.current.localParticipant.getTrack(Track.Source.Microphone);
+        const screenTrack = roomRef.current.localParticipant.getTrack(Track.Source.ScreenShare);
+        
+        if (cameraTrack?.track) {
+          (cameraTrack.track as LocalVideoTrack).stop();
+        }
+        if (micTrack?.track) {
+          (micTrack.track as any).stop();
+        }
+        if (screenTrack?.track) {
+          (screenTrack.track as LocalVideoTrack).stop();
+        }
+      } catch (e) {
+        console.warn('[LiveKit] Error stopping tracks during disconnect:', e);
+      }
+    }
+
+    // ✅ CRITICAL: Clear room reference and all state IMMEDIATELY
+    roomRef.current = null;
     setRoom(null);
+    setParticipants(new Map());
+    setLocalParticipant(null);
+    setParticipantCount(0);
+    hasPublishedRef.current = false;
+    
+    console.log('[LiveKit] ✅ Disconnected and cleaned up completely');
   }, []);
 
   const setMicrophoneEnabled = useCallback(async (enabled: boolean) => {
@@ -777,12 +483,12 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
       
       if (enabled && !audioTrack) {
         // Need to create and publish audio track
-        const raw = localStorage.getItem('preMeetingSettings');
-        const saved = raw ? JSON.parse(raw) : {};
+        // Get audio device preference from userProfile (Firestore) - user-specific
+        const audioDeviceId = userProfile?.preferences?.audioDeviceId;
         
         // ✅ Enhanced audio constraints for echo cancellation and low latency
         const aTrack = await createLocalAudioTrack({
-          deviceId: saved.audioDeviceId ? { exact: saved.audioDeviceId } : undefined,
+          deviceId: audioDeviceId ? { exact: audioDeviceId } : undefined,
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
@@ -827,15 +533,96 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
       
       if (enabled && !videoTrack) {
         // Need to create and publish video track
-        const raw = localStorage.getItem('preMeetingSettings');
-        const saved = raw ? JSON.parse(raw) : {};
+        // Get video device preference from userProfile (Firestore) - user-specific
+        const videoDeviceId = userProfile?.preferences?.videoDeviceId;
         
         // ✅ Video constraints optimized for device type
         const videoConstraints = getVideoConstraints();
         const vTrack = await createLocalVideoTrack({
-          deviceId: saved.videoDeviceId ? { exact: saved.videoDeviceId } : undefined,
+          deviceId: videoDeviceId ? { exact: videoDeviceId } : undefined,
           resolution: videoConstraints,
         });
+        
+        // ✅ CRITICAL: Apply background IMMEDIATELY before publishing to prevent raw camera from showing
+        // Read saved background directly from Firestore for latest value
+        let latestSavedBackground = userProfile?.savedBackground || null;
+        
+        if (auth.currentUser) {
+          try {
+            const { doc, getDoc } = await import('firebase/firestore');
+            const { db } = await import('../lib/firebase');
+            const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
+            if (userDoc.exists()) {
+              const userData = userDoc.data();
+              latestSavedBackground = userData.savedBackground || null;
+            }
+          } catch (error) {
+            // Fall back to userProfile
+          }
+        }
+        
+        const chosenBg = latestSavedBackground;
+        
+        // ✅ CRITICAL: Read backgroundEffectsEnabled from Firestore to ensure latest value
+        let bgEnabled = userProfile?.preferences?.backgroundEffectsEnabled || false;
+        if (auth.currentUser) {
+          try {
+            const { doc, getDoc } = await import('firebase/firestore');
+            const { db } = await import('../lib/firebase');
+            const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
+            if (userDoc.exists()) {
+              const userData = userDoc.data();
+              bgEnabled = userData.preferences?.backgroundEffectsEnabled || false;
+            }
+          } catch (error) {
+            // Fall back to userProfile
+          }
+        }
+        
+        // ✅ CRITICAL: Apply background ONLY if BOTH conditions are met:
+        // 1. Background effects are enabled (bgEnabled === true)
+        // 2. User has explicitly selected a background (chosenBg is not null)
+        if (bgEnabled && chosenBg && backgroundEngine) {
+          try {
+            await backgroundEngine.init(vTrack);
+            
+            // Apply based on type - IMMEDIATELY, synchronously
+            // Note: 'none' means no background selected (null), so we only handle 'blur', 'image', 'video'
+            if (chosenBg.type === 'blur') {
+              if (typeof backgroundEngine.setBlur === 'function') {
+                await backgroundEngine.setBlur();
+              }
+            } else if (chosenBg.type === 'image' && chosenBg.url) {
+              if (typeof backgroundEngine.setImage === 'function') {
+                await backgroundEngine.setImage(chosenBg.url);
+              }
+            } else if (chosenBg.type === 'video' && chosenBg.url) {
+              if (typeof backgroundEngine.setVideo === 'function') {
+                await backgroundEngine.setVideo(chosenBg.url);
+              }
+            }
+            console.log('[LiveKit] ✅ Background applied IMMEDIATELY when enabling camera');
+          } catch (bgError) {
+            console.warn('[LiveKit] Background application failed when enabling camera:', bgError);
+            // Continue - track will be published without background
+          }
+        } else {
+          // ✅ CRITICAL: No background selected - do NOT apply any background
+          // Ensure no processor is attached to the track
+          try {
+            // Clear any existing processor that might be attached
+            if (vTrack && typeof vTrack.setProcessor === 'function') {
+              const currentProcessor = (vTrack as any).processor;
+              if (currentProcessor) {
+                await vTrack.setProcessor(undefined as any);
+                console.log('[LiveKit] Cleared any existing background processor when enabling camera - showing raw camera');
+              }
+            }
+          } catch (clearError) {
+            // Ignore errors when clearing processor
+            console.log('[LiveKit] No background selected - showing raw camera feed');
+          }
+        }
         
         await roomRef.current.localParticipant.publishTrack(vTrack, {
           source: Track.Source.Camera,
@@ -848,13 +635,9 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
       
       setIsCameraEnabled(enabled);
       
-      // Force a re-render
-      if (enabled) {
-        setTimeout(() => {
-          forceUpdate({});
-          setLocalParticipant(roomRef.current?.localParticipant || null);
-        }, 100);
-      }
+      // Force a re-render immediately - no delay
+      forceUpdate({});
+      setLocalParticipant(roomRef.current?.localParticipant || null);
     } catch (error) {
       console.error('Failed to set camera:', error);
       setError('Failed to toggle camera. Please check your browser permissions.');
@@ -1097,12 +880,41 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
       }
   }, [isMobileDevice]);
 
+  // ✅ STABILITY FIX: Add timeout protection to prevent controls from getting stuck
   const toggleMicrophone = useCallback(async () => {
-    await setMicrophoneEnabled(!isMicrophoneEnabled);
+    try {
+      // Add timeout to prevent hanging
+      await Promise.race([
+        setMicrophoneEnabled(!isMicrophoneEnabled),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Microphone toggle timeout')), 10000)
+        )
+      ]);
+    } catch (error: any) {
+      console.error('[LiveKit] Toggle microphone error:', error);
+      // Don't let errors disable the control - always allow retry
+      if (!error.message.includes('timeout')) {
+        setError('Failed to toggle microphone. Please try again.');
+      }
+    }
   }, [isMicrophoneEnabled, setMicrophoneEnabled]);
 
   const toggleCamera = useCallback(async () => {
-    await setCameraEnabled(!isCameraEnabled);
+    try {
+      // Add timeout to prevent hanging
+      await Promise.race([
+        setCameraEnabled(!isCameraEnabled),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Camera toggle timeout')), 10000)
+        )
+      ]);
+    } catch (error: any) {
+      console.error('[LiveKit] Toggle camera error:', error);
+      // Don't let errors disable the control - always allow retry
+      if (!error.message.includes('timeout')) {
+        setError('Failed to toggle camera. Please try again.');
+      }
+    }
   }, [isCameraEnabled, setCameraEnabled]);
 
   // Switch between front and back camera (mobile/tablet only)
@@ -1131,15 +943,24 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
       const existingPub = localPart.getTrack(Track.Source.Camera) as LocalTrackPublication | undefined;
       const existingTrack = existingPub?.track as LocalVideoTrack | undefined;
       
-      // Get saved background settings
-      const saved = localStorage.getItem('preMeetingSettings') 
-        ? JSON.parse(localStorage.getItem('preMeetingSettings')!)
-        : {};
-      const bgEnabled = saved.backgroundEffectsEnabled || 
-        localStorage.getItem('backgroundEffectsEnabled') === 'true';
-      const chosenBg = saved.savedBackground || 
-        (localStorage.getItem('savedBackground') && 
-         JSON.parse(localStorage.getItem('savedBackground')!));
+      // Get savedBackground from userProfile (Firestore) - this is user-specific
+      const chosenBg = userProfile?.savedBackground || null;
+      
+      // ✅ CRITICAL: Read backgroundEffectsEnabled from Firestore to ensure latest value
+      let bgEnabled = userProfile?.preferences?.backgroundEffectsEnabled || false;
+      if (auth.currentUser) {
+        try {
+          const { doc, getDoc } = await import('firebase/firestore');
+          const { db } = await import('../lib/firebase');
+          const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
+          if (userDoc.exists()) {
+            const userData = userDoc.data();
+            bgEnabled = userData.preferences?.backgroundEffectsEnabled || false;
+          }
+        } catch (error) {
+          // Fall back to userProfile
+        }
+      }
 
       // Switch facing mode
       const newFacingMode = cameraFacingMode === 'user' ? 'environment' : 'user';
@@ -1168,26 +989,42 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
         resolution: videoConstraints,
       });
 
-      // Reapply background effects if enabled
-      if (bgEnabled) {
+      // ✅ CRITICAL: Reapply background effects IMMEDIATELY - no delays
+      // ONLY apply if BOTH conditions are met:
+      // 1. Background effects are enabled (bgEnabled === true)
+      // 2. User has explicitly selected a background (chosenBg is not null)
+      if (bgEnabled && chosenBg && backgroundEngine) {
         try {
           await backgroundEngine.init(newTrack);
-          await new Promise(resolve => setTimeout(resolve, 100));
           
-          if (chosenBg) {
-            if (chosenBg.type === 'blur' && typeof backgroundEngine.setBlur === 'function') {
-              await backgroundEngine.setBlur();
-            } else if (chosenBg.type === 'image' && chosenBg.url && typeof backgroundEngine.setImage === 'function') {
-              await backgroundEngine.setImage(chosenBg.url);
-            } else if (chosenBg.type === 'video' && chosenBg.url && typeof backgroundEngine.setVideo === 'function') {
-              await backgroundEngine.setVideo(chosenBg.url);
-            }
-          } else if (typeof backgroundEngine.setBlur === 'function') {
-            // Default to blur if no specific background
+          // Apply immediately - no delays
+          // Note: 'none' means no background selected (null), so we only handle 'blur', 'image', 'video'
+          if (chosenBg.type === 'blur' && typeof backgroundEngine.setBlur === 'function') {
             await backgroundEngine.setBlur();
+          } else if (chosenBg.type === 'image' && chosenBg.url && typeof backgroundEngine.setImage === 'function') {
+            await backgroundEngine.setImage(chosenBg.url);
+          } else if (chosenBg.type === 'video' && chosenBg.url && typeof backgroundEngine.setVideo === 'function') {
+            await backgroundEngine.setVideo(chosenBg.url);
           }
+          console.log('[LiveKit] ✅ Background reapplied IMMEDIATELY after camera switch');
         } catch (e) {
           console.warn('[LiveKit] Error reapplying background after camera switch:', e);
+        }
+      } else {
+        // ✅ CRITICAL: No background selected - do NOT apply any background
+        // Ensure no processor is attached to the track
+        try {
+          // Clear any existing processor that might be attached
+          if (newTrack && typeof newTrack.setProcessor === 'function') {
+            const currentProcessor = (newTrack as any).processor;
+            if (currentProcessor) {
+              await newTrack.setProcessor(undefined as any);
+              console.log('[LiveKit] Cleared any existing background processor after camera switch - showing raw camera');
+            }
+          }
+        } catch (clearError) {
+          // Ignore errors when clearing processor
+          console.log('[LiveKit] No background selected - showing raw camera feed after camera switch');
         }
       }
 
@@ -1266,19 +1103,77 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
   }, []);
 
   const publishFromSavedSettings = useCallback(async () => {
-    if (hasPublishedRef.current) {
-      return;
+    // ✅ STABILITY FIX: Allow retry if previous attempt failed
+    // Only skip if we successfully published AND room is still connected
+    if (hasPublishedRef.current && roomRef.current && roomRef.current.state === 'connected') {
+      const localPart = roomRef.current.localParticipant;
+      const hasVideo = localPart?.getTrack(Track.Source.Camera);
+      const hasAudio = localPart?.getTrack(Track.Source.Microphone);
+      // If we have both tracks, we're good - skip
+      if (hasVideo && hasAudio) {
+        console.log('[LiveKit] Already published with both tracks, skipping');
+        return;
+      } else {
+        // Missing tracks - allow retry
+        console.log('[LiveKit] Missing tracks, allowing retry', { hasVideo: !!hasVideo, hasAudio: !!hasAudio });
+        hasPublishedRef.current = false;
+      }
     }
     
     const r = roomRef.current;
     if (!r) {
+      console.warn('[LiveKit] No room reference, cannot publish');
       return;
     }
+    
+    // ✅ CRITICAL: Verify room is actually connected before attempting to publish
+    if (r.state !== 'connected') {
+      console.warn('[LiveKit] Room not connected, cannot publish tracks. State:', r.state);
+      throw new Error(`Cannot publish tracks: room is not connected (state: ${r.state})`);
+    }
+    
+    // ✅ CRITICAL: Verify localParticipant exists
+    if (!r.localParticipant) {
+      console.warn('[LiveKit] No localParticipant, cannot publish');
+      throw new Error('Cannot publish tracks: localParticipant not available');
+    }
+    
+    console.log('[LiveKit] ✅ Room verified as connected, proceeding with track publication');
 
-    const raw = localStorage.getItem('preMeetingSettings');
-    const saved = raw ? JSON.parse(raw) : {};
-    const videoOn = saved.videoEnabled !== false;
-    const audioOn = saved.audioEnabled !== false;
+    // ✅ CRITICAL: Read saved background directly from Firestore to ensure we get the latest value
+    // userProfile might be stale when entering the room after saving in PreMeetingSetup
+    let latestSavedBackground = userProfile?.savedBackground || null;
+    let latestPreferences = userProfile?.preferences || {};
+    
+    // If we have a user, read directly from Firestore to get the most up-to-date values
+    if (auth.currentUser) {
+      try {
+        const { doc, getDoc } = await import('firebase/firestore');
+        const { db } = await import('../lib/firebase');
+        const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
+        if (userDoc.exists()) {
+          const userData = userDoc.data();
+          latestSavedBackground = userData.savedBackground || null;
+          latestPreferences = userData.preferences || {};
+          console.log('[LiveKit] ✅ Read latest background from Firestore:', {
+            savedBackground: latestSavedBackground,
+            backgroundEffectsEnabled: latestPreferences?.backgroundEffectsEnabled,
+            preferences: latestPreferences
+          });
+        } else {
+          console.warn('[LiveKit] User document not found in Firestore');
+        }
+      } catch (error) {
+        console.warn('[LiveKit] Failed to read latest background from Firestore, using userProfile:', error);
+        // Fall back to userProfile if Firestore read fails
+      }
+    } else {
+      console.warn('[LiveKit] No current user, cannot read from Firestore');
+    }
+
+    // Get preferences from latest data (Firestore or userProfile fallback)
+    const videoOn = latestPreferences?.videoEnabled !== false;
+    const audioOn = latestPreferences?.audioEnabled !== false;
 
     // VIDEO
     if (videoOn) {
@@ -1288,18 +1183,19 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
         // ✅ Video constraints optimized for device type
         const videoConstraints = getVideoConstraints();
         
-        // Try with saved device first
-        if (saved.videoDeviceId) {
+        // Try with saved device from latest preferences (Firestore or userProfile fallback)
+        const savedVideoDeviceId = latestPreferences?.videoDeviceId;
+        if (savedVideoDeviceId) {
           try {
             vTrack = await createLocalVideoTrack({
-              deviceId: { exact: saved.videoDeviceId },
+              deviceId: { exact: savedVideoDeviceId },
               resolution: videoConstraints,
             });
           } catch (exactError: any) {
             console.warn('[LiveKit] Failed with exact device, trying ideal:', exactError);
             // If exact device fails, try ideal constraint
             vTrack = await createLocalVideoTrack({
-              deviceId: { ideal: saved.videoDeviceId },
+              deviceId: { ideal: savedVideoDeviceId },
               resolution: videoConstraints,
             });
           }
@@ -1310,74 +1206,292 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
           });
         }
 
-        // Apply background effect if enabled
-        try {
-          const bgEnabled =
-            saved.backgroundEffectsEnabled ||
-            localStorage.getItem('backgroundEffectsEnabled') === 'true';
-          const chosenBg =
-            saved.savedBackground ||
-            (localStorage.getItem('savedBackground') &&
-              JSON.parse(localStorage.getItem('savedBackground')!));
+        // ✅ CRITICAL: Apply background ONLY if user has explicitly selected one AND enabled background effects
+        // If chosenBg is null OR backgroundEffectsEnabled is false, do NOT apply any background - show raw camera
+        const bgEnabled = latestPreferences?.backgroundEffectsEnabled || false;
+        const chosenBg = latestSavedBackground;
+        const isMobileDeviceCheck = isMobileDevice();
 
-          if (bgEnabled && chosenBg) {
-            await backgroundEngine.init(vTrack);
-            if (chosenBg.type === 'blur') await backgroundEngine.setBlur();
-            else if (chosenBg.type === 'image' && chosenBg.url) await backgroundEngine.setImage(chosenBg.url);
-          }
-        } catch (e) {
-          console.warn('[LiveKit] background effect failed, continuing without it', e);
-        }
-
-        await r.localParticipant.publishTrack(vTrack, {
-          source: Track.Source.Camera,
-          simulcast: true, // Enable simulcast for adaptive quality
-        });
-        setIsCameraEnabled(true);
+        // ✅ CRITICAL FIX: Check if background is valid (not null, not 'none', has valid type)
+        const hasValidBackground = chosenBg && 
+                                   chosenBg.type && 
+                                   chosenBg.type !== 'none' && 
+                                   chosenBg.type !== null &&
+                                   (chosenBg.type === 'blur' || (chosenBg.type === 'image' && chosenBg.url) || (chosenBg.type === 'video' && chosenBg.url));
         
-        // Force a re-render after a short delay to allow VideoTile to pick up the track
-        setTimeout(() => {
-          forceUpdate({});
-          setLocalParticipant(r.localParticipant);
-        }, 100);
+        console.log('[LiveKit] 🔍 Background check:', {
+          bgEnabled,
+          hasChosenBg: !!chosenBg,
+          chosenBgType: chosenBg?.type,
+          chosenBgUrl: chosenBg?.url,
+          hasBackgroundEngine: !!backgroundEngine,
+          isMobile: isMobileDeviceCheck,
+          hasValidBackground,
+          willApply: bgEnabled && hasValidBackground && !isMobileDeviceCheck,
+        });
+
+        // ✅ MOBILE OPTIMIZATION: Skip background processing on mobile devices for better performance
+        // Background processing is CPU/GPU intensive and can cause delays and camera/mic issues on mobile
+        // ✅ CRITICAL FIX: Apply background ONLY if ALL conditions are met:
+        // 1. Background effects are enabled (bgEnabled === true)
+        // 2. User has explicitly selected a background (chosenBg is not null AND type is not 'none')
+        // 3. NOT a mobile device (for performance)
+        if (bgEnabled && hasValidBackground && backgroundEngine && !isMobileDeviceCheck) {
+          try {
+            // Initialize background engine immediately - don't wait for track state
+            await backgroundEngine.init(vTrack);
+            
+            // Apply background immediately based on type
+            if (chosenBg.type === 'blur') {
+              if (typeof backgroundEngine.setBlur === 'function') {
+                await backgroundEngine.setBlur();
+                console.log('[LiveKit] ✅ Background blur applied BEFORE publishing');
+              }
+            } else if (chosenBg.type === 'image' && chosenBg.url) {
+              if (typeof backgroundEngine.setImage === 'function') {
+                try {
+                  await backgroundEngine.setImage(chosenBg.url);
+                  console.log('[LiveKit] ✅ Background image applied BEFORE publishing:', chosenBg.url);
+                } catch (imgError: any) {
+                  console.warn('[LiveKit] Background image failed before publishing, will retry after:', imgError);
+                }
+              }
+            } else if (chosenBg.type === 'video' && chosenBg.url) {
+              if (typeof backgroundEngine.setVideo === 'function') {
+                await backgroundEngine.setVideo(chosenBg.url);
+                console.log('[LiveKit] ✅ Background video applied BEFORE publishing');
+              }
+            }
+          } catch (bgError) {
+            console.warn('[LiveKit] Background application before publishing failed:', bgError);
+            // Continue - we'll retry after publishing
+          }
+        } else {
+          // ✅ CRITICAL: No background selected - do NOT apply any background
+          if (!bgEnabled) {
+            console.log('[LiveKit] Background effects disabled - showing raw camera feed');
+          } else if (!hasValidBackground) {
+            console.log('[LiveKit] No valid background selected - showing raw camera feed');
+          } else if (isMobileDeviceCheck) {
+            console.log('[LiveKit] Mobile device - skipping background for performance');
+          }
+        }
+        
+        // ✅ CRITICAL: Double-check room is still connected before publishing
+        if (r.state !== 'connected' || !r.localParticipant) {
+          console.error('[LiveKit] Room disconnected before publishing video track, stopping track');
+          vTrack.stop();
+          throw new Error('Room disconnected before publishing video track');
+        }
+        
+        // ✅ CRITICAL: Publish track with background already applied (if successful)
+        // This ensures users never see their raw camera feed
+        // ✅ MOBILE OPTIMIZATION: Add timeout and disable simulcast for mobile devices
+        const isMobileForPublish = isMobileDevice();
+        const networkQuality = getNetworkQuality();
+        const shouldUseSimulcast = !isMobileForPublish && networkQuality !== 'poor';
+        
+        const publishPromise = r.localParticipant.publishTrack(vTrack, {
+          source: Track.Source.Camera,
+          simulcast: shouldUseSimulcast, // Disable simulcast on mobile/poor networks for better performance
+        });
+        
+        try {
+          // Add timeout for mobile devices (10 seconds) to prevent indefinite hanging
+          if (isMobileForPublish) {
+            await Promise.race([
+              publishPromise,
+              new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Publish timeout on mobile device')), 10000)
+              )
+            ]);
+          } else {
+            await publishPromise;
+          }
+          setIsCameraEnabled(true);
+          console.log('[LiveKit] ✅ Video track published successfully');
+        } catch (publishError: any) {
+          // If publishing fails, stop the track to free resources
+          console.error('[LiveKit] ❌ Failed to publish video track:', publishError);
+          vTrack.stop();
+          throw publishError; // Re-throw so caller knows it failed
+        }
+        
+        // Background should already be applied before publishing
+        // If it wasn't applied, it means it failed - don't retry here to avoid delays
+        
+        // Force a re-render to allow VideoTile to pick up the track with background applied
+        forceUpdate({});
+        setLocalParticipant(r.localParticipant);
       } catch (error: any) {
         console.error('[LiveKit] Failed to create/publish video track:', error);
-        setIsCameraEnabled(false);
-        setError(`Camera access denied or unavailable: ${error.message}. Please check your browser permissions and click the camera button.`);
+        
+        // ✅ CRITICAL: Reset hasPublishedRef on error to allow retry
+        hasPublishedRef.current = false;
+        
+        // ✅ CRITICAL: Only disable camera if it's a REAL error (permission denied, device unavailable)
+        // DO NOT disable for connection issues - keep camera enabled and retry
+        const errorMsg = error?.message || String(error);
+        const isConnectionIssue = errorMsg.includes('not connected') || 
+                                  errorMsg.includes('Cannot publish') ||
+                                  errorMsg.includes('closed') ||
+                                  errorMsg.includes('timeout') ||
+                                  errorMsg.includes('timed out');
+        
+        if (!isConnectionIssue) {
+          // Real error (permission denied, device unavailable) - disable camera
+          setIsCameraEnabled(false);
+          setError(`Camera access denied or unavailable: ${error.message}. Please check your browser permissions and click the camera button.`);
+        } else {
+          // Connection issue - KEEP camera enabled, will retry
+          console.warn('[LiveKit] Video track publishing failed due to connection issue, will retry. Camera remains enabled.');
+          throw error; // Re-throw to prevent hasPublishedRef from being set
+        }
       }
     }
 
     // AUDIO - ✅ Optimized for LOW LATENCY and ECHO CANCELLATION
     if (audioOn) {
       try {
+        // Get audio device preference from userProfile (Firestore) - user-specific
+        const audioDeviceId = userProfile?.preferences?.audioDeviceId;
+        // ✅ CRITICAL: Double-check room is still connected before publishing audio
+        if (r.state !== 'connected' || !r.localParticipant) {
+          console.error('[LiveKit] Room disconnected before publishing audio track, stopping track');
+          throw new Error('Room disconnected before publishing audio track');
+        }
+        
+        const isMobileForAudio = isMobileDevice();
+        
         const aTrack = await createLocalAudioTrack({
-          deviceId: saved.audioDeviceId ? { exact: saved.audioDeviceId } : undefined,
-          // ✅ Enhanced audio constraints for echo cancellation and low latency
+          deviceId: audioDeviceId ? { exact: audioDeviceId } : undefined,
+          // ✅ MOBILE OPTIMIZATION: Simplified audio constraints for mobile devices
           echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          sampleRate: 48000, // Higher sample rate for lower latency
+          noiseSuppression: !isMobileForAudio, // Disable on mobile for better performance
+          autoGainControl: !isMobileForAudio, // Disable on mobile for better performance
+          sampleRate: isMobileForAudio ? 16000 : 48000, // Lower sample rate on mobile
           channelCount: 1, // Mono for better echo cancellation
           sampleSize: 16,
           // ✅ Optimize for real-time communication (low latency)
-          latency: 0.01, // 10ms latency target
+          latency: isMobileForAudio ? 0.05 : 0.01, // Higher latency tolerance on mobile
         });
-        await r.localParticipant.publishTrack(aTrack);
-        setIsMicrophoneEnabled(true);
-        console.log('[LiveKit] ✅ Audio track published with echo cancellation enabled');
+        
+        try {
+          const publishPromise = r.localParticipant.publishTrack(aTrack);
+          
+          // ✅ MOBILE OPTIMIZATION: Add timeout for mobile devices
+          if (isMobileForAudio) {
+            await Promise.race([
+              publishPromise,
+              new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Audio publish timeout on mobile device')), 10000)
+              )
+            ]);
+          } else {
+            await publishPromise;
+          }
+          
+          setIsMicrophoneEnabled(true);
+          console.log('[LiveKit] ✅ Audio track published successfully');
+        } catch (publishError: any) {
+          // If publishing fails, stop the track to free resources
+          console.error('[LiveKit] ❌ Failed to publish audio track:', publishError);
+          aTrack.stop();
+          throw publishError; // Re-throw so caller knows it failed
+        }
       } catch (error: any) {
         console.error('[LiveKit] Failed to create/publish audio track:', error);
-        setIsMicrophoneEnabled(false);
-        // Don't show error for audio as it's less critical
+        
+        // ✅ CRITICAL: Reset hasPublishedRef on error to allow retry
+        hasPublishedRef.current = false;
+        
+        // ✅ CRITICAL: Only disable mic if it's a REAL error (permission denied, device unavailable)
+        // DO NOT disable for connection issues - keep mic enabled and retry
+        const errorMsg = error?.message || String(error);
+        const isConnectionIssue = errorMsg.includes('not connected') || 
+                                  errorMsg.includes('Cannot publish') ||
+                                  errorMsg.includes('closed') ||
+                                  errorMsg.includes('timeout') ||
+                                  errorMsg.includes('timed out');
+        
+        if (!isConnectionIssue) {
+          // Real error (permission denied, device unavailable) - disable mic
+          setIsMicrophoneEnabled(false);
+          console.warn('[LiveKit] Audio track failed:', errorMsg);
+        } else {
+          // Connection issue - KEEP mic enabled, will retry
+          console.warn('[LiveKit] Audio track publishing failed due to connection issue, will retry. Microphone remains enabled.');
+          throw error; // Re-throw to prevent hasPublishedRef from being set
+        }
       }
     }
     
-    // Only set hasPublishedRef to true if we attempted both video and audio
-    // This prevents retries if both were attempted, even if one failed
-    if (videoOn || audioOn) {
+    // ✅ CRITICAL: Only set hasPublishedRef to true if we successfully published at least one track
+    // This allows retries if publishing failed due to connection issues
+    const videoPublished = videoOn && r.localParticipant?.getTrack(Track.Source.Camera);
+    const audioPublished = audioOn && r.localParticipant?.getTrack(Track.Source.Microphone);
+    
+    if (videoPublished || audioPublished) {
       hasPublishedRef.current = true;
+      console.log('[LiveKit] ✅ Tracks published successfully, hasPublishedRef set to true');
+    } else {
+      console.warn('[LiveKit] ⚠️ No tracks published, hasPublishedRef remains false (will allow retry)');
     }
   }, []);
+
+  // ✅ CRITICAL: Re-apply background when savedBackground changes (e.g., user changes it in PreMeetingSetup or room)
+  useEffect(() => {
+    if (!room || !isConnected || !localParticipant) return;
+    
+    const vTrack = localParticipant.getTrack(Track.Source.Camera)?.track as LocalVideoTrack | null;
+    if (!vTrack) return;
+
+    const chosenBg = userProfile?.savedBackground || null;
+    const bgEnabled = userProfile?.preferences?.backgroundEffectsEnabled || false;
+    const isMobileDeviceCheck = isMobileDevice();
+    
+    const hasValidBackground = chosenBg && 
+                               chosenBg.type && 
+                               chosenBg.type !== 'none' && 
+                               chosenBg.type !== null &&
+                               (chosenBg.type === 'blur' || (chosenBg.type === 'image' && chosenBg.url) || (chosenBg.type === 'video' && chosenBg.url));
+
+    if (bgEnabled && hasValidBackground && backgroundEngine && !isMobileDeviceCheck) {
+      const applyBackground = async () => {
+        try {
+          await backgroundEngine.init(vTrack);
+          
+          if (chosenBg.type === 'blur') {
+            if (typeof backgroundEngine.setBlur === 'function') {
+              await backgroundEngine.setBlur();
+              console.log('[LiveKit] ✅ Background blur re-applied after change');
+            }
+          } else if (chosenBg.type === 'image' && chosenBg.url) {
+            if (typeof backgroundEngine.setImage === 'function') {
+              await backgroundEngine.setImage(chosenBg.url);
+              console.log('[LiveKit] ✅ Background image re-applied after change:', chosenBg.url);
+            }
+          } else if (chosenBg.type === 'video' && chosenBg.url) {
+            if (typeof backgroundEngine.setVideo === 'function') {
+              await backgroundEngine.setVideo(chosenBg.url);
+              console.log('[LiveKit] ✅ Background video re-applied after change');
+            }
+          }
+        } catch (bgError) {
+          console.warn('[LiveKit] Background re-application failed:', bgError);
+        }
+      };
+      
+      // Small delay to ensure track is stable
+      const timer = setTimeout(applyBackground, 300);
+      return () => clearTimeout(timer);
+    } else if (!bgEnabled || !hasValidBackground) {
+      // Remove background if disabled or invalid
+      if (backgroundEngine && typeof backgroundEngine.setNone === 'function') {
+        backgroundEngine.setNone().catch(() => {});
+      }
+    }
+  }, [room, isConnected, localParticipant, userProfile?.savedBackground, userProfile?.preferences?.backgroundEffectsEnabled]);
 
   const value: LiveKitContextType = {
     room,

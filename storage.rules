@@ -1,6 +1,8 @@
 rules_version = '2';
 
 // Firebase Storage Security Rules
+// These rules apply to BOTH habs-meet-dev and habs-meet-prod projects
+
 service firebase.storage {
   match /b/{bucket}/o {
     // User uploads - users can only access their own files
@@ -17,16 +19,39 @@ service firebase.storage {
       allow write, delete: if request.auth != null && request.auth.uid == userId;
     }
     
-    // Default media - available to all authenticated users
+    // Helper function to check if user is admin in current project
+    function isAdmin() {
+      return request.auth != null && 
+        firestore.exists(/databases/(default)/documents/users/$(request.auth.uid)) &&
+        firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role in ['admin', 'superadmin'];
+    }
+    
+    // Helper function to check if user is authenticated
+    // Since admin page is already protected by app-level checks, we allow authenticated users
+    // This works across projects (dev/prod) since both use the same storage bucket
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Default media - available to all authenticated users for reading
+    // Write/delete: Admin check is done in the app before calling upload/delete
+    // Storage rules allow authenticated users (app-level admin check provides security)
     match /defaultMedia/{category}/{fileName} {
-      // Allow read, write, and delete for all authenticated users (for admin setup)
-      allow read, write, delete: if request.auth != null;
+      // Allow read for all authenticated users
+      allow read: if isAuthenticated();
+      // Allow write and delete for authenticated users (admin check done in app)
+      // This allows admins from both dev and prod projects to upload
+      allow write: if isAuthenticated();
+      allow delete: if isAuthenticated();
     }
     
     // Catch-all for default media in case of different path structure
     match /defaultMedia/{allPaths=**} {
-      // Allow read, write, and delete for all authenticated users
-      allow read, write, delete: if request.auth != null;
+      // Allow read for all authenticated users
+      allow read: if isAuthenticated();
+      // Allow write and delete for authenticated users (admin check done in app)
+      allow write: if isAuthenticated();
+      allow delete: if isAuthenticated();
     }
     
     // Private messages media - only sender and receiver can access

@@ -91,8 +91,9 @@ const VideoGrid: React.FC = () => {
       });
     });
 
-    // Periodic check as fallback
-    const checkInterval = setInterval(updateScreenShares, 1000);
+    // ✅ STABILITY FIX: Reduced polling frequency - event listeners handle most cases
+    // Only check periodically as fallback (5 seconds instead of 1 second)
+    const checkInterval = setInterval(updateScreenShares, 5000);
 
     return () => {
       if (localParticipant) {
@@ -645,43 +646,61 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
   const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const isLocal = participant instanceof LocalParticipant;
   const { userProfile } = useAuth();
-  const { isCameraEnabled: localCameraEnabled } = useLiveKit();
   const [videoPublication, setVideoPublication] = useState<TrackPublication | null>(null);
   const [participantProfile, setParticipantProfile] = useState<{ displayName: string; photoURL?: string } | null>(null);
   const [isCameraEnabled, setIsCameraEnabled] = useState(true);
 
-  // Listen for track publications
+  // 🔹 Find camera publication from videoTracks + ensure subscription for remote
   useEffect(() => {
-    // Get initial video publication - accept Camera or Unknown
-    const vidPub: TrackPublication | null = 
-      (participant.getTrack(Track.Source.Camera) as TrackPublication) ||
-      (participant.getTrack(Track.Source.Unknown) as TrackPublication) ||
-      null;
-    setVideoPublication(vidPub);
+    // Helper: always pick the first VIDEO publication we have
+    const pickCameraPublication = (): TrackPublication | null => {
+      // Prefer anything already in videoTracks
+      const videoPubs: TrackPublication[] = [];
+      participant.videoTracks.forEach((pub) => {
+        videoPubs.push(pub as TrackPublication);
+      });
 
-    // Listen for track published/unpublished events
-    const handleTrackPublished = (publication: TrackPublication) => {
-      console.log('[VideoTile] Track published:', publication.kind, 'from', participant.identity);
-      // ✅ Only handle camera tracks, NOT screen share
-      if (publication.kind === Track.Kind.Video && publication.source === Track.Source.Camera) {
-        setVideoPublication(publication);
+      if (videoPubs.length > 0) {
+        return videoPubs[0]; // in your layout, this is the camera
+      }
+
+      // Fallback to the source-based helpers (just in case)
+      const bySource =
+        (participant as any).getTrackPublication?.(Track.Source.Camera) ??
+        (participant as any).getTrack?.(Track.Source.Camera);
+
+      return (bySource as TrackPublication | null) ?? null;
+    };
+
+    let pub: TrackPublication | null = pickCameraPublication();
+
+    // For remote participants – make sure we're subscribed
+    if (!isLocal && pub) {
+      const remotePub = pub as RemoteTrackPublication;
+      if (!remotePub.isSubscribed) {
+        try {
+          remotePub.setSubscribed(true);
+        } catch (e) {
+          console.error('[VideoTile] camera subscribe failed', e);
+        }
+      }
+    }
+
+    setVideoPublication(pub);
+    setIsCameraEnabled(!!pub && !pub?.isMuted);
+
+    // If any VIDEO track is (un)published on this participant, update
+    const handleTrackPublished = (p: TrackPublication) => {
+      if (p.kind === Track.Kind.Video) {
+        setVideoPublication(p);
+        setIsCameraEnabled(!p.isMuted);
       }
     };
 
-    const handleTrackUnpublished = (publication: TrackPublication) => {
-      console.log('[VideoTile] Track unpublished:', publication.kind, 'from', participant.identity);
-      // ✅ Only clear if it's the current publication (to avoid clearing when screen share stops)
-      if (publication.kind === Track.Kind.Video && publication.source === Track.Source.Camera) {
-        if (videoPublication === publication) {
-          setVideoPublication(null);
-        }
-        // Re-check for camera track after a delay (in case screen share stopped)
-        setTimeout(() => {
-          const newVidPub = (participant.getTrack(Track.Source.Camera) as TrackPublication) || null;
-          if (newVidPub && newVidPub !== videoPublication) {
-            setVideoPublication(newVidPub);
-          }
-        }, 100);
+    const handleTrackUnpublished = (p: TrackPublication) => {
+      if (p.kind === Track.Kind.Video) {
+        setVideoPublication(null);
+        setIsCameraEnabled(false);
       }
     };
 
@@ -692,267 +711,124 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
       participant.off(ParticipantEvent.TrackPublished, handleTrackPublished);
       participant.off(ParticipantEvent.TrackUnpublished, handleTrackUnpublished);
     };
-  }, [participant, isLocal]);
+    // ✅ IMPORTANT: also react when number of video tracks changes
+  }, [participant, isLocal, participant.videoTracks.size]);
 
-  // Periodic check for video track (in case it's published after initial render)
-  // Also check if track is subscribed for remote participants
-  // ✅ CRITICAL: This also recovers camera tracks after screen share stops
+  // ✅ REMOVED: No longer needed with autoSubscribe: true
+  // LiveKit handles subscriptions automatically, we just react to track availability
+
+  // 🔹 Attach/detach video element when the actual track changes
   useEffect(() => {
-    const checkInterval = setInterval(() => {
-      const vidPub: TrackPublication | null = 
-        (participant.getTrack(Track.Source.Camera) as TrackPublication) ||
-        null;
-      
-      // ✅ If we don't have a track, or our current track is invalid, try to get a new one
-      if (!videoPublication?.track || (vidPub && vidPub !== videoPublication)) {
-        if (vidPub) {
-          // For remote participants, make sure track is subscribed
-          if (!isLocal) {
-            const remotePub = vidPub as any as RemoteTrackPublication;
-            if (remotePub && !remotePub.isSubscribed) {
-              console.log('[VideoTile] 🔴 Found unsubscribed remote track for', participant.identity, '- subscribing NOW...');
-              (async () => {
-                try {
-                  await remotePub.setSubscribed(true);
-                  console.log('[VideoTile] ✅ Successfully subscribed to remote track for', participant.identity);
-                  // Wait a bit for track to be ready
-                  setTimeout(() => {
-                    if (remotePub.track) {
-                      setVideoPublication(vidPub);
-                    }
-                  }, 200);
-                } catch (err: any) {
-                  console.error('[VideoTile] ❌ Failed to subscribe to remote track:', err);
-                }
-              })();
-              return;
-            }
-            
-            // If subscribed but no track element, wait for it
-            if (remotePub.isSubscribed && !remotePub.track) {
-              console.log('[VideoTile] ⏳ Remote track subscribed but not ready yet for', participant.identity);
-              return;
-            }
-          }
-          
-          // ✅ Set the publication (this will trigger re-attachment)
-          if (vidPub !== videoPublication && vidPub.track) {
-            console.log('[VideoTile] ✅ Found camera track for', participant.identity, '- updating publication');
-            setVideoPublication(vidPub);
-          }
-        } else {
-          // No video track found - log for debugging
-          if (!isLocal) {
-            console.log('[VideoTile] ⚠️ No camera track found for remote participant:', participant.identity);
-          }
-        }
-      }
-    }, 500);
-
-    return () => clearInterval(checkInterval);
-  }, [participant, videoPublication, isLocal]);
-
-  // Attach video track when publication changes - for BOTH local AND remote participants
-  useEffect(() => {
-    if (!containerRef.current) {
-      console.log('[VideoTile] ⚠️ Container not ready for', participant.identity);
-      return;
-    }
-    if (!videoPublication?.track) {
-      console.log('[VideoTile] ⚠️ No video track available for', participant.identity, {
-        hasPublication: !!videoPublication,
-        hasTrack: !!videoPublication?.track,
-        isSubscribed: !isLocal ? (videoPublication as any as RemoteTrackPublication)?.isSubscribed : 'N/A (local)'
-      });
-      return;
-    }
-    
-    console.log('[VideoTile] ✅ Attaching video track for', isLocal ? 'local' : 'remote', 'participant:', participant.identity);
-    
-    // Attach video for BOTH local and remote participants
-    const element = videoPublication.track.attach() as HTMLVideoElement;
-    videoElementRef.current = element;
-    element.autoplay = true;
-    element.setAttribute('playsInline', 'true');
-    element.setAttribute('playsinline', 'true');
-    element.muted = isLocal; // Local is muted, remote is not
-    element.controls = false;
-    
-    // ✅ Function to detect aspect ratio and apply correct styling
-    const updateVideoStyling = () => {
-      if (!element.videoWidth || !element.videoHeight) {
-        // Dimensions not available yet, use cover as default
-        element.classList.remove('portrait-video');
-        return;
-      }
-      
-      // Calculate aspect ratio (height/width)
-      const aspectRatio = element.videoHeight / element.videoWidth;
-      // 9:16 portrait = 16/9 = 1.777... 
-      // If aspect ratio is >= 1.5, consider it portrait (allows some tolerance)
-      const isPortraitVideo = aspectRatio >= 1.5;
-      
-      if (isPortraitVideo) {
-        // Portrait video (9:16): add class to use contain with letterboxing
-        element.classList.add('portrait-video');
-        console.log('[VideoTile] Portrait video detected (9:16) for', participant.identity, { width: element.videoWidth, height: element.videoHeight, aspectRatio });
-      } else {
-        // Landscape video (16:9): remove class to use cover
-        element.classList.remove('portrait-video');
-        console.log('[VideoTile] Landscape video detected (16:9) for', participant.identity, { width: element.videoWidth, height: element.videoHeight, aspectRatio });
-      }
-    };
-    
-    // ✅ Set initial styling (object-fit handled by CSS class)
-    element.style.width = '100%';
-    element.style.height = '100%';
-    element.style.objectPosition = 'center';
-    element.style.backgroundColor = 'black';
-    element.style.background = 'black';
-    element.style.display = 'block';
-    element.style.border = 'none';
-    element.style.borderWidth = '0';
-    element.style.borderStyle = 'none';
-    element.style.borderColor = 'transparent';
-    element.style.outline = 'none';
-    element.style.outlineWidth = '0';
-    element.style.boxShadow = 'none';
-    element.style.minWidth = '100%';
-    element.style.minHeight = '100%';
-    element.style.maxWidth = '100%';
-    element.style.maxHeight = '100%';
-    
-    // ✅ Remove any inline styles that might add borders (from LiveKit TrackReference)
-    if ((element as any).style) {
-      delete (element as any).style.border;
-      delete (element as any).style.boxShadow;
-      delete (element as any).style.outline;
-    }
-
-    // ✅ Safe DOM manipulation - clear and append video element
     const container = containerRef.current;
-    if (!container) return;
-    
-    // ✅ Check if element is already attached to avoid duplicate attachment
-    const existingVideo = container.querySelector('video');
-    if (existingVideo) {
-      // Remove existing video if it's different from the new one
-      if (existingVideo !== element) {
+    const track = videoPublication?.track || null;
+
+    console.log('[VideoTile] Attach effect running:', {
+      hasContainer: !!container,
+      hasTrack: !!track,
+      hasPublication: !!videoPublication,
+      trackSid: track?.sid,
+      participant: participant.identity,
+      isLocal
+    });
+
+    // If we lost the track or container, clean up any old video element and stop
+    if (!container || !track) {
+      const existing = videoElementRef.current;
+      if (existing) {
         try {
-          container.removeChild(existingVideo);
-        } catch (err) {
-          console.warn('[VideoTile] Error removing existing video:', err);
-        }
-      } else {
-        // Same element already attached, skip re-attachment but still setup aspect ratio detection
-        // ✅ Listen for metadata to detect aspect ratio
-        const handleLoadedMetadata = () => {
-          updateVideoStyling();
-        };
-        
-        const handleResize = () => {
-          updateVideoStyling();
-        };
-        
-        // Check immediately if dimensions are already available
-        if (element.videoWidth && element.videoHeight) {
-          updateVideoStyling();
-        }
-        
-        // Add event listeners
-        element.addEventListener('loadedmetadata', handleLoadedMetadata);
-        element.addEventListener('resize', handleResize);
-        
-        return () => {
-          // Remove event listeners
-          if (element) {
-            element.removeEventListener('loadedmetadata', handleLoadedMetadata);
-            element.removeEventListener('resize', handleResize);
+          // detach from LiveKit if still attached
+          const attached =
+            (track as any)?.attachedElements ||
+            (track as any)?._attachedElements ||
+            [];
+          if (track && attached && attached.includes(existing)) {
+            track.detach(existing);
           }
-          videoElementRef.current = null;
-        };
+        } catch (err) {
+          console.warn('[VideoTile] detach on no-track ignored:', err);
+        }
+        if (existing.parentNode && existing.parentNode instanceof Node) {
+          try {
+            if (container && container.contains(existing)) {
+              container.removeChild(existing);
+            }
+          } catch (err) {
+            console.warn('[VideoTile] safe removeChild (no-track) ignored:', err);
+          }
+        }
+        videoElementRef.current = null;
       }
-    }
-    
-    // Clear any remaining children safely
-    while (container.firstChild) {
-      try {
-        container.removeChild(container.firstChild);
-      } catch (err) {
-        console.warn('[VideoTile] Error clearing container:', err);
-        break;
-      }
-    }
-    
-    // ✅ Define event handlers before appending (so they're accessible in cleanup)
-    const handleLoadedMetadata = () => {
-      updateVideoStyling();
-    };
-    
-    const handleResize = () => {
-      updateVideoStyling();
-    };
-    
-    // Append the new element
-    try {
-      container.appendChild(element);
-      
-      // ✅ Hide video element if camera is disabled
-      if (!isCameraEnabled) {
-        element.style.display = 'none';
-      } else {
-        element.style.display = 'block';
-      }
-      
-      // Check immediately if dimensions are already available
-      if (element.videoWidth && element.videoHeight) {
-        updateVideoStyling();
-      }
-      
-      // Add event listeners (after appending to DOM)
-      element.addEventListener('loadedmetadata', handleLoadedMetadata);
-      element.addEventListener('resize', handleResize);
-      
-      // Try to play (for remote tracks)
-      if (!isLocal) {
-        element.play().catch((err) => {
-          console.warn('[VideoTile] Autoplay blocked for remote video:', err);
-          // Will play on user interaction
-        });
-      }
-    } catch (err) {
-      console.error('[VideoTile] Error appending video element:', err);
+      return;
     }
 
-    return () => {
-      // ✅ Remove event listeners
-      if (element) {
-        element.removeEventListener('loadedmetadata', handleLoadedMetadata);
-        element.removeEventListener('resize', handleResize);
-      }
-      
-      if (videoPublication?.track && element) {
-        console.log('[VideoTile] Detaching video track for', isLocal ? 'local' : 'remote');
-        try {
-          // ✅ Safe detach - check if element is still in DOM before removing
-          if (element.parentNode) {
-            element.parentNode.removeChild(element);
-          }
-          videoPublication.track.detach();
-        } catch (err) {
-          console.warn('[VideoTile] Error during detach:', err);
-          // Still try to detach the track
-          try {
-            videoPublication.track.detach();
-          } catch (e) {
-            console.error('[VideoTile] Failed to detach track:', e);
-          }
-        }
-      }
-      
-      videoElementRef.current = null;
+    // We have a real track and container – attach a fresh <video> element
+    console.log('[VideoTile] ✅ Attaching video track for', participant.identity, isLocal ? 'local' : 'remote');
+    const videoEl = track.attach() as HTMLVideoElement;
+    videoElementRef.current = videoEl;
+    videoEl.autoplay = true;
+    videoEl.muted = isLocal;
+    videoEl.playsInline = true;
+    videoEl.controls = false;
+    videoEl.style.width = '100%';
+    videoEl.style.height = '100%';
+    videoEl.style.objectFit = 'cover';
+    videoEl.style.backgroundColor = 'black';
+    videoEl.style.display = 'block';
+
+    // Clear anything currently in the container (only our own children)
+    while (container.firstChild) {
+      container.removeChild(container.firstChild);
+    }
+
+    container.appendChild(videoEl);
+    console.log('[VideoTile] Video element appended to DOM');
+
+    const handleLoaded = () => {
+      console.log('[VideoTile] Video loaded metadata for', participant.identity);
+      // optional aspect-ratio logic
     };
-  }, [videoPublication, isLocal, participant.identity]);
+
+    videoEl.addEventListener('loadedmetadata', handleLoaded);
+
+    // ✅ CRITICAL: Play video for both local and remote participants
+    // Local video should also play (it's just muted)
+    videoEl
+      .play()
+      .then(() => {
+        console.log('[VideoTile] Video playing successfully for', participant.identity);
+      })
+      .catch((e) => {
+        console.warn('[VideoTile] autoplay blocked for', participant.identity, 'will resume on click', e);
+      });
+
+    // Cleanup for this specific video element
+    return () => {
+      console.log('[VideoTile] Cleaning up video element for', participant.identity);
+      videoEl.removeEventListener('loadedmetadata', handleLoaded);
+      try {
+        // detach from LiveKit first
+        const attached =
+          (track as any).attachedElements ||
+          (track as any)._attachedElements ||
+          [];
+        if (attached && attached.includes(videoEl)) {
+          track.detach(videoEl);
+        }
+      } catch (err) {
+        console.warn('[VideoTile] detach ignored:', err);
+      }
+      try {
+        if (container && container.contains(videoEl)) {
+          container.removeChild(videoEl);
+        }
+      } catch (err) {
+        console.warn('[VideoTile] removeChild ignored:', err);
+      }
+      if (videoElementRef.current === videoEl) {
+        videoElementRef.current = null;
+      }
+    };
+  }, [videoPublication?.track, videoPublication?.trackSid, isLocal, participant.identity]);
 
   // ✅ Fetch participant profile from Firestore (for remote participants)
   useEffect(() => {
@@ -1003,68 +879,14 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
     }
   }, [participant, isLocal, userProfile]);
 
-  // ✅ Check if camera is enabled and update video element visibility
+  // ✅ SIMPLIFIED: Update video element visibility based on track availability
   useEffect(() => {
-    const checkCameraStatus = () => {
-      let hasVideo = false;
-      
-      if (isLocal) {
-        // For local participant, use the camera enabled state from LiveKit context
-        hasVideo = localCameraEnabled;
-      } else {
-        // For remote participant, check if video track exists, is subscribed, and is not muted
-        const vidPub = participant.getTrackPublication(Track.Source.Camera) as RemoteTrackPublication | null;
-        hasVideo = !!(vidPub && vidPub.track && !vidPub.isMuted);
-      }
-      
-      setIsCameraEnabled(hasVideo);
-      
-      // ✅ Update video element visibility when camera status changes
-      if (videoElementRef.current) {
-        videoElementRef.current.style.display = hasVideo ? 'block' : 'none';
-      }
-    };
+    const hasVideo = videoPublication && videoPublication.track;
     
-    checkCameraStatus();
-    
-    // Listen for track changes
-    const handleTrackPublished = (publication: TrackPublication) => {
-      if (publication.kind === Track.Kind.Video && publication.source === Track.Source.Camera) {
-        checkCameraStatus();
-      }
-    };
-    
-    const handleTrackUnpublished = (publication: TrackPublication) => {
-      if (publication.kind === Track.Kind.Video && publication.source === Track.Source.Camera) {
-        checkCameraStatus();
-      }
-    };
-    
-    // Listen for track muted/unmuted events (for remote participants)
-    const handleTrackMuted = (publication: TrackPublication) => {
-      if (publication.kind === Track.Kind.Video && publication.source === Track.Source.Camera) {
-        checkCameraStatus();
-      }
-    };
-    
-    const handleTrackUnmuted = (publication: TrackPublication) => {
-      if (publication.kind === Track.Kind.Video && publication.source === Track.Source.Camera) {
-        checkCameraStatus();
-      }
-    };
-    
-    participant.on(ParticipantEvent.TrackPublished, handleTrackPublished);
-    participant.on(ParticipantEvent.TrackUnpublished, handleTrackUnpublished);
-    participant.on(ParticipantEvent.TrackMuted, handleTrackMuted);
-    participant.on(ParticipantEvent.TrackUnmuted, handleTrackUnmuted);
-    
-    return () => {
-      participant.off(ParticipantEvent.TrackPublished, handleTrackPublished);
-      participant.off(ParticipantEvent.TrackUnpublished, handleTrackUnpublished);
-      participant.off(ParticipantEvent.TrackMuted, handleTrackMuted);
-      participant.off(ParticipantEvent.TrackUnmuted, handleTrackUnmuted);
-    };
-  }, [participant, isLocal, videoPublication, localCameraEnabled]);
+    if (videoElementRef.current) {
+      videoElementRef.current.style.display = hasVideo ? 'block' : 'none';
+    }
+  }, [videoPublication]);
 
   // Determine display name - use profile if available
   const displayName = participantProfile?.displayName || participant.name || participant.identity || 'Unknown';
@@ -1077,14 +899,14 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
   
   // ✅ Function to check and update mic/camera status - improved for remote participants
   const updateMicCameraStatus = useCallback(() => {
-    if (isLocal) {
-      // For local participant, use getTrack
-      const micPub = (participant as LocalParticipant).getTrack(Track.Source.Microphone);
-      const micEnabled = (micPub !== null && micPub !== undefined) && micPub.isMuted === false;
-      
-      setIsMicrophoneEnabled(micEnabled);
-      
-      console.log('[VideoTile] Local status updated:', { mic: micEnabled, micPub: !!micPub });
+      if (isLocal) {
+        // For local participant, use getTrack
+        const micPub = (participant as LocalParticipant).getTrack(Track.Source.Microphone);
+        const micEnabled = (micPub !== null && micPub !== undefined) && micPub.isMuted === false;
+        
+        setIsMicrophoneEnabled(micEnabled);
+        
+        // ✅ STABILITY FIX: Removed all logging to prevent console flooding
     } else {
       // For remote participant, use getTrackPublication
       const micPub = (participant as RemoteParticipant).getTrackPublication(Track.Source.Microphone) as RemoteTrackPublication | null;
@@ -1124,7 +946,6 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
       // Mute state is only available when track is subscribed
       if (micPub && !micPub.isSubscribed && !micPub.track) {
         // Subscribe to audio track to receive mute state updates
-        console.log('[VideoTile] Auto-subscribing to audio track for mute state:', participant.identity);
         try {
           micPub.setSubscribed(true);
         } catch (err: any) {
@@ -1132,16 +953,7 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
         }
       }
       
-      console.log('[VideoTile] Remote status updated:', {
-        participant: participant.identity || participant.name,
-        mic: micEnabled, 
-        micPubExists: !!micPub,
-        micPubIsMuted: micPub?.isMuted,
-        trackIsMuted: micPub?.track?.isMuted,
-        micEnabledResult: micEnabled,
-        micPubTrack: !!micPub?.track,
-        micPubIsSubscribed: micPub?.isSubscribed
-      });
+      // ✅ Reduced logging - only log significant changes, not every update
     }
   }, [participant, isLocal]);
   
@@ -1163,7 +975,7 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
         const micPub = (participant as LocalParticipant).getTrack(Track.Source.Microphone);
         if (micPub?.track) {
           const handleMute = () => {
-            console.log('[VideoTile] Local mic mute state changed');
+            // ✅ STABILITY FIX: Removed logging - event listeners work silently
             updateMicCameraStatus();
           };
           micPub.track.on('muted', handleMute);
@@ -1181,21 +993,15 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
         // These fire when ANY track on the participant is muted/unmuted
         const handleTrackMuted = (publication: TrackPublication) => {
           if (publication.source === Track.Source.Microphone) {
-            console.log('[VideoTile] Participant mic muted event:', participant.identity, 'isMuted:', (publication as RemoteTrackPublication).isMuted);
-            // Update immediately
+            // ✅ Single update - removed redundant setTimeout
             updateMicCameraStatus();
-            // Update again after a brief delay to ensure state is synced
-            setTimeout(() => updateMicCameraStatus(), 50);
           }
         };
         
         const handleTrackUnmuted = (publication: TrackPublication) => {
           if (publication.source === Track.Source.Microphone) {
-            console.log('[VideoTile] Participant mic unmuted event:', participant.identity, 'isMuted:', (publication as RemoteTrackPublication).isMuted);
-            // Update immediately
+            // ✅ Single update - removed redundant setTimeout
             updateMicCameraStatus();
-            // Update again after a brief delay to ensure state is synced
-            setTimeout(() => updateMicCameraStatus(), 50);
           }
         };
         
@@ -1211,17 +1017,13 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
         // The track's muted property updates immediately when remote participant mutes/unmutes
         if (micPub?.track) {
           const handleTrackMuted = () => {
-            console.log('[VideoTile] Track-level mic MUTED:', participant.identity);
+            // ✅ Single update - removed redundant setTimeout
             updateMicCameraStatus();
-            // Double-check after a brief delay
-            setTimeout(() => updateMicCameraStatus(), 50);
           };
           
           const handleTrackUnmuted = () => {
-            console.log('[VideoTile] Track-level mic UNMUTED:', participant.identity);
+            // ✅ Single update - removed redundant setTimeout
             updateMicCameraStatus();
-            // Double-check after a brief delay
-            setTimeout(() => updateMicCameraStatus(), 50);
           };
           
           micPub.track.on('muted', handleTrackMuted);
@@ -1235,11 +1037,10 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
           // ✅ CRITICAL: If track doesn't exist, we need to subscribe to get mute state
           // Subscribe to audio track to receive mute state updates
           if (micPub && !micPub.isSubscribed) {
-            console.log('[VideoTile] Subscribing to audio track to get mute state:', participant.identity);
             try {
               micPub.setSubscribed(true);
-              // Re-check mute state after a brief delay
-              setTimeout(() => updateMicCameraStatus(), 100);
+              // ✅ Single update after subscription - removed redundant setTimeout
+              updateMicCameraStatus();
             } catch (err: any) {
               console.error('[VideoTile] Failed to subscribe to audio track:', err);
             }
@@ -1249,17 +1050,14 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
         // ✅ Also listen to TrackSubscribed event - when audio track becomes available
         const handleTrackSubscribed = (track: any, publication: TrackPublication) => {
           if (publication.source === Track.Source.Microphone && publication.kind === Track.Kind.Audio) {
-            console.log('[VideoTile] Audio track subscribed, updating mute state:', participant.identity);
             updateMicCameraStatus();
             
             // Set up track-level listeners now that track is available
             if (track) {
               const handleSubscribedMuted = () => {
-                console.log('[VideoTile] Subscribed track muted:', participant.identity);
                 updateMicCameraStatus();
               };
               const handleSubscribedUnmuted = () => {
-                console.log('[VideoTile] Subscribed track unmuted:', participant.identity);
                 updateMicCameraStatus();
               };
               
@@ -1279,13 +1077,9 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
           participant.off(ParticipantEvent.TrackSubscribed, handleTrackSubscribed);
         });
         
-        // ✅ Poll the publication's isMuted state periodically as fallback
-        // This catches any changes that might not trigger events
-        // Always poll, even if publication doesn't exist yet (it might appear later)
-          const publicationPollInterval = setInterval(() => {
-            updateMicCameraStatus();
-        }, 200); // Very frequent polling (200ms) for immediate updates
-          cleanupFunctions.push(() => clearInterval(publicationPollInterval));
+        // ✅ REMOVED: Excessive polling causing instability
+        // Event listeners are sufficient - no need for aggressive polling
+        // If events are missed, the main status interval will catch it
       }
     };
     
@@ -1295,20 +1089,15 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
     // Listen for track published/unpublished events - re-setup listeners when tracks change
     const handleTrackPublished = (publication: TrackPublication) => {
       if (publication.source === Track.Source.Microphone) {
-        console.log('[VideoTile] Track published, updating status:', publication.source, 'isMuted:', (publication as RemoteTrackPublication).isMuted);
-        // CRITICAL: Update status immediately when track is published
+        // ✅ Single update - removed redundant setTimeout
         updateMicCameraStatus();
         // Re-setup mute listeners when new tracks are published
-        setTimeout(() => {
-          updateMicCameraStatus(); // Update again after a brief delay
-          setupTrackMuteListeners();
-        }, 100);
+        setupTrackMuteListeners();
       }
     };
     
     const handleTrackUnpublished = (publication: TrackPublication) => {
       if (publication.source === Track.Source.Microphone) {
-        console.log('[VideoTile] Track unpublished, updating status:', publication.source);
         updateMicCameraStatus();
         // Clean up listeners when tracks are unpublished
         cleanupFunctions.forEach(fn => fn());
@@ -1327,11 +1116,16 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
     };
   }, [participant, isLocal, updateMicCameraStatus]);
   
-  // ✅ Periodic check to ensure status stays accurate (fallback)
+  // ✅ STABILITY FIX: Removed aggressive polling - event listeners are sufficient
+  // Only use a slow fallback check (10 seconds) for edge cases, not for normal operation
+  // Event listeners handle all real-time updates immediately
   useEffect(() => {
+    // Only check periodically as a fallback for edge cases (e.g., missed events)
     const statusInterval = setInterval(() => {
+      // Only update if we suspect something might be wrong (very rare)
+      // Event listeners handle 99% of updates
       updateMicCameraStatus();
-    }, 200); // Check every 200ms for very responsive updates
+    }, 10000); // ✅ Very slow fallback (10 seconds) - event listeners handle everything
     
     return () => clearInterval(statusInterval);
   }, [updateMicCameraStatus]);

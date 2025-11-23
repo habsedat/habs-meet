@@ -28,7 +28,13 @@ firebase use $Project
 # Build web app
 Write-Host "🔨 Building web application..." -ForegroundColor Yellow
 Set-Location apps/web
-pnpm build
+if ($Environment -eq "prod") {
+    Write-Host "Building for PRODUCTION with production environment variables..." -ForegroundColor Cyan
+    pnpm build:prod
+} else {
+    Write-Host "Building for DEVELOPMENT with development environment variables..." -ForegroundColor Cyan
+    pnpm build:dev
+}
 Set-Location ../..
 
 # Deploy to Firebase

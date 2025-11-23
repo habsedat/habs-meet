@@ -6,6 +6,7 @@ import { api } from '../lib/api';
 import { doc, onSnapshot, collection, query, orderBy, addDoc, serverTimestamp, updateDoc, getDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { MeetingService } from '../lib/meetingService';
+import { activeMeetingService } from '../lib/activeMeetingService';
 import toast from '../lib/toast';
 import MeetingControls from '../components/MeetingControls';
 import MeetingShell from '../meeting/MeetingShell';
@@ -14,6 +15,7 @@ import ChatPanel from '../components/ChatPanel';
 import PrivateMessagesPanel from '../components/PrivateMessagesPanel';
 import ParticipantsPanel from '../components/ParticipantsPanel';
 import SettingsPanel from '../components/SettingsPanel';
+import DeviceConflictModal from '../components/DeviceConflictModal';
 import { recordingService, RecordingService } from '../lib/recordingService';
 import { ViewMode } from '../types/viewModes';
 import { useCostOptimizations } from '../hooks/useCostOptimizations';
@@ -21,7 +23,7 @@ import { useCostOptimizations } from '../hooks/useCostOptimizations';
 const RoomPage: React.FC = () => {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
-  const { user, userProfile } = useAuth();
+  const { user, userProfile, updateUserPreferences } = useAuth();
   const { connect, disconnect, isConnected, isConnecting, publishFromSavedSettings, room, participantCount, setMicrophoneEnabled } = useLiveKit();
   
   // Apply cost optimizations: active speaker quality, background pause, auto-disconnect
@@ -42,14 +44,26 @@ const RoomPage: React.FC = () => {
   const [showBottomControls, setShowBottomControls] = useState(true);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [lastSeenMessageId, setLastSeenMessageId] = useState<string | null>(null);
-  // Load view mode from localStorage or default to 'gallery'
+  const [showDeviceConflictModal, setShowDeviceConflictModal] = useState(false);
+  const [conflictInfo, setConflictInfo] = useState<{ activeMeeting: any; currentDevice: string } | null>(null);
+  // Load view mode from userProfile (Firestore) - user-specific, not device-specific
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
-    const saved = localStorage.getItem('viewMode');
+    const saved = userProfile?.preferences?.viewMode;
     if (saved && ['speaker', 'gallery', 'multi-speaker', 'immersive'].includes(saved)) {
       return saved as ViewMode;
     }
     return 'gallery'; // Default to gallery
   });
+  
+  // Update viewMode when userProfile changes (e.g., when user logs in/out)
+  useEffect(() => {
+    const saved = userProfile?.preferences?.viewMode;
+    if (saved && ['speaker', 'gallery', 'multi-speaker', 'immersive'].includes(saved)) {
+      setViewMode(saved as ViewMode);
+    } else {
+      setViewMode('gallery');
+    }
+  }, [userProfile?.preferences?.viewMode]);
 
   // Load room data
   useEffect(() => {
@@ -62,11 +76,39 @@ const RoomPage: React.FC = () => {
         setRoomData(roomData);
         setIsLocked(roomData.status === 'locked');
         
-        // If room is ended, disconnect and leave
+        // ✅ CRITICAL: If room is ended, disconnect and leave immediately - NO DELAYS
         if (roomData.status === 'ended') {
-          toast('Meeting has ended', { icon: 'ℹ️' });
-          disconnect();
-          setTimeout(() => navigate('/'), 2000);
+          console.log('[RoomPage] ⚠️⚠️⚠️ ROOM ENDED - FORCING IMMEDIATE DISCONNECT ⚠️⚠️⚠️');
+          toast.error('Meeting has ended. Disconnecting now...', { duration: 1500 });
+          
+          // Clear active meeting
+          if (user) {
+            activeMeetingService.clearActiveMeeting(user.uid).catch(console.error);
+          }
+          
+          // Clear all meeting-related storage IMMEDIATELY
+          sessionStorage.removeItem('currentRoomId');
+          sessionStorage.removeItem('isParticipant');
+          sessionStorage.removeItem('pendingInvite');
+          sessionStorage.removeItem('meetingToken');
+          sessionStorage.removeItem('isScheduledMeeting');
+          if (roomId) {
+            localStorage.removeItem(`meeting-active-${roomId}`);
+          }
+          
+          // ✅ CRITICAL: Force disconnect IMMEDIATELY - no async delays
+          try {
+            disconnect();
+            console.log('[RoomPage] ✅ Disconnected from LiveKit');
+          } catch (disconnectError) {
+            console.error('[RoomPage] ❌ Error during disconnect:', disconnectError);
+          }
+          
+          // ✅ CRITICAL: Navigate IMMEDIATELY - use replace to prevent back navigation
+          // Use window.location for absolute navigation to prevent any routing issues
+          setTimeout(() => {
+            window.location.href = '/';
+          }, 200);
         }
       } else {
         toast.error('Room not found');
@@ -313,7 +355,7 @@ const RoomPage: React.FC = () => {
     };
   }, [roomId, navigate]);
 
-  // Connect to LiveKit room (only if admitted)
+  // Check for device conflicts and connect to LiveKit room
   useEffect(() => {
     if (!roomId || !user || isConnected || isConnecting) return;
 
@@ -339,6 +381,33 @@ const RoomPage: React.FC = () => {
           }
         }
 
+        // Check if user is already in a meeting on another device
+        const { hasConflict, activeMeeting } = await activeMeetingService.checkDeviceConflict(user.uid);
+        
+        if (hasConflict && activeMeeting) {
+          // Show device conflict modal
+          const currentDeviceName = navigator.userAgent.includes('Mobile') 
+            ? (navigator.userAgent.includes('iPhone') ? 'iPhone' : 'Mobile Device')
+            : (navigator.userAgent.includes('Mac') ? 'Mac' : 'Desktop');
+          
+          setConflictInfo({
+            activeMeeting,
+            currentDevice: currentDeviceName,
+          });
+          setShowDeviceConflictModal(true);
+          return; // Don't connect yet, wait for user choice
+        }
+
+        // No conflict - proceed with connection
+        await proceedWithConnection();
+      } catch (error: any) {
+        toast.error('Failed to join room: ' + error.message);
+        navigate('/');
+      }
+    };
+
+    const proceedWithConnection = async () => {
+      try {
         // Check if this is a scheduled meeting with a pre-generated token
         const isScheduledMeeting = sessionStorage.getItem('isScheduledMeeting') === 'true';
         const preGeneratedToken = sessionStorage.getItem('meetingToken');
@@ -346,36 +415,339 @@ const RoomPage: React.FC = () => {
         let token: string;
         
         if (isScheduledMeeting && preGeneratedToken) {
-          // Use the pre-generated token from scheduled meeting
           token = preGeneratedToken;
-          // Clear it from sessionStorage after use
           sessionStorage.removeItem('meetingToken');
           sessionStorage.removeItem('isScheduledMeeting');
         } else {
-          // Regular meeting - get token from API
+          // Retry logic: If user is room creator, ensure participant doc exists
+          if (roomData?.createdBy === user.uid) {
+            // Check if participant document exists, if not wait a bit and retry
+            const participantRef = doc(db, 'rooms', roomId, 'participants', user.uid);
+            let participantSnap = await getDoc(participantRef);
+            
+            if (!participantSnap.exists()) {
+              // Wait a moment for participant document to be created
+              await new Promise(resolve => setTimeout(resolve, 500));
+              participantSnap = await getDoc(participantRef);
+            }
+          }
+          
           const response = await api.getMeetingToken(roomId);
           token = response.token;
         }
         
+        // Connect first - the connect() function resolves when connection starts
+        // Wait for connection to be fully established before proceeding
         await connect(token);
+        
+        // Wait for connection to be fully established
+        // Poll for connection state with longer timeout and more reliable checks
+        let attempts = 0;
+        const maxAttempts = 150; // 15 seconds max wait (increased for slower connections)
+        let connectionEstablished = false;
+        
+        while (attempts < maxAttempts) {
+          // Check isConnected state (set by RoomEvent.Connected)
+          // Also check if room exists and is connected
+          const currentRoom = room; // Get current room from context
+          
+          // More flexible connection check: isConnected is the primary indicator
+          if (isConnected) {
+            // If room is available, check its state for additional confirmation
+            if (currentRoom) {
+              // Accept 'connected' or 'reconnecting' states (reconnecting means we were connected)
+              if (currentRoom.state === 'connected' || currentRoom.state === 'reconnecting') {
+                connectionEstablished = true;
+                console.log('[RoomPage] Connection fully established, room state:', currentRoom.state);
+                break;
+              } else {
+                console.log('[RoomPage] Waiting for room state to be connected, current:', currentRoom.state);
+              }
+            } else {
+              // Room might not be set yet, but isConnected is true, so connection is established
+              // This is acceptable - the room will be set shortly
+              connectionEstablished = true;
+              console.log('[RoomPage] Connection established (isConnected=true, room not yet set)');
+              break;
+            }
+          }
+          
+          // Small delay between checks
+          await new Promise(resolve => setTimeout(resolve, 100));
+          attempts++;
+        }
+        
+        // Don't fail on timeout - connection might still be establishing
+        // The LiveKit connection will continue in the background
+        if (!connectionEstablished) {
+          // ✅ STABILITY FIX: Reduce warning frequency - only log once, not repeatedly
+          if (attempts === 150) { // Only log on first timeout
+            console.warn('[RoomPage] Connection check timeout, but continuing anyway', {
+              isConnected,
+              roomState: room?.state,
+              attempts
+            });
+          }
+          // Don't block - let connection continue
+          // The connection might still succeed even if our check timed out
+        }
+        
+        console.log('[RoomPage] Connection fully established, waiting before setting active meeting');
+        
+        // Set active meeting AFTER successful connection is stable
+        // Add a delay to ensure connection is fully ready and stable
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Increased to 2 seconds
+        
+        if (roomData?.title) {
+          await activeMeetingService.setActiveMeeting(user.uid, roomId, roomData.title);
+          console.log('[RoomPage] Active meeting set successfully');
+        }
       } catch (error: any) {
-        toast.error('Failed to join room: ' + error.message);
+        console.error('[RoomPage] Failed to connect:', error);
+        toast.error('Failed to join room: ' + (error.message || 'Unknown error'));
         navigate('/');
       }
     };
 
     connectToRoom();
-    // ✅ Removed isConnected and isConnecting from dependencies to prevent multiple connection attempts
-    // Only reconnect if roomId or user changes, not when connection state changes
-  }, [roomId, user, connect, navigate]);
+  }, [roomId, user, navigate, disconnect, isConnected, isConnecting, roomData, connect]);
+
+  // Handle device conflict modal choices
+  const handleChooseCurrentDevice = async () => {
+    if (!user || !roomId || !conflictInfo) return;
+    
+    try {
+      // Clear the old device's active meeting (this will trigger disconnect on that device)
+      await activeMeetingService.clearActiveMeeting(user.uid);
+      
+      // Wait a moment for the old device to disconnect
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // Set this device as active
+      if (roomData?.title) {
+        await activeMeetingService.setActiveMeeting(user.uid, roomId, roomData.title);
+      }
+      
+      setShowDeviceConflictModal(false);
+      setConflictInfo(null);
+      
+      // Proceed with connection
+      const isScheduledMeeting = sessionStorage.getItem('isScheduledMeeting') === 'true';
+      const preGeneratedToken = sessionStorage.getItem('meetingToken');
+      
+      let token: string;
+      if (isScheduledMeeting && preGeneratedToken) {
+        token = preGeneratedToken;
+        sessionStorage.removeItem('meetingToken');
+        sessionStorage.removeItem('isScheduledMeeting');
+      } else {
+        const response = await api.getMeetingToken(roomId);
+        token = response.token;
+      }
+      
+      await connect(token);
+    } catch (error: any) {
+      toast.error('Failed to switch device: ' + error.message);
+    }
+  };
+
+  const handleChooseActiveDevice = () => {
+    setShowDeviceConflictModal(false);
+    setConflictInfo(null);
+    navigate('/home');
+    toast('Staying connected on your other device', { icon: 'ℹ️' });
+  };
+
+  const handleCancelConflict = () => {
+    setShowDeviceConflictModal(false);
+    setConflictInfo(null);
+    navigate('/home');
+  };
+
+  // Listen for disconnection requests from other devices
+  // Only set up listener AFTER connection is fully established and stable
+  useEffect(() => {
+    if (!user || !isConnected || !roomId) return;
+
+    let unsubscribe: (() => void) | null = null;
+
+    // Add a delay to ensure connection is stable before setting up listener
+    // This prevents the listener from firing during initial connection setup
+    const timeoutId = setTimeout(() => {
+      unsubscribe = activeMeetingService.onDisconnectRequest(user.uid, () => {
+        // Only disconnect if we're actually connected and in a room
+        if (isConnected && roomId) {
+          console.log('[RoomPage] Disconnect requested from another device');
+          toast('You joined this meeting on another device. Disconnecting...', { icon: '⚠️' });
+          disconnect();
+          setTimeout(() => {
+            navigate('/home');
+          }, 2000);
+        }
+      });
+    }, 2000); // Wait 2 seconds after connection to set up listener
+
+    return () => {
+      clearTimeout(timeoutId);
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
+  }, [user, isConnected, roomId, disconnect, navigate]);
+
+  // Clear active meeting when disconnecting or leaving
+  useEffect(() => {
+    if (!user || !roomId) return;
+
+    // Cleanup function: clear active meeting when component unmounts
+    return () => {
+      // Only clear if we're actually disconnected
+      // This prevents clearing during reconnections
+      if (!isConnected) {
+        activeMeetingService.clearActiveMeeting(user.uid).catch(console.error);
+      }
+    };
+  }, [user, roomId, isConnected]);
 
   // Create and publish local tracks after connecting
+  // Add a significant delay to ensure connection is fully established and stable before publishing
   useEffect(() => {
-    if (!isConnected) return;
-    publishFromSavedSettings().catch((e) =>
-      console.error('[Room] publishFromSavedSettings failed', e)
-    );
-  }, [isConnected, publishFromSavedSettings]);
+    if (!isConnected || !roomId || !room) {
+      console.log('[RoomPage] Not ready to publish tracks:', { isConnected, roomId: !!roomId, room: !!room });
+      return;
+    }
+    
+    // Wait for room to be fully connected before publishing tracks
+    // Check room state to ensure it's actually connected
+    if (room.state !== 'connected') {
+      console.log('[RoomPage] Room not fully connected yet, waiting...', room.state);
+      return;
+    }
+    
+    console.log('[RoomPage] Connection stable, scheduling track publication...');
+    
+    // ✅ STABILITY FIX: Reduce delay to prevent dark screen and blinking
+    // Wait for connection to stabilize before publishing tracks
+    // This prevents "cannot publish track when not connected" errors
+    const timeoutId = setTimeout(() => {
+      // More flexible connection check - accept 'connected' or 'reconnecting' states
+      if (!room || (!isConnected && room.state !== 'reconnecting')) {
+        console.warn('[RoomPage] Room not ready for publishing tracks', {
+          room: !!room,
+          roomState: room?.state,
+          isConnected
+        });
+        return;
+      }
+      
+      // ✅ CRITICAL: Final verification - room MUST be connected
+      if (room.state !== 'connected') {
+        // ✅ STABILITY FIX: Only log once, not repeatedly
+        if (room.state !== 'reconnecting') {
+          console.warn('[RoomPage] Room not connected, cannot publish tracks. State:', room.state);
+        }
+        // Retry after a delay if room is reconnecting
+        if (room.state === 'reconnecting') {
+          setTimeout(() => {
+            if (room && room.state === 'connected' && isConnected) {
+              console.log('[RoomPage] Publishing tracks after reconnection...');
+              publishFromSavedSettings().catch((e) => {
+                console.error('[Room] publishFromSavedSettings failed', e);
+                const errorMsg = e.message || String(e);
+                if (!errorMsg.includes('not connected') && 
+                    !errorMsg.includes('closed') && 
+                    !errorMsg.includes('timeout') &&
+                    !errorMsg.includes('timed out')) {
+                  toast.error('Failed to start camera/microphone: ' + errorMsg);
+                }
+              });
+            }
+          }, 1000);
+        }
+        return;
+      }
+      
+      // ✅ CRITICAL: Verify localParticipant exists
+      if (!room.localParticipant) {
+        // ✅ STABILITY FIX: Only log once, not repeatedly
+        console.warn('[RoomPage] No localParticipant, cannot publish tracks. Will retry...');
+        // Retry after a short delay
+        setTimeout(() => {
+          if (room && room.localParticipant && room.state === 'connected' && isConnected) {
+            console.log('[RoomPage] localParticipant now available, publishing tracks...');
+            publishFromSavedSettings().catch((e) => {
+              const errorMsg = e.message || String(e);
+              if (!errorMsg.includes('not connected') && 
+                  !errorMsg.includes('closed') && 
+                  !errorMsg.includes('timeout') &&
+                  !errorMsg.includes('timed out')) {
+                toast.error('Failed to start camera/microphone: ' + errorMsg);
+              }
+            });
+          }
+        }, 500);
+        return;
+      }
+      
+      console.log('[RoomPage] ✅ Room verified as connected, publishing tracks now...');
+      // ✅ STABILITY FIX: Add timeout and retry logic
+      const publishWithRetry = async (retries = 3) => {
+        for (let i = 0; i < retries; i++) {
+          try {
+            await Promise.race([
+              publishFromSavedSettings(),
+              new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Publish timeout')), 15000)
+              )
+            ]);
+            console.log('[RoomPage] ✅ Tracks published and background applied successfully');
+            return; // Success - exit retry loop
+          } catch (e: any) {
+            const errorMsg = e.message || String(e);
+            console.warn(`[RoomPage] Publish attempt ${i + 1}/${retries} failed:`, errorMsg);
+            
+            // If it's a connection issue, wait and retry
+            if (errorMsg.includes('not connected') || 
+                errorMsg.includes('closed') || 
+                errorMsg.includes('timeout') ||
+                errorMsg.includes('timed out')) {
+              if (i < retries - 1) {
+                // Wait before retry (exponential backoff)
+                await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
+                continue;
+              }
+            }
+            
+            // Last attempt or non-connection error
+            if (i === retries - 1) {
+              if (!errorMsg.includes('not connected') && 
+                  !errorMsg.includes('closed') && 
+                  !errorMsg.includes('timeout') &&
+                  !errorMsg.includes('timed out') &&
+                  !errorMsg.includes('Track ended') &&
+                  !errorMsg.includes('Cannot publish')) {
+                toast.error('Failed to start camera/microphone: ' + errorMsg);
+              } else {
+                console.warn('[RoomPage] Track publishing failed due to connection/track issue:', errorMsg);
+              }
+            }
+          }
+        }
+      };
+      
+      publishWithRetry();
+    }, (() => {
+      // ✅ STABILITY FIX: Reduced delays to prevent dark screen and blinking
+      // ✅ MOBILE OPTIMIZATION: Shorter delay for mobile devices
+      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
+                      (typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches);
+      return isMobile ? 800 : 2000; // Reduced: 800ms for mobile, 2s for desktop (was 1.5s/4s)
+    })());
+    
+    return () => {
+      clearTimeout(timeoutId);
+    };
+  }, [isConnected, roomId, room, publishFromSavedSettings]);
 
     // Auto-hide bottom controls after 5 seconds of inactivity
   useEffect(() => {
@@ -437,12 +809,22 @@ const RoomPage: React.FC = () => {
   }, []);
 
   const handleLeave = useCallback(async () => {
-    // ✅ Fix 4: Clean up meeting-active flag when leaving
+    // Clear active meeting when leaving
+    if (user) {
+      await activeMeetingService.clearActiveMeeting(user.uid).catch(console.error);
+    }
+    
+    // Clean up all meeting-related storage
     if (roomId) {
       localStorage.removeItem(`meeting-active-${roomId}`);
     }
+    sessionStorage.removeItem('currentRoomId');
+    sessionStorage.removeItem('isParticipant');
+    sessionStorage.removeItem('pendingInvite');
+    sessionStorage.removeItem('meetingToken');
+    sessionStorage.removeItem('isScheduledMeeting');
     
-    // If host is leaving, generate a host join key so they can rejoin as host
+    // If host is leaving (but not ending), generate a host join key so they can rejoin as host
     if (isHost && roomId && user) {
       try {
         // Generate a secure host join key (similar to scheduled meetings)
@@ -469,8 +851,10 @@ const RoomPage: React.FC = () => {
       }
     }
     
-    // Disconnect and navigate
+    // Force complete disconnect - don't wait
     disconnect();
+    
+    // Navigate immediately
     navigate('/');
   }, [disconnect, navigate, isHost, roomId, user]);
 
@@ -482,23 +866,62 @@ const RoomPage: React.FC = () => {
     }
 
     try {
-      const roomRef = doc(db, 'rooms', roomId);
-      await updateDoc(roomRef, {
-        status: 'ended',
-        endedAt: serverTimestamp()
-      });
-      toast.success('Meeting ended for all participants');
+      console.log('[RoomPage] 🔴 Host ending meeting:', roomId);
       
-      // Give a moment for the update to propagate, then disconnect
-      setTimeout(() => {
-        disconnect();
-        navigate('/');
-      }, 500);
+      // ✅ CRITICAL: Call API endpoint to end meeting FIRST - this will:
+      // 1. Update room status to 'ended' in Firestore (THIS MUST HAPPEN FIRST)
+      // 2. Disconnect all participants from LiveKit room
+      // 3. Expire the meeting link
+      const result = await api.endMeeting(roomId);
+      console.log('[RoomPage] ✅ API endMeeting result:', result);
+      
+      // ✅ CRITICAL: Wait a moment for Firestore update to propagate
+      // This ensures all participants receive the 'ended' status update
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Clear active meeting for host
+      if (user) {
+        await activeMeetingService.clearActiveMeeting(user.uid).catch(console.error);
+      }
+      
+      // Clear all session storage related to this meeting
+      sessionStorage.removeItem('currentRoomId');
+      sessionStorage.removeItem('isParticipant');
+      sessionStorage.removeItem('pendingInvite');
+      sessionStorage.removeItem('meetingToken');
+      sessionStorage.removeItem('isScheduledMeeting');
+      if (roomId) {
+        localStorage.removeItem(`meeting-active-${roomId}`);
+      }
+      
+      // ✅ CRITICAL: Force disconnect AFTER Firestore update has propagated
+      disconnect();
+      
+      toast.success('Meeting ended for all participants. The meeting link has expired.');
+      
+      // Navigate immediately
+      navigate('/', { replace: true });
     } catch (error: any) {
-      console.error('Failed to end room:', error);
+      console.error('[RoomPage] ❌ Failed to end room:', error);
       toast.error('Failed to end meeting: ' + error.message);
+      
+      // Even if API fails, try to update Firestore directly as fallback
+      try {
+        const roomRef = doc(db, 'rooms', roomId);
+        await updateDoc(roomRef, {
+          status: 'ended',
+          endedAt: serverTimestamp()
+        });
+        console.log('[RoomPage] ✅ Fallback: Updated room status to ended directly');
+      } catch (fallbackError) {
+        console.error('[RoomPage] ❌ Fallback also failed:', fallbackError);
+      }
+      
+      // Still disconnect even if everything fails
+      disconnect();
+      navigate('/', { replace: true });
     }
-  }, [disconnect, navigate, isHost, roomId]);
+  }, [disconnect, navigate, isHost, roomId, user]);
 
   // Subscribe to recording state changes
   useEffect(() => {
@@ -733,7 +1156,15 @@ const RoomPage: React.FC = () => {
         </div>
         <div className="flex items-center space-x-2">
           {/* View Mode Menu */}
-          <ViewMenu currentMode={viewMode} onModeChange={setViewMode} />
+          <ViewMenu currentMode={viewMode} onModeChange={async (mode) => {
+            setViewMode(mode);
+            // Save to Firestore (user-specific), not localStorage (device-specific)
+            try {
+              await updateUserPreferences({ viewMode: mode });
+            } catch (error) {
+              console.error('Failed to save view mode preference:', error);
+            }
+          }} />
           
           {/* Recording indicator */}
           {isRecording && (
@@ -757,6 +1188,19 @@ const RoomPage: React.FC = () => {
           )}
         </div>
       </header>
+      
+      {/* Device Conflict Modal */}
+      {conflictInfo && (
+        <DeviceConflictModal
+          isOpen={showDeviceConflictModal}
+          currentDevice={conflictInfo.currentDevice}
+          activeDevice={conflictInfo.activeMeeting.deviceName}
+          roomTitle={conflictInfo.activeMeeting.roomTitle}
+          onChooseCurrent={handleChooseCurrentDevice}
+          onChooseActive={handleChooseActiveDevice}
+          onCancel={handleCancelConflict}
+        />
+      )}
       
       <div className="flex-1 flex overflow-hidden relative">
         {/* Main video area */}
@@ -988,6 +1432,18 @@ const RoomPage: React.FC = () => {
         </div>
       )}
 
+      {/* Device Conflict Modal */}
+      {conflictInfo && (
+        <DeviceConflictModal
+          isOpen={showDeviceConflictModal}
+          currentDevice={conflictInfo.currentDevice}
+          activeDevice={conflictInfo.activeMeeting.deviceName}
+          roomTitle={conflictInfo.activeMeeting.roomTitle}
+          onChooseCurrent={handleChooseCurrentDevice}
+          onChooseActive={handleChooseActiveDevice}
+          onCancel={handleCancelConflict}
+        />
+      )}
     </div>
   );
 };

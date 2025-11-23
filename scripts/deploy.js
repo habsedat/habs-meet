@@ -34,7 +34,11 @@ async function deploy() {
 
   try {
     console.log('\n🔨 Building web application...');
-    execSync('pnpm --filter web build', { stdio: 'inherit' });
+    const buildCommand = environment === 'prod' 
+      ? 'pnpm --filter web build:prod'
+      : 'pnpm --filter web build:dev';
+    console.log(`Building for ${environment.toUpperCase()} environment...`);
+    execSync(buildCommand, { stdio: 'inherit', cwd: process.cwd() });
 
     console.log('\n☁️ Deploying to Firebase...');
     execSync(`firebase use ${project}`, { stdio: 'inherit' });

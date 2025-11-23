@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:dev": "tsc && vite build --mode development",
+    "build:prod": "tsc && vite build --mode production",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
     "postinstall": "mkdir public\\processors 2>nul & xcopy /E /I /Y node_modules\\@livekit\\track-processors\\dist\\assets\\* public\\processors\\ 2>nul || echo Assets copied"
@@ -22,6 +24,7 @@
     "react-dom": "^18.2.0",
     "react-easy-crop": "^5.5.3",
     "react-hot-toast": "^2.4.1",
+    "react-phone-number-input": "^3.4.14",
     "react-router-dom": "^6.15.0"
   },
   "devDependencies": {

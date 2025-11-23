@@ -95,12 +95,14 @@ const MeetingControls: React.FC<MeetingControlsProps> = ({
       {/* Camera toggle */}
       <button
         onClick={toggleCamera}
+        disabled={false}
         className={`p-1.5 sm:p-2 rounded-full transition-colors ${
           isCameraEnabled
             ? 'bg-cloud text-midnight hover:bg-gray-200'
             : 'bg-red-600 text-cloud hover:bg-red-700'
         }`}
         title={isCameraEnabled ? 'Turn off camera (V)' : 'Turn on camera (V)'}
+        style={{ pointerEvents: 'auto', cursor: 'pointer' }}
       >
         <svg
           className="w-5 h-5"

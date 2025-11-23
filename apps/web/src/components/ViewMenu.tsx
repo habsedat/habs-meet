@@ -49,18 +49,8 @@ const ViewMenu: React.FC<ViewMenuProps> = ({ currentMode, onModeChange }) => {
   const [isOpen, setIsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  // Load saved preference from localStorage
-  useEffect(() => {
-    const saved = localStorage.getItem('viewMode');
-    if (saved && ['speaker', 'gallery', 'multi-speaker', 'immersive'].includes(saved)) {
-      onModeChange(saved as ViewMode);
-    }
-  }, [onModeChange]);
-
-  // Save to localStorage when mode changes
-  useEffect(() => {
-    localStorage.setItem('viewMode', currentMode);
-  }, [currentMode]);
+  // ViewMenu no longer manages localStorage - parent component (RoomPage) handles Firestore
+  // This component just triggers the mode change callback
 
   // Close menu when clicking outside
   useEffect(() => {

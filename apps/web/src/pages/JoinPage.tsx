@@ -58,6 +58,17 @@ const JoinPage: React.FC = () => {
     // Handle joining
     const handleJoin = async () => {
       try {
+        // ✅ CRITICAL: Check if room is ended before allowing join
+        const roomDoc = await getDoc(doc(db, 'rooms', roomId!));
+        if (roomDoc.exists()) {
+          const roomData = roomDoc.data();
+          if (roomData.status === 'ended') {
+            toast.error('This meeting has ended. The meeting link has expired.');
+            navigate('/home');
+            return;
+          }
+        }
+        
         // Check if this is a scheduled meeting (has 'k' query parameter)
         const joinKey = searchParams.get('k');
         
@@ -150,6 +161,13 @@ const JoinPage: React.FC = () => {
         const room = await MeetingService.getMeeting(roomId);
         if (!room) {
           toast.error('Meeting room not found');
+          navigate('/home');
+          return;
+        }
+
+        // ✅ CRITICAL: Check if room is ended - reject join attempts for ended meetings
+        if (room.status === 'ended') {
+          toast.error('This meeting has ended. The meeting link has expired.');
           navigate('/home');
           return;
         }

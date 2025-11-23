@@ -11,6 +11,9 @@ importers:
       '@livekit/track-processors':
         specifier: ^0.6.1
         version: 0.6.1(@types/dom-mediacapture-transform@0.1.11)(livekit-client@1.15.13)
+      emoji-picker-react:
+        specifier: ^4.15.1
+        version: 4.15.1(react@18.3.1)
       firebase:
         specifier: ^10.0.0
         version: 10.14.1
@@ -38,6 +41,9 @@ importers:
       react-hot-toast:
         specifier: ^2.4.1
         version: 2.6.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      react-phone-number-input:
+        specifier: ^3.4.14
+        version: 3.4.14(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       react-router-dom:
         specifier: ^6.15.0
         version: 6.30.2(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -968,6 +974,9 @@ packages:
     resolution: {integrity: sha512-7VT13fmjotKpGipCW9JEQAusEPE+Ei8nl6/g4FBAmIm0GOOLMua9NDDo/DWp0ZAxCr3cPq5ZpBqmPAQgDda2Pw==}
     engines: {node: '>= 8.10.0'}
 
+  classnames@2.5.1:
+    resolution: {integrity: sha512-saHYOzhIQs6wy2sVxTM6bUDsQO4F50V9RQ22qBpEdCW+I+/Wmke2HOl6lS6dTpdxVhb88/I6+Hs+438c3lfUow==}
+
   cliui@8.0.1:
     resolution: {integrity: sha512-BSeNnyus75C4//NQ9gQt1/csTXyo/8Sb+afLAkzAptFuMsod9HFokGNudZpi/oQV73hnVK+sR+5PVRMd+Dr7YQ==}
     engines: {node: '>=12'}
@@ -988,6 +997,9 @@ packages:
 
   convert-source-map@2.0.0:
     resolution: {integrity: sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg==}
+
+  country-flag-icons@1.6.1:
+    resolution: {integrity: sha512-Xz65n4sCUi1CEZ3miUfElcuYmPa2NKjSZCqVoLBuRqUSwXKs+FekBu8VJXRcDcdkPdsIDx55R+15a+Zx/SaBmQ==}
 
   cross-spawn@7.0.6:
     resolution: {integrity: sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==}
@@ -1036,6 +1048,12 @@ packages:
 
   electron-to-chromium@1.5.254:
     resolution: {integrity: sha512-DcUsWpVhv9svsKRxnSCZ86SjD+sp32SGidNB37KpqXJncp1mfUgKbHvBomE89WJDbfVKw1mdv5+ikrvd43r+Bg==}
+
+  emoji-picker-react@4.15.1:
+    resolution: {integrity: sha512-RYeAgutdYGbKAyLrOHLsSUubGhg6q8sK889k7G8ofWxzqUzeY2i9WR4+Fj8gsP7oPYTfFPFCG7P6/Tl5TWnqOA==}
+    engines: {node: '>=10'}
+    peerDependencies:
+      react: '>=16'
 
   emoji-regex@8.0.0:
     resolution: {integrity: sha512-MSjYzcWNOA0ewAHpz0MxpYFvwg6yjy1NG3xteoqz644VCo/RPgnr1/GGt+ic3iJTzQ8Eu3TdM14SawnVUmGE6A==}
@@ -1139,6 +1157,9 @@ packages:
 
   firebase@10.14.1:
     resolution: {integrity: sha512-0KZxU+Ela9rUCULqFsUUOYYkjh7OM1EWdIfG6///MtXd0t2/uUIf0iNV5i0KariMhRQ5jve/OY985nrAXFaZeQ==}
+
+  flairup@1.0.0:
+    resolution: {integrity: sha512-IKlE+pNvL2R+kVL1kEhUYqRxVqeFnjiIvHWDMLFXNaqyUdFXQM2wte44EfMYJNHkW16X991t2Zg8apKkhv7OBA==}
 
   flat-cache@3.2.0:
     resolution: {integrity: sha512-CYcENa+FtcUKLmhhqyctpclsq7QF38pKjZHsGNiSQF5r4FtoKDWabFDl3hzaEQMvT1LHEysw5twgLvpYYb4vbw==}
@@ -1244,6 +1265,17 @@ packages:
   inherits@2.0.4:
     resolution: {integrity: sha512-k/vGaX4/Yla3WzyMCvTQOXYeIHvqOKtnqBduzTHpzpQZzAskKMhZ2K+EnBiSM9zGSoIFeMpXKxa4dYeZIQqewQ==}
 
+  input-format@0.3.14:
+    resolution: {integrity: sha512-gHMrgrbCgmT4uK5Um5eVDUohuV9lcs95ZUUN9Px2Y0VIfjTzT2wF8Q3Z4fwLFm7c5Z2OXCm53FHoovj6SlOKdg==}
+    peerDependencies:
+      react: '>=18.1.0'
+      react-dom: '>=18.1.0'
+    peerDependenciesMeta:
+      react:
+        optional: true
+      react-dom:
+        optional: true
+
   is-binary-path@2.1.0:
     resolution: {integrity: sha512-ZMERYes6pDydyuGidse7OsHxtbI7WVeUEozgR/g7rd0xUimYNlvZRE/K2MgZTjWy725IfelLeVcEM97mmtRGXw==}
     engines: {node: '>=8'}
@@ -1314,6 +1346,9 @@ packages:
   levn@0.4.1:
     resolution: {integrity: sha512-+bT2uH4E5LGE7h/n3evcS/sQlJXCpIp6ym8OWJ5eV6+67Dsql/LaaT7qJBAt2rzfoa/5QBGBhxDix1dMt2kQKQ==}
     engines: {node: '>= 0.8.0'}
+
+  libphonenumber-js@1.12.27:
+    resolution: {integrity: sha512-8gHhHzzcnY1EF4BS5L/lrjv2VAZWd6ltU7c/sqoktRZSQvZl4g8hrgXtXHXGkSFKFYArFON12zUNJrNVqJ9u4g==}
 
   lilconfig@3.1.3:
     resolution: {integrity: sha512-/vlFKAoH5Cgt3Ie+JLhRbwOsCQePABiU3tJ1egGvyQ+33R/vcwM2Zl2QR/LzjsBeItPt3oSVXapn+m4nQDvpzw==}
@@ -1527,6 +1562,9 @@ packages:
     resolution: {integrity: sha512-vkcDPrRZo1QZLbn5RLGPpg/WmIQ65qoWWhcGKf/b5eplkkarX0m9z8ppCat4mlOqUsWpyNuYgO3VRyrYHSzX5g==}
     engines: {node: '>= 0.8.0'}
 
+  prop-types@15.8.1:
+    resolution: {integrity: sha512-oj87CgZICdulUohogVAR7AjlC0327U4el4L6eAvOqCeudMDVU0NThNaV+b9Df4dXgSP1gXMTnPdhfe/2qDH5cg==}
+
   property-expr@2.0.6:
     resolution: {integrity: sha512-SVtmxhRE/CGkn3eZY1T6pC8Nln6Fr/lu1mKSgRud0eC73whjGfoAogbn78LkD8aFL0zz3bAFerKSnOl7NlErBA==}
 
@@ -1558,6 +1596,15 @@ packages:
     peerDependencies:
       react: '>=16'
       react-dom: '>=16'
+
+  react-is@16.13.1:
+    resolution: {integrity: sha512-24e6ynE2H+OKt4kqsOvNd8kBpV65zoxbA4BVsEOB3ARVWQki/DHzaUoC5KuON/BiccDaCCTZBuOcfZs70kR8bQ==}
+
+  react-phone-number-input@3.4.14:
+    resolution: {integrity: sha512-T9MziNuvthzv6+JAhKD71ab/jVXW5U20nQZRBJd6+q+ujmkC+/ISOf2GYo8pIi4VGjdIYRIHDftMAYn3WKZT3w==}
+    peerDependencies:
+      react: '>=16.8'
+      react-dom: '>=16.8'
 
   react-refresh@0.17.0:
     resolution: {integrity: sha512-z6F7K9bV85EfseRCp2bzrpyQ0Gkw1uLoCel9XBVWPg/TjRj94SkJzUTGfOa4bs7iJvBWtQG0Wq7wnI0syw3EBQ==}
@@ -2840,6 +2887,8 @@ snapshots:
     optionalDependencies:
       fsevents: 2.3.3
 
+  classnames@2.5.1: {}
+
   cliui@8.0.1:
     dependencies:
       string-width: 4.2.3
@@ -2857,6 +2906,8 @@ snapshots:
   concat-map@0.0.1: {}
 
   convert-source-map@2.0.0: {}
+
+  country-flag-icons@1.6.1: {}
 
   cross-spawn@7.0.6:
     dependencies:
@@ -2891,6 +2942,11 @@ snapshots:
   eastasianwidth@0.2.0: {}
 
   electron-to-chromium@1.5.254: {}
+
+  emoji-picker-react@4.15.1(react@18.3.1):
+    dependencies:
+      flairup: 1.0.0
+      react: 18.3.1
 
   emoji-regex@8.0.0: {}
 
@@ -3071,6 +3127,8 @@ snapshots:
     transitivePeerDependencies:
       - '@react-native-async-storage/async-storage'
 
+  flairup@1.0.0: {}
+
   flat-cache@3.2.0:
     dependencies:
       flatted: 3.3.3
@@ -3176,6 +3234,13 @@ snapshots:
 
   inherits@2.0.4: {}
 
+  input-format@0.3.14(react-dom@18.3.1(react@18.3.1))(react@18.3.1):
+    dependencies:
+      prop-types: 15.8.1
+    optionalDependencies:
+      react: 18.3.1
+      react-dom: 18.3.1(react@18.3.1)
+
   is-binary-path@2.1.0:
     dependencies:
       binary-extensions: 2.3.0
@@ -3230,6 +3295,8 @@ snapshots:
     dependencies:
       prelude-ls: 1.2.1
       type-check: 0.4.0
+
+  libphonenumber-js@1.12.27: {}
 
   lilconfig@3.1.3: {}
 
@@ -3404,6 +3471,12 @@ snapshots:
 
   prelude-ls@1.2.1: {}
 
+  prop-types@15.8.1:
+    dependencies:
+      loose-envify: 1.4.0
+      object-assign: 4.1.1
+      react-is: 16.13.1
+
   property-expr@2.0.6: {}
 
   protobufjs@7.5.4:
@@ -3442,6 +3515,18 @@ snapshots:
     dependencies:
       csstype: 3.2.2
       goober: 2.1.18(csstype@3.2.2)
+      react: 18.3.1
+      react-dom: 18.3.1(react@18.3.1)
+
+  react-is@16.13.1: {}
+
+  react-phone-number-input@3.4.14(react-dom@18.3.1(react@18.3.1))(react@18.3.1):
+    dependencies:
+      classnames: 2.5.1
+      country-flag-icons: 1.6.1
+      input-format: 0.3.14(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      libphonenumber-js: 1.12.27
+      prop-types: 15.8.1
       react: 18.3.1
       react-dom: 18.3.1(react@18.3.1)
 

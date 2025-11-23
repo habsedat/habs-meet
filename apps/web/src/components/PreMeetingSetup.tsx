@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { createLocalVideoTrack, createLocalAudioTrack, LocalVideoTrack, LocalAudioTrack } from 'livekit-client';
 import { backgroundEngine } from '../video/BackgroundEngine';
 import BackgroundEffectsPanel from './BackgroundEffectsPanel';
+import { useAuth } from '../contexts/AuthContext';
 import toast from '../lib/toast';
 
 interface PreMeetingSetupProps {
@@ -20,23 +21,47 @@ interface MediaDevice {
 
 const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, isParticipant = false }) => {
   const navigate = useNavigate();
+  const { userProfile, updateSavedBackground, updateUserPreferences } = useAuth();
   const containerRef = useRef<HTMLDivElement>(null);
   const [videoTrack, setVideoTrack] = useState<LocalVideoTrack | null>(null);
   const [audioTrack, setAudioTrack] = useState<LocalAudioTrack | null>(null);
+  const isApplyingBackgroundRef = useRef(false); // Lock to prevent track cleanup during background application
   const [isMicEnabled, setIsMicEnabled] = useState(true);
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
-  const [isBackgroundEffectsEnabled, setIsBackgroundEffectsEnabled] = useState(() => {
-    const saved = localStorage.getItem('backgroundEffectsEnabled');
-    return saved ? JSON.parse(saved) : false; // OFF by default
-  });
-  const [savedBackground, setSavedBackground] = useState<{ type: 'none' | 'blur' | 'image' | 'video'; url?: string } | null>(() => {
-    const saved = localStorage.getItem('savedBackground');
-    return saved ? JSON.parse(saved) : null;
-  });
-  const [alwaysShowPreview, setAlwaysShowPreview] = useState(() => {
-    const saved = localStorage.getItem('alwaysShowPreview');
-    return saved ? JSON.parse(saved) : true;
-  });
+  // Load backgroundEffectsEnabled from userProfile (Firestore) - user-specific, not device-specific
+  const [isBackgroundEffectsEnabled, setIsBackgroundEffectsEnabled] = useState(
+    userProfile?.preferences?.backgroundEffectsEnabled || false
+  );
+  
+  // Update when userProfile changes (e.g., when user logs in/out)
+  useEffect(() => {
+    setIsBackgroundEffectsEnabled(userProfile?.preferences?.backgroundEffectsEnabled || false);
+  }, [userProfile?.preferences?.backgroundEffectsEnabled]);
+  // Load savedBackground ONLY from userProfile (Firestore) - user-specific, not device-specific
+  // DO NOT use localStorage as it's shared across all users on the same device
+  const [savedBackground, setSavedBackground] = useState<{ type: 'none' | 'blur' | 'image' | 'video'; url?: string } | null>(
+    userProfile?.savedBackground || null
+  );
+  
+  // Update savedBackground when userProfile changes (e.g., when user logs in/out)
+  useEffect(() => {
+    setSavedBackground(userProfile?.savedBackground || null);
+  }, [userProfile?.savedBackground]);
+  // Load alwaysShowPreview from userProfile (Firestore) - user-specific, not device-specific
+  const [alwaysShowPreview, setAlwaysShowPreview] = useState(
+    userProfile?.preferences?.alwaysShowPreview !== undefined 
+      ? userProfile.preferences.alwaysShowPreview 
+      : true
+  );
+  
+  // Update when userProfile changes
+  useEffect(() => {
+    setAlwaysShowPreview(
+      userProfile?.preferences?.alwaysShowPreview !== undefined 
+        ? userProfile.preferences.alwaysShowPreview 
+        : true
+    );
+  }, [userProfile?.preferences?.alwaysShowPreview]);
   
   const [audioDevices, setAudioDevices] = useState<MediaDevice[]>([]);
   const [videoDevices, setVideoDevices] = useState<MediaDevice[]>([]);
@@ -199,13 +224,16 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
 
     return () => {
       navigator.mediaDevices.removeEventListener('devicechange', refreshDevices);
-      if (videoTrack) {
-        videoTrack.stop();
-        videoTrack.detach();
-      }
-      if (audioTrack) {
-        audioTrack.stop();
-        audioTrack.detach();
+      // Don't stop tracks if background is being applied
+      if (!isApplyingBackgroundRef.current) {
+        if (videoTrack) {
+          videoTrack.stop();
+          videoTrack.detach();
+        }
+        if (audioTrack) {
+          audioTrack.stop();
+          audioTrack.detach();
+        }
       }
     };
   }, []);
@@ -253,7 +281,8 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
     if (!videoTrack) return;
     
     // Save toggle state
-    localStorage.setItem('backgroundEffectsEnabled', JSON.stringify(isBackgroundEffectsEnabled));
+          // Save to Firestore (user-specific), not localStorage (device-specific)
+          updateUserPreferences({ backgroundEffectsEnabled: isBackgroundEffectsEnabled }).catch(console.error);
     
     const applyBackground = async () => {
       if (!videoTrack) return;
@@ -307,7 +336,28 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
               }
             } else if (savedBackground.type === 'image' && savedBackground.url) {
               if (backgroundEngine && typeof backgroundEngine.setImage === 'function') {
-                await backgroundEngine.setImage(savedBackground.url);
+                // Ensure track is ready before applying image background
+                const videoTracks = videoTrack.mediaStream?.getVideoTracks();
+                if (videoTracks && videoTracks.length > 0 && videoTracks[0].readyState === 'live') {
+                  // Retry logic for image backgrounds
+                  let retries = 3;
+                  while (retries > 0) {
+                    try {
+                      await backgroundEngine.setImage(savedBackground.url);
+                      break;
+                    } catch (err: any) {
+                      retries--;
+                      if (retries === 0) {
+                        console.error('[PreMeeting] Background image failed after retries:', err);
+                        throw err;
+                      }
+                      console.warn('[PreMeeting] Background image failed, retrying...', retries);
+                      await new Promise(resolve => setTimeout(resolve, 300));
+                    }
+                  }
+                } else {
+                  console.warn('[PreMeeting] Track not ready for background, skipping');
+                }
               }
             } else if (savedBackground.type === 'video' && savedBackground.url) {
               if (backgroundEngine && typeof backgroundEngine.setVideo === 'function') {
@@ -373,6 +423,12 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
         }
         return;
       }
+
+          // Don't clean up if background is being applied
+          if (isApplyingBackgroundRef.current) {
+            console.log('[BG] Skipping track cleanup - background application in progress');
+            return;
+          }
 
           // Clean up background engine and tracks properly
           if (videoTrack) {
@@ -803,23 +859,17 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
   const handleStart = async () => {
     setIsStarting(true);
     try {
-      localStorage.setItem('alwaysShowPreview', JSON.stringify(alwaysShowPreview));
+      // Save to Firestore (user-specific), not localStorage (device-specific)
+      await updateUserPreferences({ alwaysShowPreview });
       
-      // Save pre-meeting settings for room
-      const settings = {
+      // Save device preferences to Firestore (user-specific), not localStorage
+      await updateUserPreferences({
         videoDeviceId: selectedVideoDevice || null,
         audioDeviceId: selectedAudioDevice || null,
         videoEnabled: isVideoEnabled !== false,
         audioEnabled: isMicEnabled !== false,
         backgroundEffectsEnabled: isBackgroundEffectsEnabled === true,
-        savedBackground: (() => {
-          try {
-            const raw = localStorage.getItem('savedBackground');
-            return raw ? JSON.parse(raw) : savedBackground;
-          } catch { return savedBackground; }
-        })(),
-      };
-      localStorage.setItem('preMeetingSettings', JSON.stringify(settings));
+      });
       
       if (videoTrack) {
         videoTrack.stop();
@@ -841,38 +891,84 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
       const handleBackgroundChange = async (type: 'none' | 'blur' | 'image' | 'video', url?: string) => {
         if (!videoTrack) return;
 
+        // Quick validation - don't block if track is valid
+        const videoTracks = videoTrack.mediaStream?.getVideoTracks();
+        if (!videoTracks || videoTracks.length === 0 || videoTracks[0].readyState === 'ended') {
+          console.warn('[BG] Track is not valid, cannot apply background');
+          return;
+        }
+
+        // Set lock but allow it to be overridden after a short timeout for rapid changes
+        if (isApplyingBackgroundRef.current) {
+          // Wait a very short time, then proceed anyway (allows rapid changes)
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        isApplyingBackgroundRef.current = true;
+
         try {
           // Validate backgroundEngine is available
           if (!backgroundEngine) {
             console.error('[BG] Background engine is not available');
-            toast.error('Background effects are not available');
             return;
           }
 
-          // persist selection in localStorage
+          // Simple initialization - don't over-validate
+          try {
+            await backgroundEngine.init(videoTrack);
+          } catch (initError: any) {
+            // Continue anyway - might already be initialized
+            console.warn('[BG] Init warning (continuing):', initError);
+          }
+
+          // Save background preference to Firestore (async, don't wait)
           if (type === 'none') {
             setSavedBackground(null);
-            localStorage.removeItem('savedBackground');
+            updateSavedBackground(null).catch(console.error);
+            // ✅ CRITICAL: When "None" is selected, DISABLE background effects
+            // This ensures no background is applied in the meeting room
+            if (isBackgroundEffectsEnabled) {
+              setIsBackgroundEffectsEnabled(false);
+              updateUserPreferences({ backgroundEffectsEnabled: false }).catch(console.error);
+            }
           } else if (type === 'blur') {
             const backgroundToSave = { type: 'blur' as const };
             setSavedBackground(backgroundToSave);
-            localStorage.setItem('savedBackground', JSON.stringify(backgroundToSave));
+            updateSavedBackground(backgroundToSave).catch(console.error);
+            // Ensure feature is ON when a background is selected
+            if (!isBackgroundEffectsEnabled) {
+              setIsBackgroundEffectsEnabled(true);
+              updateUserPreferences({ backgroundEffectsEnabled: true }).catch(console.error);
+            }
           } else {
             const backgroundToSave = { type, url };
             setSavedBackground(backgroundToSave);
-            localStorage.setItem('savedBackground', JSON.stringify(backgroundToSave));
+            updateSavedBackground(backgroundToSave).catch(console.error);
+            // Ensure feature is ON when a background is selected
+            if (!isBackgroundEffectsEnabled) {
+              setIsBackgroundEffectsEnabled(true);
+              updateUserPreferences({ backgroundEffectsEnabled: true }).catch(console.error);
+            }
           }
 
-          // ensure feature is ON so processor stays attached
-          if (!isBackgroundEffectsEnabled) setIsBackgroundEffectsEnabled(true);
-
-          // Apply (keeping your swapped none/blur behavior)
-          // Note: Each method (setBlur, setNone, setImage, setVideo) will handle init internally
+          // Apply immediately - no delays for fast switching
           if (type === 'none') {
-            await backgroundEngine.setBlur?.();
-          } else if (type === 'blur') {
             await backgroundEngine.setNone?.();
+          } else if (type === 'blur') {
+            await backgroundEngine.setBlur?.();
           } else if (type === 'image' && url) {
+            // Validate URL is not empty
+            if (!url || url.trim() === '') {
+              throw new Error('Image URL is empty');
+            }
+            
+            // Verify track is still ready before applying
+            const applyTracks = videoTrack.mediaStream?.getVideoTracks();
+            if (!applyTracks || applyTracks.length === 0 || applyTracks[0].readyState === 'ended') {
+              console.warn('[BG] Track ended before applying image');
+              return;
+            }
+            
+            // Apply image
             await backgroundEngine.setImage?.(url);
           } else if (type === 'video' && url) {
             // Validate video URL before attempting to load
@@ -880,18 +976,25 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
               toast.error('Video URL is not available. Please configure a valid video URL.');
               return;
             }
-            await backgroundEngine.setVideo?.(url); // uses the new robust loader
+            await backgroundEngine.setVideo?.(url);
           }
         } catch (error: any) {
-          console.error('[BG] Error setting background:', error);
+          // Only log/show errors that are NOT track-related
           const errorMessage = error?.message || 'Unknown error';
           if (errorMessage.includes('Video URL is not available') || errorMessage.includes('example.com')) {
             toast.error('Video URL is not available. Please configure a valid video URL.');
           } else if (errorMessage.includes('fetch') || errorMessage.includes('CORS') || errorMessage.includes('404')) {
-            toast.error('Failed to load video background. Please check the video URL.');
-          } else {
-            toast.error('Failed to apply background effect: ' + errorMessage);
+            toast.error('Failed to load background image. Please check your internet connection.');
+          } else if (!errorMessage.includes('Track ended') && !errorMessage.includes('not ready') && !errorMessage.includes('Track is ended')) {
+            // Only show error if it's not a track-related issue
+            toast.error('Failed to set background: ' + errorMessage);
           }
+          // Silently ignore track-related errors - they're expected
+        } finally {
+          // Release lock quickly for fast switching
+          setTimeout(() => {
+            isApplyingBackgroundRef.current = false;
+          }, 50);
         }
       };
 

@@ -38,6 +38,7 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
       const [uploading, setUploading] = useState(false);
       const [uploadProgress, setUploadProgress] = useState<FileUploadProgress | null>(null);
   const [selectedBackground, setSelectedBackground] = useState<'none' | 'blur' | string | null>('none');
+  const [isChangingBackground, setIsChangingBackground] = useState(false); // Prevent multiple simultaneous changes
   const videoPreviewRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   
@@ -111,17 +112,75 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
     }
   }, [activeTab, user]);
 
-  // Match savedBackground to the actual media ID
+  // Match savedBackground to the actual media ID (only on initial load, not when user is actively selecting)
   useEffect(() => {
+    // Only update if user is not currently changing background (prevents race conditions)
+    if (isChangingBackground) return;
+    
+    // Only update selection if it's not already set to a valid value
+    // This prevents overriding user's current selection
+    if (selectedBackground && selectedBackground !== 'none' && selectedBackground !== 'blur') {
+      // Check if current selection is still valid
+      const isUserMedia = userMedia.some(m => m.id === selectedBackground);
+      const isDefaultMedia = backgrounds.some(m => m.id === selectedBackground);
+      if (isUserMedia || isDefaultMedia) {
+        // Current selection is valid, don't override
+        return;
+      }
+    }
+    
     if (savedBackground && (backgrounds.length > 0 || userMedia.length > 0)) {
       if (savedBackground.type === 'none') {
         setSelectedBackground('none');
       } else if (savedBackground.type === 'blur') {
         setSelectedBackground('blur');
       } else if (savedBackground.type === 'image' && savedBackground.url) {
-        // Find matching media by URL
-        const matchingUserMedia = userMedia.find(m => m.url === savedBackground.url);
-        const matchingDefaultMedia = backgrounds.find(m => m.url === savedBackground.url);
+        // Find matching media by URL (use more flexible matching)
+        const normalizeUrl = (url: string) => {
+          // Remove query parameters and fragments for comparison
+          try {
+            const urlObj = new URL(url);
+            return urlObj.origin + urlObj.pathname;
+          } catch {
+            return url.split('?')[0].split('#')[0];
+          }
+        };
+        
+        const savedUrlNormalized = normalizeUrl(savedBackground.url);
+        const matchingUserMedia = userMedia.find(m => {
+          const mediaUrlNormalized = normalizeUrl(m.url);
+          return mediaUrlNormalized === savedUrlNormalized || m.url === savedBackground.url;
+        });
+        const matchingDefaultMedia = backgrounds.find(m => {
+          const mediaUrlNormalized = normalizeUrl(m.url);
+          return mediaUrlNormalized === savedUrlNormalized || m.url === savedBackground.url;
+        });
+        
+        if (matchingUserMedia) {
+          setSelectedBackground(matchingUserMedia.id);
+        } else if (matchingDefaultMedia) {
+          setSelectedBackground(matchingDefaultMedia.id);
+        }
+      } else if (savedBackground.type === 'video' && savedBackground.url) {
+        // For videos, also match by URL
+        const normalizeUrl = (url: string) => {
+          try {
+            const urlObj = new URL(url);
+            return urlObj.origin + urlObj.pathname;
+          } catch {
+            return url.split('?')[0].split('#')[0];
+          }
+        };
+        
+        const savedUrlNormalized = normalizeUrl(savedBackground.url);
+        const matchingUserMedia = userMedia.find(m => {
+          const mediaUrlNormalized = normalizeUrl(m.url);
+          return (mediaUrlNormalized === savedUrlNormalized || m.url === savedBackground.url) && m.type === 'video';
+        });
+        const matchingDefaultMedia = backgrounds.find(m => {
+          const mediaUrlNormalized = normalizeUrl(m.url);
+          return (mediaUrlNormalized === savedUrlNormalized || m.url === savedBackground.url) && m.type === 'video';
+        });
         
         if (matchingUserMedia) {
           setSelectedBackground(matchingUserMedia.id);
@@ -129,8 +188,13 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
           setSelectedBackground(matchingDefaultMedia.id);
         }
       }
+    } else if (!savedBackground) {
+      // If no saved background, default to 'none' only if no selection is set
+      if (!selectedBackground || selectedBackground === 'none') {
+        setSelectedBackground('none');
+      }
     }
-  }, [savedBackground, backgrounds, userMedia]);
+  }, [savedBackground, backgrounds, userMedia, isChangingBackground, selectedBackground]);
 
   const loadBackgrounds = async () => {
     setLoading(true);
@@ -270,76 +334,100 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
   };
 
   const handleBackgroundSelect = async (bg: 'none' | 'blur' | DefaultMedia | UploadedFile) => {
+    // If already changing, wait a short time then proceed (allows rapid changes)
+    if (isChangingBackground) {
+      console.log('[BG] Background change in progress, waiting briefly...');
+      // Wait a bit for previous change to complete, then proceed
+      await new Promise(resolve => setTimeout(resolve, 100));
+      // If still changing after wait, proceed anyway (prevents deadlock)
+    }
+
+    setIsChangingBackground(true);
+    
+    // Store previous selection to revert on error
+    const previousSelection = selectedBackground;
+    
+    // Set selection state IMMEDIATELY for visual feedback (optimistic update)
     if (bg === 'none') {
       setSelectedBackground('none');
-      await onBackgroundChange('none');
     } else if (bg === 'blur') {
       setSelectedBackground('blur');
-      await onBackgroundChange('blur');
     } else {
-      // Use unique ID for each media item
-      const bgId = bg.id;
-      setSelectedBackground(bgId);
-      if (bg.type === 'image') {
-        await onBackgroundChange('image', bg.url);
-      } else if (bg.type === 'video') {
-        // Validate video URL before attempting to load
-        if (!bg.url || bg.url.trim() === '' || bg.url.includes('example.com')) {
-          toast.error('Video URL is not available. Please configure a valid video URL.');
-          setSelectedBackground(null); // Reset selection
-          return;
-        }
-        try {
-          await onBackgroundChange('video', bg.url);
-        } catch (error: any) {
-          console.error('Error loading video background:', error);
-          toast.error('Failed to load video background: ' + (error?.message || 'Unknown error'));
-          setSelectedBackground(null); // Reset selection on error
+      setSelectedBackground(bg.id);
+    }
+    
+    try {
+      if (bg === 'none') {
+        await onBackgroundChange('none');
+        // Selection already set above
+      } else if (bg === 'blur') {
+        await onBackgroundChange('blur');
+        // Selection already set above
+      } else {
+        // Use unique ID for each media item
+        const bgId = bg.id;
+        const bgUrl = bg.url;
+        
+        if (bg.type === 'image') {
+          try {
+            await onBackgroundChange('image', bgUrl);
+            // Selection already set above - confirm it's still correct
+            setSelectedBackground(bgId);
+          } catch (error: any) {
+            console.error('[BG] Error changing image background:', error);
+            // Only show error if it's not a cancellation or track-related error
+            const errorMsg = error?.message || '';
+            if (!errorMsg.includes('Cancelled') && 
+                !errorMsg.includes('aborted') &&
+                !errorMsg.includes('Track ended') &&
+                !errorMsg.includes('not ready')) {
+              toast.error('Failed to change background: ' + errorMsg);
+            }
+            // Revert selection on error
+            setSelectedBackground(previousSelection || 'none');
+            throw error; // Re-throw to be caught by outer catch
+          }
+        } else if (bg.type === 'video') {
+          // Validate video URL before attempting to load
+          if (!bgUrl || bgUrl.trim() === '' || bgUrl.includes('example.com')) {
+            toast.error('Video URL is not available. Please configure a valid video URL.');
+            // Revert selection on error
+            setSelectedBackground(previousSelection || 'none');
+            return;
+          }
+          try {
+            await onBackgroundChange('video', bgUrl);
+            // Selection already set above - confirm it's still correct
+            setSelectedBackground(bgId);
+          } catch (error: any) {
+            console.error('Error loading video background:', error);
+            toast.error('Failed to load video background: ' + (error?.message || 'Unknown error'));
+            // Revert selection on error
+            setSelectedBackground(previousSelection || 'none');
+          }
         }
       }
+    } catch (error: any) {
+      console.error('[BG] Error changing background:', error);
+      // Only show error if it's not a cancellation or track-related error
+      const errorMsg = error?.message || '';
+      if (!errorMsg.includes('Cancelled') && 
+          !errorMsg.includes('aborted') &&
+          !errorMsg.includes('Track ended') &&
+          !errorMsg.includes('not ready')) {
+        toast.error('Failed to change background: ' + errorMsg);
+      }
+      // Revert selection on error
+      setSelectedBackground(previousSelection || 'none');
+    } finally {
+      // Always reset flag, even on error
+      setIsChangingBackground(false);
     }
   };
 
-  const defaultBackgrounds = [
-    {
-      id: 'default-1',
-      name: 'Abstract Gradient',
-      thumbnail: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjEyMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImciIHgxPSIwJSIgeTE9IjAlIiB4Mj0iMTAwJSIgeTI9IjEwMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiM2QzYzRkYiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiMwRTNBODEiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjEyMCIgZmlsbD0idXJsKCNnKSIvPjwvc3ZnPg==',
-      url: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjEyMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImciIHgxPSIwJSIgeTE9IjAlIiB4Mj0iMTAwJSIgeTI9IjEwMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiM2QzYzRkYiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiMwRTNBODEiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjEyMCIgZmlsbD0idXJsKCNnKSIvPjwvc3ZnPg==',
-    },
-    {
-      id: 'default-2',
-      name: 'City Skyline',
-      thumbnail: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjEyMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjEyMCIgZmlsbD0iIzE2Mjc0NyIvPjxwYXRoIGQ9Ik0wIDkwIEg1MCBWMTIwIEgwIFoiIGZpbGw9IiM0QTU3NjgiLz48cGF0aCBkPSJNNTAgODAgSDgwIFYxMjAgSDUwIFoiIGZpbGw9IiM0QTU3NjgiLz48cGF0aCBkPSJNODAgOTUgSDEyMCBWMTIwIEg4MCBaIiBmaWxsPSIjNEE1NzY4Ii8+PC9zdmc+',
-      url: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjEyMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjEyMCIgZmlsbD0iIzE2Mjc0NyIvPjxwYXRoIGQ9Ik0wIDkwIEg1MCBWMTIwIEgwIFoiIGZpbGw9IiM0QTU3NjgiLz48cGF0aCBkPSJNNTAgODAgSDgwIFYxMjAgSDUwIFoiIGZpbGw9IiM0QTU3NjgiLz48cGF0aCBkPSJNODAgOTUgSDEyMCBWMTIwIEg4MCBaIiBmaWxsPSIjNEE1NzY4Ii8+PC9zdmc+',
-    },
-    {
-      id: 'default-3',
-      name: 'Nature Forest',
-      thumbnail: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjEyMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjEyMCIgZmlsbD0iIzIyNzY1QSIvPjxwYXRoIGQ9Ik0wIDkwIFEyMCA3MCA0MCA4MCBRNjAgNzAgODAgODAgUTEwMCA3MCAxMjAgODAgUTE0MCA3MCAxNjAgODAgUTE4MCA3MCAyMDAgODAgVjEyMCBIMCAiIGZpbGw9IiMzRDU1NDciLz48L3N2Zz4=',
-      url: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjEyMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjEyMCIgZmlsbD0iIzIyNzY1QSIvPjxwYXRoIGQ9Ik0wIDkwIFEyMCA3MCA0MCA4MCBRNjAgNzAgODAgODAgUTEwMCA3MCAxMjAgODAgUTE0MCA3MCAxNjAgODAgUTE4MCA3MCAyMDAgODAgVjEyMCBIMCAiIGZpbGw9IiMzRDU1NDciLz48L3N2Zz4=',
-    },
-    {
-      id: 'default-4',
-      name: 'Minimalist Space',
-      thumbnail: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjEyMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjEyMCIgZmlsbD0iI0Y5RkFGQiIvPjxjaXJjbGUgY3g9IjEwMCIgY3k9IjYwIiByPSIzMCIgZmlsbD0iI0ZGREMzNSIvPjwvc3ZnPg==',
-      url: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjEyMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjEyMCIgZmlsbD0iI0Y5RkFGQiIvPjxjaXJjbGUgY3g9IjEwMCIgY3k9IjYwIiByPSIzMCIgZmlsbD0iI0ZGREMzNSIvPjwvc3ZnPg==',
-    },
-  ];
-
-
-  const allBackgrounds = [
-    ...(backgrounds.length > 0 ? backgrounds : defaultBackgrounds.map(bg => ({
-      ...bg,
-      type: 'image' as const,
-      mimeType: 'image/svg+xml',
-      size: 0,
-      category: 'background' as const,
-      uploadedAt: new Date(),
-      uploadedBy: '',
-      isActive: true,
-    }))),
-  ];
+  // Use only admin-uploaded backgrounds from Firestore
+  // No hardcoded defaults - all backgrounds come from admin uploads
+  const allBackgrounds = backgrounds;
 
   return (
     <>
@@ -420,11 +508,12 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
                     onClick={async () => {
                       await handleBackgroundSelect('none');
                     }}
+                    disabled={isChangingBackground}
                     className={`p-2 sm:p-3 rounded-lg border-2 transition-all ${
                       selectedBackground === 'none'
                         ? 'border-goldBright bg-goldBright/20'
                         : 'border-white/10 hover:border-white/30'
-                    }`}
+                    } ${isChangingBackground ? 'opacity-50 cursor-wait' : ''}`}
                   >
                     <div className="text-center">
                       <div className="w-full h-12 sm:h-16 bg-midnight rounded mb-1 flex items-center justify-center">
@@ -438,11 +527,12 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
                     onClick={async () => {
                       await handleBackgroundSelect('blur');
                     }}
+                    disabled={isChangingBackground}
                     className={`p-2 sm:p-3 rounded-lg border-2 transition-all ${
                       selectedBackground === 'blur'
                         ? 'border-goldBright bg-goldBright/20'
                         : 'border-white/10 hover:border-white/30'
-                    }`}
+                    } ${isChangingBackground ? 'opacity-50 cursor-wait' : ''}`}
                   >
                     <div className="text-center">
                       <div className="w-full h-12 sm:h-16 bg-gradient-to-r from-midnight via-gray-600 to-midnight rounded mb-1 flex items-center justify-center blur-sm">
@@ -510,11 +600,12 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
                         <button
                           key={file.id}
                           onClick={() => handleBackgroundSelect(file)}
+                          disabled={isChangingBackground}
                           className={`relative rounded-lg overflow-hidden border-2 transition-all ${
                             selectedBackground === file.id
                               ? 'border-goldBright ring-2 ring-goldBright'
                               : 'border-white/10 hover:border-white/30'
-                          }`}
+                          } ${isChangingBackground ? 'opacity-50 cursor-wait' : ''}`}
                         >
                           <div className="aspect-video bg-midnight relative">
                             <img
@@ -547,12 +638,17 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
                   </div>
                 )}
 
-                {/* Default Backgrounds */}
+                {/* Admin-Uploaded Backgrounds */}
                 <div className="mb-3 sm:mb-4">
-                  <h3 className="text-[10px] sm:text-xs font-semibold text-cloud mb-2 sm:mb-3">Default Backgrounds</h3>
+                  <h3 className="text-[10px] sm:text-xs font-semibold text-cloud mb-2 sm:mb-3">Backgrounds</h3>
                   {loading ? (
                     <div className="flex items-center justify-center py-6">
                       <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-goldBright"></div>
+                    </div>
+                  ) : allBackgrounds.length === 0 ? (
+                    <div className="text-center py-6 text-cloud/50 text-xs">
+                      <p>No backgrounds available</p>
+                      <p className="text-[10px] mt-1">Admins can upload backgrounds in the Admin panel</p>
                     </div>
                   ) : (
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pb-4">
@@ -561,11 +657,12 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
                         <button
                           key={bg.id}
                           onClick={() => handleBackgroundSelect(bg)}
+                          disabled={isChangingBackground}
                           className={`relative rounded-lg overflow-hidden border-2 transition-all ${
                             selectedBackground === bg.id
                               ? 'border-goldBright ring-2 ring-goldBright'
                               : 'border-white/10 hover:border-white/30'
-                          }`}
+                          } ${isChangingBackground ? 'opacity-50 cursor-wait' : ''}`}
                         >
                           <div className="aspect-video bg-midnight">
                             <img

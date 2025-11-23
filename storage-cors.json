@@ -1,0 +1,14 @@
+[
+  {
+    "origin": [
+      "https://habs-meet-prod.web.app",
+      "https://habs-meet-prod.firebaseapp.com",
+      "https://habs-meet-dev.web.app",
+      "https://habs-meet-dev.firebaseapp.com"
+    ],
+    "method": ["GET", "HEAD"],
+    "responseHeader": ["Content-Type", "Content-Length", "Content-Range"],
+    "maxAgeSeconds": 3600
+  }
+]
+

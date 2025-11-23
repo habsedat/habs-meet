@@ -1,8 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { auth } from '../lib/firebase';
+import { signInWithEmailAndPassword, signOut as firebaseSignOut, sendEmailVerification as firebaseSendEmailVerification } from 'firebase/auth';
 import BiometricAuth from '../components/BiometricAuth';
 import ForgotPasswordModal from '../components/ForgotPasswordModal';
+import EmailVerificationInstructions from '../components/EmailVerificationInstructions';
+import PhoneInput from 'react-phone-number-input';
+import { isValidPhoneNumber } from 'react-phone-number-input';
+import 'react-phone-number-input/style.css';
+import '../styles/phone-input.css';
 import toast from '../lib/toast';
 
 const AuthPage: React.FC = () => {
@@ -22,6 +29,10 @@ const AuthPage: React.FC = () => {
   const [showForgotPasswordModal, setShowForgotPasswordModal] = useState(false);
   const [loginError, setLoginError] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showVerificationInstructions, setShowVerificationInstructions] = useState(false);
+  const [signupEmail, setSignupEmail] = useState<string>('');
+  const [signupPassword, setSignupPassword] = useState<string>(''); // Store password temporarily for resend
+  const [isResendingEmail, setIsResendingEmail] = useState(false);
   
   // Signup form data
   const [formData, setFormData] = useState({
@@ -33,6 +44,7 @@ const AuthPage: React.FC = () => {
     confirmPassword: '',
     agreeToTerms: false
   });
+  const [phoneError, setPhoneError] = useState<string>('');
   
   // Login form data
   const [loginData, setLoginData] = useState({
@@ -67,10 +79,39 @@ const AuthPage: React.FC = () => {
         toast.error('Email is required');
         return false;
       }
-      if (!formData.phoneNumber.trim()) {
+      // Validate email format
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(formData.email)) {
+        toast.error('Please enter a valid email address');
+        return false;
+      }
+      // Strict phone number validation - must have country code and be valid
+      if (!formData.phoneNumber || !formData.phoneNumber.trim()) {
+        setPhoneError('Phone number is required');
         toast.error('Phone number is required');
         return false;
       }
+      // Ensure phone number includes country code (starts with +)
+      if (!formData.phoneNumber.startsWith('+')) {
+        setPhoneError('Please select a country code');
+        toast.error('Please select a country code for your phone number');
+        return false;
+      }
+      // Strict validation: phone number must be valid for the selected country
+      // This ensures the number matches the country's format and length requirements
+      if (!isValidPhoneNumber(formData.phoneNumber)) {
+        setPhoneError('Please enter a valid phone number for the selected country');
+        toast.error('Please enter a valid phone number for the selected country');
+        return false;
+      }
+      // Additional validation: ensure phone number has minimum length (at least country code + 4 digits)
+      const phoneWithoutPlus = formData.phoneNumber.replace('+', '');
+      if (phoneWithoutPlus.length < 7) {
+        setPhoneError('Phone number is too short');
+        toast.error('Please enter a complete phone number');
+        return false;
+      }
+      setPhoneError('');
       if (!formData.dateOfBirth.trim()) {
         toast.error('Date of birth is required');
         return false;
@@ -103,30 +144,123 @@ const AuthPage: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!validateForm()) return;
+    if (!validateForm()) {
+      setIsSubmitting(false);
+      return;
+    }
 
     setIsSubmitting(true);
     setLoginError('');
 
     try {
       if (isSignUp) {
+        // Call signUp function which handles account creation and email sending
         await signUp(formData.email, formData.password, formData.fullName, formData.phoneNumber, formData.dateOfBirth);
-        toast.success('Account created successfully! Please check your email for verification.');
-        navigate('/home');
+        
+        // Account created successfully - show verification instructions page
+        setSignupEmail(formData.email);
+        setSignupPassword(formData.password); // Store password temporarily for resend functionality
+        setShowVerificationInstructions(true);
+        
+        // Reset form
+        setFormData({
+          fullName: '',
+          email: '',
+          phoneNumber: '',
+          dateOfBirth: '',
+          password: '',
+          confirmPassword: '',
+          agreeToTerms: false
+        });
       } else {
         await signIn(loginData.email, loginData.password, loginData.rememberMe);
+        // Only navigate if sign in successful (email verified)
         toast.success('Welcome back!');
         navigate('/home');
       }
     } catch (error: any) {
       // Set error message for display in UI
-      setLoginError(error.message || 'Authentication failed. Please check your credentials and try again.');
-      // Toast is already shown in signIn function, but we keep it as backup
-      if (!error.message) {
-        toast.error('Authentication failed');
+      const errorMessage = error.message || 'Authentication failed. Please check your credentials and try again.';
+      setLoginError(errorMessage);
+      
+      // Log full error for debugging
+      console.error('[AuthPage] Sign up error:', error);
+      console.error('[AuthPage] Error code:', error.code);
+      console.error('[AuthPage] Error message:', errorMessage);
+      
+      // Show specific error messages
+      if (errorMessage.includes('Email not verified') || errorMessage.includes('verify your email')) {
+        // Email verification error - show helpful message
+        toast.error('Please verify your email address before logging in. Check your inbox (including spam folder) for the verification email.', { duration: 6000 });
+      } else if (errorMessage.includes('phone number')) {
+        // Phone number validation error
+        toast.error(errorMessage);
+      } else if (errorMessage.includes('Firebase') || errorMessage.includes('configuration')) {
+        // Firebase configuration error
+        toast.error('Configuration error: ' + errorMessage + ' Please contact support.', { duration: 8000 });
+      } else {
+        // Other authentication errors
+        toast.error(errorMessage);
       }
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleResendVerificationEmail = async () => {
+    if (!signupEmail || !signupPassword) {
+      toast.error('Unable to resend email. Please sign up again or check your inbox.');
+      return;
+    }
+    
+    setIsResendingEmail(true);
+    try {
+      // Sign in directly with Firebase Auth (bypassing AuthContext to avoid email verification check)
+      console.log('[ResendEmail] Signing in temporarily to resend verification email...');
+      const userCredential = await signInWithEmailAndPassword(auth, signupEmail, signupPassword);
+      const user = userCredential.user;
+      
+      // Reload user to get latest state
+      await user.reload();
+      
+      // Check if email is already verified
+      if (user.emailVerified) {
+        await firebaseSignOut(auth);
+        toast.success('Your email is already verified! You can now sign in.');
+        return;
+      }
+      
+      // Resend verification email
+      await firebaseSendEmailVerification(user, {
+        url: `${window.location.origin}/`,
+        handleCodeInApp: false,
+      });
+      
+      // Sign out again immediately
+      await firebaseSignOut(auth);
+      
+      toast.success('Verification email resent! Please check your inbox (including spam folder).');
+    } catch (error: any) {
+      console.error('[ResendEmail] Error resending verification email:', error);
+      
+      // Ensure we're signed out even if there's an error
+      try {
+        await firebaseSignOut(auth);
+      } catch (signOutError) {
+        // Ignore sign out errors
+      }
+      
+      // Provide helpful error messages
+      if (error.code === 'auth/user-not-found' || error.code === 'auth/invalid-credential' || error.code === 'auth/wrong-password') {
+        toast.error('Invalid email or password. Please check your credentials or try signing up again.');
+      } else if (error.code === 'auth/too-many-requests') {
+        toast.error('Too many requests. Please wait a few minutes before trying again.');
+      } else {
+        toast.error('Failed to resend verification email. Please check your inbox (including spam folder) or try signing up again.');
+      }
+      throw error;
+    } finally {
+      setIsResendingEmail(false);
     }
   };
 
@@ -138,6 +272,17 @@ const AuthPage: React.FC = () => {
   const handleBiometricError = (error: string) => {
     toast.error('Biometric authentication failed: ' + error);
   };
+
+  // Show verification instructions page if signup was successful
+  if (showVerificationInstructions) {
+    return (
+      <EmailVerificationInstructions
+        email={signupEmail}
+        onResendEmail={handleResendVerificationEmail}
+        isResending={isResendingEmail}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-midnight flex items-center justify-center px-4">
@@ -238,15 +383,66 @@ const AuthPage: React.FC = () => {
                 <label className="block text-sm font-medium text-midnight mb-2">
                   Phone Number *
                 </label>
-                <input
-                  type="tel"
-                  name="phoneNumber"
-                  value={formData.phoneNumber}
-                  onChange={handleInputChange}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-techBlue focus:border-transparent"
-                  placeholder="Enter your phone number"
-                  required
-                />
+                <div className={`border rounded-lg ${phoneError ? 'border-red-300 bg-red-50' : 'border-gray-300'} focus-within:ring-2 focus-within:ring-techBlue focus-within:border-transparent`}>
+                  <PhoneInput
+                    international
+                    defaultCountry="SL"
+                    value={formData.phoneNumber}
+                    onChange={(value) => {
+                      setFormData(prev => ({ ...prev, phoneNumber: value || '' }));
+                      // Clear error when user starts typing
+                      if (phoneError) {
+                        setPhoneError('');
+                      }
+                      // Real-time validation - must be valid phone number with country code
+                      if (value) {
+                        // Ensure it starts with +
+                        if (!value.startsWith('+')) {
+                          setPhoneError('Please select a country code');
+                          return;
+                        }
+                        // Validate phone number format for the selected country
+                        if (!isValidPhoneNumber(value)) {
+                          setPhoneError('Please enter a valid phone number for the selected country');
+                        } else {
+                          setPhoneError('');
+                        }
+                      } else {
+                        // Empty value is allowed while typing, but will be validated on submit
+                        setPhoneError('');
+                      }
+                    }}
+                    onBlur={() => {
+                      // Validate on blur - strict validation
+                      if (formData.phoneNumber) {
+                        if (!formData.phoneNumber.startsWith('+')) {
+                          setPhoneError('Please select a country code');
+                        } else if (!isValidPhoneNumber(formData.phoneNumber)) {
+                          setPhoneError('Please enter a valid phone number for the selected country');
+                        } else {
+                          setPhoneError('');
+                        }
+                      }
+                    }}
+                    className="!w-full"
+                    numberInputProps={{
+                      className: `!w-full px-4 py-3 border-0 focus:ring-0 focus:outline-none ${phoneError ? 'bg-red-50' : ''}`,
+                      required: true,
+                      placeholder: 'Enter phone number',
+                    }}
+                    countrySelectProps={{
+                      className: '!px-2 !py-3',
+                    }}
+                    style={{
+                      '--PhoneInputCountryFlag-height': '1.2em',
+                      '--PhoneInputCountryFlag-width': '1.5em',
+                    } as React.CSSProperties}
+                  />
+                </div>
+                {phoneError && (
+                  <p className="text-xs text-red-600 mt-1">{phoneError}</p>
+                )}
+                <p className="text-xs text-gray-500 mt-1">Select your country code and enter your phone number</p>
               </div>
             )}
 
@@ -421,7 +617,7 @@ const AuthPage: React.FC = () => {
           <div className="mt-6 text-center">
             <button
               onClick={() => setIsSignUp(!isSignUp)}
-              className="text-techBlue hover:underline text-sm"
+              className="text-techBlue hover:underline text-sm font-bold"
             >
               {isSignUp 
                 ? 'Already have an account? Sign in' 

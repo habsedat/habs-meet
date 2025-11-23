@@ -20,7 +20,7 @@ import {
  * This significantly reduces LiveKit participant minutes and bandwidth costs
  */
 export function useCostOptimizations(room: Room | null | undefined) {
-  const previousCameraEnabledRef = useRef<boolean>(false);
+  // ✅ REMOVED: previousCameraEnabledRef - no longer needed since cameras stay on always
   const aloneTimerRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
@@ -115,44 +115,14 @@ export function useCostOptimizations(room: Room | null | undefined) {
     room.on(RoomEvent.TrackSubscribed, handleTrackSubscribed);
 
     // ============================================
-    // 2. Pause Local Camera When Tab/Window Hidden
+    // 2. REMOVED: Camera Pausing on Tab Visibility
     // ============================================
-    // Pause camera when user is not actively viewing the meeting
-    // Restore camera when they come back (only if it was enabled before)
-    const handleVisibilityChange = async () => {
-      const lp = room.localParticipant;
-      if (document.visibilityState === 'hidden') {
-        // Tab hidden: pause camera but remember previous state
-        previousCameraEnabledRef.current = lp.isCameraEnabled;
-        if (lp.isCameraEnabled) {
-          await lp.setCameraEnabled(false);
-        }
-      } else if (document.visibilityState === 'visible') {
-        // Tab visible again: restore camera ONLY if it was on before
-        if (previousCameraEnabledRef.current && !lp.isCameraEnabled) {
-          await lp.setCameraEnabled(true);
-        }
-      }
-    };
-
-    const handleBlur = async () => {
-      const lp = room.localParticipant;
-      previousCameraEnabledRef.current = lp.isCameraEnabled;
-      if (lp.isCameraEnabled) {
-        await lp.setCameraEnabled(false);
-      }
-    };
-
-    const handleFocus = async () => {
-      const lp = room.localParticipant;
-      if (previousCameraEnabledRef.current && !lp.isCameraEnabled) {
-        await lp.setCameraEnabled(true);
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('blur', handleBlur);
-    window.addEventListener('focus', handleFocus);
+    // ✅ CRITICAL FIX: Professional video meetings (like Zoom) do NOT pause cameras
+    // when users switch tabs or windows. Desktop users should be able to have
+    // multiple tabs/windows open without their camera being disabled.
+    // 
+    // REMOVED: handleVisibilityChange, handleBlur, handleFocus
+    // Cameras will now stay ON regardless of tab/window focus state
 
     // ============================================
     // 3. Auto-disconnect on BeforeUnload
@@ -214,9 +184,7 @@ export function useCostOptimizations(room: Room | null | undefined) {
       room.off(RoomEvent.TrackSubscribed, handleTrackSubscribed);
       room.off(RoomEvent.ParticipantConnected, handleParticipantConnected);
       room.off(RoomEvent.ParticipantDisconnected, handleParticipantDisconnected);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('blur', handleBlur);
-      window.removeEventListener('focus', handleFocus);
+      // ✅ REMOVED: visibility/blur/focus listeners - cameras stay on always
       window.removeEventListener('beforeunload', handleBeforeUnload);
       if (aloneTimerRef.current) {
         clearTimeout(aloneTimerRef.current);
