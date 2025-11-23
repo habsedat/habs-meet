@@ -687,13 +687,15 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
     }
 
     setVideoPublication(pub);
-    setIsCameraEnabled(!!pub && !pub?.isMuted);
+    // ✅ Camera is enabled if we have a publication AND it has a track (mute state handled in separate effect)
+    setIsCameraEnabled(!!pub && !!pub.track);
 
     // If any VIDEO track is (un)published on this participant, update
     const handleTrackPublished = (p: TrackPublication) => {
       if (p.kind === Track.Kind.Video) {
         setVideoPublication(p);
-        setIsCameraEnabled(!p.isMuted);
+        // ✅ Camera is enabled only if track exists (mute state handled in separate effect)
+        setIsCameraEnabled(!!p.track);
       }
     };
 
@@ -712,6 +714,95 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
       participant.off(ParticipantEvent.TrackUnpublished, handleTrackUnpublished);
     };
     // ✅ IMPORTANT: also react when number of video tracks changes
+  }, [participant, isLocal, participant.videoTracks.size]);
+
+  // 🔹 Keep camera state in sync with mute/unmute (local + remote)
+  useEffect(() => {
+    const updateCameraState = () => {
+      // ✅ CRITICAL: Always get FRESH publication from participant, not from closure
+      const videoPubs: TrackPublication[] = [];
+      participant.videoTracks.forEach((pub) => {
+        videoPubs.push(pub as TrackPublication);
+      });
+      
+      // Get the first video track (camera)
+      const currentPub = videoPubs.length > 0 ? videoPubs[0] : null;
+      const currentTrack: any = currentPub?.track;
+
+      // Camera is enabled if we have a publication, a track, and neither is muted
+      const enabled =
+        !!currentPub &&
+        !!currentTrack &&
+        (currentPub as any).isMuted !== true &&
+        currentTrack?.isMuted !== true;
+
+      console.log('[VideoTile] Camera state update:', {
+        participant: participant.identity,
+        isLocal,
+        hasPub: !!currentPub,
+        hasTrack: !!currentTrack,
+        pubMuted: (currentPub as any)?.isMuted,
+        trackMuted: currentTrack?.isMuted,
+        enabled
+      });
+
+      setIsCameraEnabled(enabled);
+      
+      // Also update videoPublication if it changed
+      if (currentPub !== videoPublication) {
+        setVideoPublication(currentPub);
+      }
+    };
+
+    // Run once on mount / when publication changes
+    updateCameraState();
+
+    const handleTrackMuted = (pub: TrackPublication) => {
+      if (pub.kind === Track.Kind.Video || pub.source === Track.Source.Camera) {
+        console.log('[VideoTile] Track muted event:', participant.identity, pub.source);
+        // Use requestAnimationFrame for immediate update
+        requestAnimationFrame(() => {
+          updateCameraState();
+        });
+      }
+    };
+
+    const handleTrackUnmuted = (pub: TrackPublication) => {
+      if (pub.kind === Track.Kind.Video || pub.source === Track.Source.Camera) {
+        console.log('[VideoTile] Track unmuted event:', participant.identity, pub.source);
+        // Use requestAnimationFrame for immediate update
+        requestAnimationFrame(() => {
+          updateCameraState();
+        });
+      }
+    };
+
+    participant.on(ParticipantEvent.TrackMuted, handleTrackMuted);
+    participant.on(ParticipantEvent.TrackUnmuted, handleTrackUnmuted);
+
+    // Also listen on the actual track, if we have one - get fresh reference each time
+    const currentTrack: any = videoPublication?.track;
+    const handleTrackLevelChange = () => {
+      console.log('[VideoTile] Track-level mute change:', participant.identity);
+      requestAnimationFrame(() => {
+        updateCameraState();
+      });
+    };
+
+    if (currentTrack && typeof currentTrack.on === 'function') {
+      currentTrack.on('muted', handleTrackLevelChange);
+      currentTrack.on('unmuted', handleTrackLevelChange);
+    }
+
+    return () => {
+      participant.off(ParticipantEvent.TrackMuted, handleTrackMuted);
+      participant.off(ParticipantEvent.TrackUnmuted, handleTrackUnmuted);
+
+      if (currentTrack && typeof currentTrack.off === 'function') {
+        currentTrack.off('muted', handleTrackLevelChange);
+        currentTrack.off('unmuted', handleTrackLevelChange);
+      }
+    };
   }, [participant, isLocal, participant.videoTracks.size]);
 
   // ✅ REMOVED: No longer needed with autoSubscribe: true
@@ -774,6 +865,8 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
     videoEl.style.objectFit = 'cover';
     videoEl.style.backgroundColor = 'black';
     videoEl.style.display = 'block';
+    videoEl.style.position = 'relative';
+    videoEl.style.zIndex = '1';
 
     // Clear anything currently in the container (only our own children)
     while (container.firstChild) {
@@ -829,6 +922,47 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
       }
     };
   }, [videoPublication?.track, videoPublication?.trackSid, isLocal, participant.identity]);
+
+  // ✅ Hide video element when camera is off - show profile picture instead
+  useEffect(() => {
+    if (videoElementRef.current) {
+      // ✅ CRITICAL: Always get FRESH publication from participant, not from closure
+      const videoPubs: TrackPublication[] = [];
+      participant.videoTracks.forEach((pub) => {
+        videoPubs.push(pub as TrackPublication);
+      });
+      
+      const pub = videoPubs.length > 0 ? videoPubs[0] : null;
+      const track: any = pub?.track;
+      const isTrackMuted = track?.isMuted === true || (pub as any)?.isMuted === true;
+      const shouldHide = !isCameraEnabled || !pub || !track || isTrackMuted;
+      
+      console.log('[VideoTile] Video element visibility update:', {
+        participant: participant.identity,
+        isCameraEnabled,
+        hasVideoPublication: !!pub,
+        hasTrack: !!track,
+        isTrackMuted,
+        shouldHide
+      });
+      
+      // Hide video element completely when camera is disabled
+      if (shouldHide) {
+        videoElementRef.current.style.display = 'none';
+        videoElementRef.current.style.visibility = 'hidden';
+        videoElementRef.current.style.opacity = '0';
+        videoElementRef.current.style.pointerEvents = 'none';
+        videoElementRef.current.style.zIndex = '1';
+      } else {
+        // Show video element when camera is enabled
+        videoElementRef.current.style.display = 'block';
+        videoElementRef.current.style.visibility = 'visible';
+        videoElementRef.current.style.opacity = '1';
+        videoElementRef.current.style.pointerEvents = 'auto';
+        videoElementRef.current.style.zIndex = '1';
+      }
+    }
+  }, [isCameraEnabled, participant, participant.videoTracks.size, participant.identity]);
 
   // ✅ Fetch participant profile from Firestore (for remote participants)
   useEffect(() => {
@@ -1206,8 +1340,11 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
           borderTop: 'none',
           borderBottom: 'none',
           borderRadius: 0,
-          background: 'black', // Black background for letterboxing
-          backgroundColor: 'black',
+          // ✅ Show gradient background when camera is off, black when camera is on
+          background: (!isCameraEnabled || !videoPublication) 
+            ? 'linear-gradient(to bottom right, #1f2937, #111827, #000000)' 
+            : 'black',
+          backgroundColor: (!isCameraEnabled || !videoPublication) ? '#1f2937' : 'black',
           outline: 'none',
           outlineWidth: 0,
           outlineStyle: 'none',
@@ -1226,9 +1363,50 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
           justifyContent: 'center'
         }}
       >
-        {/* ✅ Show profile picture and name when camera is off */}
-        {!isCameraEnabled && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-gray-800 via-gray-900 to-black">
+        {/* ✅ Show profile picture and name when camera is off or no video track */}
+        {(() => {
+          // ✅ CRITICAL: Always get FRESH publication from participant, not from closure
+          const videoPubs: TrackPublication[] = [];
+          participant.videoTracks.forEach((pub) => {
+            videoPubs.push(pub as TrackPublication);
+          });
+          
+          const pub = videoPubs.length > 0 ? videoPubs[0] : null;
+          const track: any = pub?.track;
+          const isTrackMuted = track?.isMuted === true || (pub as any)?.isMuted === true;
+          
+          // Show profile picture if:
+          // 1. Camera is explicitly disabled
+          // 2. No video publication exists
+          // 3. Video publication exists but has no track
+          // 4. Video publication track is muted
+          const shouldShowProfile = !isCameraEnabled || !pub || !track || isTrackMuted;
+          
+          if (shouldShowProfile) {
+            console.log('[VideoTile] ✅ Showing profile picture for', participant.identity, {
+              isCameraEnabled,
+              hasVideoPublication: !!pub,
+              hasTrack: !!track,
+              isTrackMuted,
+              photoURL: photoURL ? 'has photo' : 'no photo',
+              displayName
+            });
+          }
+          return shouldShowProfile;
+        })() && (
+          <div 
+            className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-gray-800 via-gray-900 to-black"
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              zIndex: 50,
+              pointerEvents: 'none',
+              display: 'flex'
+            }}
+          >
             {photoURL ? (
               <div className="relative mb-4">
                 <img
@@ -1260,18 +1438,6 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
             <p className="text-gray-400 text-xs sm:text-sm mt-1">
               Camera is off
             </p>
-          </div>
-        )}
-        
-        {/* Placeholder when no video track exists at all */}
-        {!videoPublication && (
-          <div className="text-center text-cloud">
-            <div className="w-12 h-12 sm:w-16 sm:h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-2">
-              <span className="text-xl sm:text-2xl font-bold">
-                {displayName.charAt(0).toUpperCase()}
-              </span>
-            </div>
-            <p className="text-xs sm:text-sm font-medium">Video Stream</p>
           </div>
         )}
       </div>
