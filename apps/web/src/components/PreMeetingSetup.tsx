@@ -889,7 +889,17 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
   };
 
       const handleBackgroundChange = async (type: 'none' | 'blur' | 'image' | 'video', url?: string) => {
-        if (!videoTrack) return;
+        if (!videoTrack) {
+          console.warn('[BG] No video track available');
+          return;
+        }
+
+        // ✅ CRITICAL: Validate URL immediately before proceeding
+        if ((type === 'image' || type === 'video') && (!url || url.trim() === '')) {
+          console.error('[BG] Invalid URL provided:', { type, url });
+          toast.error('Invalid background URL');
+          return;
+        }
 
         // Quick validation - don't block if track is valid
         const videoTracks = videoTrack.mediaStream?.getVideoTracks();
@@ -898,10 +908,10 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
           return;
         }
 
-        // Set lock but allow it to be overridden after a short timeout for rapid changes
+        // ✅ CRITICAL: Use immediate lock - don't wait, cancel previous operation
         if (isApplyingBackgroundRef.current) {
-          // Wait a very short time, then proceed anyway (allows rapid changes)
-          await new Promise(resolve => setTimeout(resolve, 50));
+          console.log('[BG] Previous background change in progress, cancelling and starting new');
+          // Don't wait - just proceed with new selection
         }
         isApplyingBackgroundRef.current = true;
 
@@ -912,7 +922,7 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
             return;
           }
 
-          // Simple initialization - don't over-validate
+          // ✅ CRITICAL: Initialize immediately - no delays
           try {
             await backgroundEngine.init(videoTrack);
           } catch (initError: any) {
@@ -920,12 +930,12 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
             console.warn('[BG] Init warning (continuing):', initError);
           }
 
-          // Save background preference to Firestore (async, don't wait)
+          // ✅ CRITICAL: Save background preference to Firestore FIRST (before applying)
+          // This ensures state is saved even if application fails
           if (type === 'none') {
             setSavedBackground(null);
             updateSavedBackground(null).catch(console.error);
             // ✅ CRITICAL: When "None" is selected, DISABLE background effects
-            // This ensures no background is applied in the meeting room
             if (isBackgroundEffectsEnabled) {
               setIsBackgroundEffectsEnabled(false);
               updateUserPreferences({ backgroundEffectsEnabled: false }).catch(console.error);
@@ -939,7 +949,11 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
               setIsBackgroundEffectsEnabled(true);
               updateUserPreferences({ backgroundEffectsEnabled: true }).catch(console.error);
             }
-          } else {
+          } else if (type === 'image' || type === 'video') {
+            // ✅ CRITICAL: Validate URL again before saving
+            if (!url || url.trim() === '') {
+              throw new Error(`${type} URL is empty`);
+            }
             const backgroundToSave = { type, url };
             setSavedBackground(backgroundToSave);
             updateSavedBackground(backgroundToSave).catch(console.error);
@@ -950,17 +964,15 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
             }
           }
 
-          // Apply immediately - no delays for fast switching
+          // ✅ CRITICAL: Apply immediately with the exact type and URL
+          console.log('[BG] Applying background:', { type, url });
           if (type === 'none') {
             await backgroundEngine.setNone?.();
+            console.log('[BG] ✅ Background removed');
           } else if (type === 'blur') {
             await backgroundEngine.setBlur?.();
+            console.log('[BG] ✅ Blur applied');
           } else if (type === 'image' && url) {
-            // Validate URL is not empty
-            if (!url || url.trim() === '') {
-              throw new Error('Image URL is empty');
-            }
-            
             // Verify track is still ready before applying
             const applyTracks = videoTrack.mediaStream?.getVideoTracks();
             if (!applyTracks || applyTracks.length === 0 || applyTracks[0].readyState === 'ended') {
@@ -968,15 +980,17 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
               return;
             }
             
-            // Apply image
+            // ✅ CRITICAL: Apply image with exact URL
             await backgroundEngine.setImage?.(url);
+            console.log('[BG] ✅ Image background applied:', url);
           } else if (type === 'video' && url) {
             // Validate video URL before attempting to load
-            if (!url || url.trim() === '' || url.includes('example.com')) {
+            if (url.includes('example.com')) {
               toast.error('Video URL is not available. Please configure a valid video URL.');
               return;
             }
             await backgroundEngine.setVideo?.(url);
+            console.log('[BG] ✅ Video background applied:', url);
           }
         } catch (error: any) {
           // Only log/show errors that are NOT track-related
@@ -990,11 +1004,10 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
             toast.error('Failed to set background: ' + errorMessage);
           }
           // Silently ignore track-related errors - they're expected
+          throw error; // Re-throw so caller knows it failed
         } finally {
-          // Release lock quickly for fast switching
-          setTimeout(() => {
+          // Release lock immediately
             isApplyingBackgroundRef.current = false;
-          }, 50);
         }
       };
 

@@ -6,6 +6,16 @@ import toast from '../lib/toast';
 import Header from '../components/Header';
 import CalendarInterface from '../components/CalendarInterface';
 import ScheduleMeetingForm from '../components/ScheduleMeetingForm';
+import FeedbackPopup, { FeedbackData } from '../components/FeedbackPopup';
+import {
+  canShowFeedbackPopup,
+  updateLastFeedbackPopupShown,
+  saveFeedback,
+  calculateMeetingDuration,
+  isMeetingDurationEligible,
+  getParticipantData,
+  getRoomData,
+} from '../lib/feedbackService';
 import { collection, query, getDocs, orderBy, limit, getDoc, doc, setDoc, updateDoc, arrayUnion, serverTimestamp } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 
@@ -39,6 +49,12 @@ const HomePage: React.FC = () => {
   const [persistedDataLoaded, setPersistedDataLoaded] = useState(false);
   const [calendarRefreshKey, setCalendarRefreshKey] = useState(0);
   const [selectedScheduleDate, setSelectedScheduleDate] = useState<Date | undefined>(undefined);
+  
+  // Feedback popup state
+  const [showFeedbackPopup, setShowFeedbackPopup] = useState(false);
+  const [feedbackMeetingId, setFeedbackMeetingId] = useState<string | null>(null);
+  const [feedbackMeetingDuration, setFeedbackMeetingDuration] = useState<number>(0);
+  const [isCheckingFeedback, setIsCheckingFeedback] = useState(false);
 
   const handleCreateRoom = async () => {
     if (!user || !userProfile) return;
@@ -211,6 +227,109 @@ const HomePage: React.FC = () => {
       loadRecentMeetingsWithMessages();
     }
   }, [user]);
+
+  // Check for feedback popup conditions when page loads
+  useEffect(() => {
+    const checkFeedbackConditions = async () => {
+      if (!user || isCheckingFeedback) {
+        console.log('[HomePage] Skipping feedback check: user=', !!user, 'isCheckingFeedback=', isCheckingFeedback);
+        return;
+      }
+
+      // Check if there's a pending feedback check in sessionStorage
+      const pendingFeedback = sessionStorage.getItem('pendingFeedbackCheck');
+      if (!pendingFeedback) {
+        console.log('[HomePage] No pendingFeedbackCheck found in sessionStorage');
+        return;
+      }
+
+      console.log('[HomePage] Found pendingFeedbackCheck:', pendingFeedback);
+
+      try {
+        setIsCheckingFeedback(true);
+        const { roomId } = JSON.parse(pendingFeedback);
+        
+        if (!roomId) {
+          console.error('[HomePage] Invalid pendingFeedbackCheck: missing roomId');
+          sessionStorage.removeItem('pendingFeedbackCheck');
+          return;
+        }
+
+        console.log('[HomePage] Checking feedback conditions for room:', roomId);
+
+        // Check 24-hour cooldown
+        const canShow = await canShowFeedbackPopup(user.uid);
+        if (!canShow) {
+          console.log('[HomePage] Feedback popup skipped: 24-hour cooldown active');
+          sessionStorage.removeItem('pendingFeedbackCheck');
+          return;
+        }
+
+        // Get participant data to calculate meeting duration
+        const participantData = await getParticipantData(roomId, user.uid);
+        if (!participantData) {
+          console.log('[HomePage] Feedback popup skipped: No participant data found');
+          sessionStorage.removeItem('pendingFeedbackCheck');
+          return;
+        }
+
+        console.log('[HomePage] Participant data:', {
+          joinedAt: participantData.joinedAt?.toDate?.()?.toISOString(),
+          leftAt: participantData.leftAt?.toDate?.()?.toISOString()
+        });
+
+        // Get room data for end time
+        const roomData = await getRoomData(roomId);
+        console.log('[HomePage] Room data:', {
+          createdBy: roomData?.createdBy,
+          endedAt: roomData?.endedAt?.toDate?.()?.toISOString()
+        });
+        
+        // Calculate meeting duration
+        const duration = calculateMeetingDuration(
+          participantData.joinedAt,
+          participantData.leftAt,
+          roomData?.endedAt || null
+        );
+
+        console.log('[HomePage] Calculated meeting duration:', duration, 'minutes');
+
+        // Check if duration meets minimum requirement
+        if (!isMeetingDurationEligible(duration)) {
+          console.log('[HomePage] Feedback popup skipped: Meeting duration less than 5 minutes');
+          sessionStorage.removeItem('pendingFeedbackCheck');
+          return;
+        }
+
+        // All conditions met - show popup
+        console.log('[HomePage] ✅ All conditions met - showing feedback popup');
+        
+        // Clear the pending check BEFORE showing popup to prevent duplicate checks
+        sessionStorage.removeItem('pendingFeedbackCheck');
+        
+        // Update last popup shown timestamp immediately to prevent duplicate shows
+        await updateLastFeedbackPopupShown(user.uid);
+        
+        setFeedbackMeetingId(roomId);
+        setFeedbackMeetingDuration(duration || 0);
+        setShowFeedbackPopup(true);
+      } catch (error) {
+        console.error('[HomePage] Error checking feedback conditions:', error);
+        // Clear pending check on error to prevent retry loops
+        sessionStorage.removeItem('pendingFeedbackCheck');
+        // Fail silently - don't show popup on error
+      } finally {
+        setIsCheckingFeedback(false);
+      }
+    };
+
+    // Small delay to ensure page is fully loaded and sessionStorage is accessible
+    const timer = setTimeout(() => {
+      checkFeedbackConditions();
+    }, 800);
+
+    return () => clearTimeout(timer);
+  }, [user, isCheckingFeedback]);
 
   // Load persisted meeting views (opened meetings and last seen counts)
   const loadPersistedMeetingViews = async () => {
@@ -1052,6 +1171,45 @@ const HomePage: React.FC = () => {
             </button>
           </div>
         </div>
+      )}
+
+      {/* Feedback Popup */}
+      {showFeedbackPopup && feedbackMeetingId && (
+        <FeedbackPopup
+          isOpen={showFeedbackPopup}
+          onClose={() => {
+            setShowFeedbackPopup(false);
+            setFeedbackMeetingId(null);
+            setFeedbackMeetingDuration(0);
+          }}
+          onSubmit={async (feedbackData: FeedbackData) => {
+            if (!user || !userProfile || !feedbackMeetingId) return;
+
+            try {
+              // Get room data for host ID
+              const roomData = await getRoomData(feedbackMeetingId);
+              
+              await saveFeedback(
+                user.uid,
+                userProfile.displayName,
+                feedbackMeetingId,
+                roomData?.createdBy,
+                feedbackMeetingDuration,
+                feedbackData
+              );
+
+              toast.success('Thank you for your feedback!');
+              setShowFeedbackPopup(false);
+              setFeedbackMeetingId(null);
+              setFeedbackMeetingDuration(0);
+            } catch (error: any) {
+              console.error('Error submitting feedback:', error);
+              toast.error('We couldn\'t save your feedback, but your meeting has already ended.');
+            }
+          }}
+          meetingId={feedbackMeetingId}
+          meetingDuration={feedbackMeetingDuration}
+        />
       )}
     </div>
   );

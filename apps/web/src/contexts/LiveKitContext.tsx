@@ -631,6 +631,95 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
       } else if (videoTrack) {
         // Just enable/disable existing track
         await roomRef.current.localParticipant.setCameraEnabled(enabled);
+        
+        // ✅ CRITICAL: If re-enabling camera, reapply background effect
+        if (enabled) {
+          const existingTrack = videoTrack.track as LocalVideoTrack | null;
+          if (existingTrack) {
+            // Read latest background from Firestore
+            let latestSavedBackground = userProfile?.savedBackground || null;
+            let bgEnabled = userProfile?.preferences?.backgroundEffectsEnabled || false;
+            
+            if (auth.currentUser) {
+              try {
+                const { doc, getDoc } = await import('firebase/firestore');
+                const { db } = await import('../lib/firebase');
+                const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
+                if (userDoc.exists()) {
+                  const userData = userDoc.data();
+                  latestSavedBackground = userData.savedBackground || null;
+                  bgEnabled = userData.preferences?.backgroundEffectsEnabled || false;
+                }
+              } catch (error) {
+                // Fall back to userProfile
+              }
+            }
+            
+            const chosenBg = latestSavedBackground;
+            const hasValidBackground = chosenBg && 
+                                     chosenBg.type && 
+                                     chosenBg.type !== 'none' && 
+                                     chosenBg.type !== null &&
+                                     (chosenBg.type === 'blur' || (chosenBg.type === 'image' && chosenBg.url) || (chosenBg.type === 'video' && chosenBg.url));
+            const isMobileDeviceCheck = isMobileDevice();
+            
+            // Reapply background if enabled and valid - with retry logic
+            if (bgEnabled && hasValidBackground && backgroundEngine && !isMobileDeviceCheck && chosenBg) {
+              // ✅ CRITICAL: Retry logic to ensure background applies reliably
+              let retryCount = 0;
+              const maxRetries = 3;
+              const applyBg = async (): Promise<boolean> => {
+                try {
+                  await backgroundEngine.init(existingTrack);
+                  
+                  if (chosenBg.type === 'blur') {
+                    if (typeof backgroundEngine.setBlur === 'function') {
+                      await backgroundEngine.setBlur();
+                      console.log('[LiveKit] ✅ Background blur reapplied when camera re-enabled');
+                      return true;
+                    }
+                  } else if (chosenBg.type === 'image' && chosenBg.url) {
+                    if (typeof backgroundEngine.setImage === 'function') {
+                      await backgroundEngine.setImage(chosenBg.url);
+                      console.log('[LiveKit] ✅ Background image reapplied when camera re-enabled');
+                      return true;
+                    }
+                  } else if (chosenBg.type === 'video' && chosenBg.url) {
+                    if (typeof backgroundEngine.setVideo === 'function') {
+                      await backgroundEngine.setVideo(chosenBg.url);
+                      console.log('[LiveKit] ✅ Background video reapplied when camera re-enabled');
+                      return true;
+                    }
+                  }
+                  return false;
+                } catch (bgError) {
+                  console.warn(`[LiveKit] Background reapplication attempt ${retryCount + 1} failed:`, bgError);
+                  return false;
+                }
+              };
+              
+              // Try immediately
+              let success = await applyBg();
+              
+              // Retry with exponential backoff
+              while (!success && retryCount < maxRetries) {
+                retryCount++;
+                const delay = Math.min(500 * Math.pow(2, retryCount - 1), 2000);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                success = await applyBg();
+              }
+            } else if (!bgEnabled || !hasValidBackground) {
+              // Clear background if disabled
+              try {
+                if (backgroundEngine && typeof backgroundEngine.setNone === 'function') {
+                  await backgroundEngine.setNone();
+                }
+              } catch (clearError) {
+                // Ignore errors
+              }
+            }
+          }
+        }
       }
       
       setIsCameraEnabled(enabled);
@@ -1310,6 +1399,59 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
           }
           setIsCameraEnabled(true);
           console.log('[LiveKit] ✅ Video track published successfully');
+          
+          // ✅ CRITICAL FIX: Verify track is actually published and visible to others
+          // This fixes the bug where track exists locally but isn't visible to other participants
+          // Check if the track is actually published in the room
+          const camPub = r.localParticipant.getTrack(Track.Source.Camera);
+          if (!camPub || !camPub.track) {
+            console.warn('[LiveKit] ⚠️ Camera track not properly published, force-publishing...');
+            try {
+              // Force-publish the track to ensure it's visible to all participants
+              await r.localParticipant.publishTrack(vTrack, {
+                source: Track.Source.Camera,
+                simulcast: shouldUseSimulcast,
+              });
+              console.log('[LiveKit] ✅ Camera track force-published successfully');
+            } catch (forcePublishError: any) {
+              console.error('[LiveKit] ❌ Failed to force-publish camera track:', forcePublishError);
+              // Don't throw - track might still work, just log the error
+            }
+          } else {
+            console.log('[LiveKit] ✅ Camera track verified as published');
+          }
+          
+          // ✅ CRITICAL FIX: Additional verification after a short delay
+          // Sometimes the track is published but not immediately visible to others
+          // This ensures the track is actually visible to all participants
+          setTimeout(async () => {
+            if (!r || r.state !== 'connected' || !r.localParticipant) {
+              return; // Room disconnected, skip verification
+            }
+            
+            const verifiedPub = r.localParticipant.getTrack(Track.Source.Camera);
+            if (!verifiedPub || !verifiedPub.track) {
+              console.warn('[LiveKit] ⚠️ Camera track still not visible after delay, force-publishing again...');
+              try {
+                // Use the track we just created (vTrack) since verifiedPub doesn't exist
+                if (vTrack && vTrack.mediaStreamTrack && vTrack.mediaStreamTrack.readyState === 'live') {
+                  await r.localParticipant.publishTrack(vTrack, {
+                    source: Track.Source.Camera,
+                    simulcast: shouldUseSimulcast,
+                  });
+                  console.log('[LiveKit] ✅ Camera track force-published after delay - now visible to all participants');
+                  forceUpdate({});
+                  setLocalParticipant(r.localParticipant);
+                } else {
+                  console.warn('[LiveKit] ⚠️ Cannot force-publish: video track not available or not live');
+                }
+              } catch (delayedPublishError: any) {
+                console.error('[LiveKit] ❌ Failed to force-publish camera track after delay:', delayedPublishError);
+              }
+            } else {
+              console.log('[LiveKit] ✅ Camera track verified as visible to all participants after delay');
+            }
+          }, 1000); // 1 second delay to allow publish to propagate
         } catch (publishError: any) {
           // If publishing fails, stop the track to free resources
           console.error('[LiveKit] ❌ Failed to publish video track:', publishError);
@@ -1440,57 +1582,150 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
   }, []);
 
   // ✅ CRITICAL: Re-apply background when savedBackground changes (e.g., user changes it in PreMeetingSetup or room)
+  // This ensures background is applied even if userProfile loads after room connection
   useEffect(() => {
-    if (!room || !isConnected || !localParticipant) return;
+    if (!room || !isConnected || !localParticipant) {
+      console.log('[LiveKit] Background re-application skipped: room not ready', {
+        hasRoom: !!room,
+        isConnected,
+        hasLocalParticipant: !!localParticipant
+      });
+      return;
+    }
     
     const vTrack = localParticipant.getTrack(Track.Source.Camera)?.track as LocalVideoTrack | null;
-    if (!vTrack) return;
-
-    const chosenBg = userProfile?.savedBackground || null;
-    const bgEnabled = userProfile?.preferences?.backgroundEffectsEnabled || false;
-    const isMobileDeviceCheck = isMobileDevice();
-    
-    const hasValidBackground = chosenBg && 
-                               chosenBg.type && 
-                               chosenBg.type !== 'none' && 
-                               chosenBg.type !== null &&
-                               (chosenBg.type === 'blur' || (chosenBg.type === 'image' && chosenBg.url) || (chosenBg.type === 'video' && chosenBg.url));
-
-    if (bgEnabled && hasValidBackground && backgroundEngine && !isMobileDeviceCheck) {
-      const applyBackground = async () => {
-        try {
-          await backgroundEngine.init(vTrack);
-          
-          if (chosenBg.type === 'blur') {
-            if (typeof backgroundEngine.setBlur === 'function') {
-              await backgroundEngine.setBlur();
-              console.log('[LiveKit] ✅ Background blur re-applied after change');
-            }
-          } else if (chosenBg.type === 'image' && chosenBg.url) {
-            if (typeof backgroundEngine.setImage === 'function') {
-              await backgroundEngine.setImage(chosenBg.url);
-              console.log('[LiveKit] ✅ Background image re-applied after change:', chosenBg.url);
-            }
-          } else if (chosenBg.type === 'video' && chosenBg.url) {
-            if (typeof backgroundEngine.setVideo === 'function') {
-              await backgroundEngine.setVideo(chosenBg.url);
-              console.log('[LiveKit] ✅ Background video re-applied after change');
-            }
-          }
-        } catch (bgError) {
-          console.warn('[LiveKit] Background re-application failed:', bgError);
-        }
-      };
-      
-      // Small delay to ensure track is stable
-      const timer = setTimeout(applyBackground, 300);
-      return () => clearTimeout(timer);
-    } else if (!bgEnabled || !hasValidBackground) {
-      // Remove background if disabled or invalid
-      if (backgroundEngine && typeof backgroundEngine.setNone === 'function') {
-        backgroundEngine.setNone().catch(() => {});
-      }
+    if (!vTrack) {
+      console.log('[LiveKit] No video track available for background application');
+      return;
     }
+
+    // ✅ CRITICAL: Read directly from Firestore to get latest background (userProfile might be stale)
+    const applyBackgroundFromFirestore = async () => {
+      try {
+        let chosenBg = userProfile?.savedBackground || null;
+        let bgEnabled = userProfile?.preferences?.backgroundEffectsEnabled || false;
+        
+        // ✅ CRITICAL: Always read directly from Firestore to ensure we have the latest values
+        // This is especially important when user selects background during meeting
+        if (auth.currentUser) {
+          try {
+            const { doc, getDoc } = await import('firebase/firestore');
+            const { db } = await import('../lib/firebase');
+            const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
+            if (userDoc.exists()) {
+              const userData = userDoc.data();
+              chosenBg = userData.savedBackground || null;
+              bgEnabled = userData.preferences?.backgroundEffectsEnabled || false;
+              console.log('[LiveKit] ✅ Read latest background from Firestore for re-application:', {
+                savedBackground: chosenBg,
+                backgroundEffectsEnabled: bgEnabled,
+                type: chosenBg?.type,
+                url: chosenBg?.url
+              });
+            } else {
+              console.warn('[LiveKit] User document not found in Firestore');
+            }
+          } catch (firestoreError) {
+            console.warn('[LiveKit] Failed to read from Firestore, using userProfile:', firestoreError);
+            // Fall back to userProfile
+          }
+        }
+        
+        const isMobileDeviceCheck = isMobileDevice();
+        
+        const hasValidBackground = chosenBg && 
+                                   chosenBg.type && 
+                                   chosenBg.type !== 'none' && 
+                                   chosenBg.type !== null &&
+                                   (chosenBg.type === 'blur' || (chosenBg.type === 'image' && chosenBg.url) || (chosenBg.type === 'video' && chosenBg.url));
+
+        console.log('[LiveKit] Background application check:', {
+          bgEnabled,
+          hasValidBackground,
+          hasBackgroundEngine: !!backgroundEngine,
+          isMobile: isMobileDeviceCheck,
+          chosenBgType: chosenBg?.type,
+          chosenBgUrl: chosenBg?.url
+        });
+
+        if (bgEnabled && hasValidBackground && backgroundEngine && !isMobileDeviceCheck && chosenBg) {
+          // ✅ CRITICAL: Retry logic with exponential backoff to ensure background applies reliably
+          let retryCount = 0;
+          const maxRetries = 5;
+          const applyBackground = async (): Promise<boolean> => {
+            try {
+              // Re-initialize background engine to ensure it's ready
+              console.log('[LiveKit] Initializing background engine for track:', vTrack.id);
+              await backgroundEngine.init(vTrack);
+              
+              if (chosenBg.type === 'blur') {
+                if (typeof backgroundEngine.setBlur === 'function') {
+                  await backgroundEngine.setBlur();
+                  console.log('[LiveKit] ✅ Background blur re-applied after change');
+                  return true;
+                }
+              } else if (chosenBg.type === 'image' && chosenBg.url) {
+                if (typeof backgroundEngine.setImage === 'function') {
+                  console.log('[LiveKit] Applying background image:', chosenBg.url);
+                  await backgroundEngine.setImage(chosenBg.url);
+                  console.log('[LiveKit] ✅ Background image re-applied after change:', chosenBg.url);
+                  return true;
+                }
+              } else if (chosenBg.type === 'video' && chosenBg.url) {
+                if (typeof backgroundEngine.setVideo === 'function') {
+                  console.log('[LiveKit] Applying background video:', chosenBg.url);
+                  await backgroundEngine.setVideo(chosenBg.url);
+                  console.log('[LiveKit] ✅ Background video re-applied after change');
+                  return true;
+                }
+              }
+              console.warn('[LiveKit] Background type not supported or function not available:', chosenBg.type);
+              return false;
+            } catch (bgError) {
+              console.warn(`[LiveKit] Background re-application attempt ${retryCount + 1} failed:`, bgError);
+              return false;
+            }
+          };
+          
+          // Try immediately first
+          let success = await applyBackground();
+          
+          // Retry with exponential backoff if failed
+          while (!success && retryCount < maxRetries) {
+            retryCount++;
+            const delay = Math.min(1000 * Math.pow(2, retryCount - 1), 5000); // Max 5 seconds
+            console.log(`[LiveKit] Retrying background application in ${delay}ms (attempt ${retryCount + 1}/${maxRetries})`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            success = await applyBackground();
+          }
+          
+          if (!success) {
+            console.error('[LiveKit] ❌ Background application failed after all retries');
+            toast.error('Failed to apply background effect. Please try again.');
+          } else {
+            console.log('[LiveKit] ✅ Background successfully applied after change');
+          }
+        } else if (!bgEnabled || !hasValidBackground) {
+          // Remove background if disabled or invalid
+          console.log('[LiveKit] Removing background - disabled or invalid:', {
+            bgEnabled,
+            hasValidBackground,
+            chosenBgType: chosenBg?.type
+          });
+          if (backgroundEngine && typeof backgroundEngine.setNone === 'function') {
+            await backgroundEngine.setNone();
+            console.log('[LiveKit] ✅ Background removed');
+          }
+        }
+      } catch (error) {
+        console.error('[LiveKit] Error in background re-application effect:', error);
+        toast.error('Error applying background effect. Please try again.');
+      }
+    };
+    
+    // ✅ CRITICAL: Apply immediately - no delays to prevent 5+ minute delays
+    // Apply synchronously to ensure background appears immediately
+    applyBackgroundFromFirestore();
   }, [room, isConnected, localParticipant, userProfile?.savedBackground, userProfile?.preferences?.backgroundEffectsEnabled]);
 
   const value: LiveKitContextType = {

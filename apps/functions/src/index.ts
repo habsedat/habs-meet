@@ -1040,9 +1040,88 @@ export const endRoom = functions.https.onRequest(async (req, res) => {
         }
       }
 
+      // ✅ Set leftAt for all participants when meeting ends
+      try {
+        const participantsSnapshot = await admin.firestore()
+          .collection('rooms')
+          .doc(roomId)
+          .collection('participants')
+          .get();
+
+        // Filter participants who don't have leftAt set yet
+        const participantsToUpdate = participantsSnapshot.docs.filter((doc) => {
+          const data = doc.data();
+          return !data.leftAt; // Only update if leftAt is not set
+        });
+
+        const updatePromises = participantsToUpdate.map(async (participantDoc) => {
+          try {
+            await participantDoc.ref.update({
+              leftAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+            console.log(`[EndRoom] ✅ Set leftAt for participant: ${participantDoc.id}`);
+          } catch (err: any) {
+            console.warn(`[EndRoom] ⚠️ Failed to set leftAt for participant ${participantDoc.id}:`, err);
+          }
+        });
+
+        await Promise.allSettled(updatePromises);
+        console.log(`[EndRoom] ✅ Set leftAt for ${participantsToUpdate.length} participant(s)`);
+      } catch (leftAtError: any) {
+        console.warn('[EndRoom] ⚠️ Error setting leftAt for participants (non-critical):', leftAtError);
+        // Continue even if this fails
+      }
+
       return res.json({ success: true, message: 'Meeting ended and all participants disconnected' });
     } catch (error: any) {
       console.error('Error ending room:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  });
+});
+
+// POST /api/meet/leave
+export const leaveMeeting = functions.https.onRequest(async (req, res) => {
+  return corsHandler(req, res, async () => {
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
+    }
+
+    try {
+      const user = await verifyAuth(req);
+      const { roomId } = req.body;
+
+      if (!roomId) {
+        return res.status(400).json({ error: 'Missing roomId' });
+      }
+
+      // Check if user is a participant
+      const participantRef = admin.firestore()
+        .collection('rooms')
+        .doc(roomId)
+        .collection('participants')
+        .doc(user.uid);
+
+      const participantDoc = await participantRef.get();
+
+      if (!participantDoc.exists) {
+        // User is not a participant - that's OK, they might have already left
+        return res.json({ success: true, message: 'User is not a participant' });
+      }
+
+      const participantData = participantDoc.data()!;
+
+      // Only set leftAt if it's not already set
+      if (!participantData.leftAt) {
+        await participantRef.update({
+          leftAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        console.log(`[LeaveMeeting] ✅ Set leftAt for participant: ${user.uid} in room: ${roomId}`);
+      }
+
+      return res.json({ success: true, message: 'Left meeting successfully' });
+    } catch (error: any) {
+      console.error('Error leaving meeting:', error);
       return res.status(500).json({ error: error.message });
     }
   });
@@ -1811,6 +1890,8 @@ export const api = functions.https.onRequest(async (req, res) => {
     } else if ((path === '/api/meet/end' || path === '/meet/end') && method === 'POST') {
       // ✅ CRITICAL: Route to endRoom function
       return endRoom(req, res);
+    } else if ((path === '/api/meet/leave' || path === '/meet/leave') && method === 'POST') {
+      return leaveMeeting(req, res);
     } else {
       console.log('[API Router] No route found for:', path, 'Method:', method);
       return res.status(404).json({ error: 'Endpoint not found' });

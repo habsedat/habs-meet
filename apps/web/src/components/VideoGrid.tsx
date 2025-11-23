@@ -724,7 +724,7 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
       participant.videoTracks.forEach((pub) => {
         videoPubs.push(pub as TrackPublication);
       });
-      
+    
       // Get the first video track (camera)
       const currentPub = videoPubs.length > 0 ? videoPubs[0] : null;
       const currentTrack: any = currentPub?.track;
@@ -766,7 +766,7 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
         });
       }
     };
-
+    
     const handleTrackUnmuted = (pub: TrackPublication) => {
       if (pub.kind === Track.Kind.Video || pub.source === Track.Source.Camera) {
         console.log('[VideoTile] Track unmuted event:', participant.identity, pub.source);
@@ -779,7 +779,7 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
 
     participant.on(ParticipantEvent.TrackMuted, handleTrackMuted);
     participant.on(ParticipantEvent.TrackUnmuted, handleTrackUnmuted);
-
+    
     // Also listen on the actual track, if we have one - get fresh reference each time
     const currentTrack: any = videoPublication?.track;
     const handleTrackLevelChange = () => {
@@ -787,14 +787,14 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
       requestAnimationFrame(() => {
         updateCameraState();
       });
-    };
-
+        };
+        
     if (currentTrack && typeof currentTrack.on === 'function') {
       currentTrack.on('muted', handleTrackLevelChange);
       currentTrack.on('unmuted', handleTrackLevelChange);
     }
-
-    return () => {
+        
+        return () => {
       participant.off(ParticipantEvent.TrackMuted, handleTrackMuted);
       participant.off(ParticipantEvent.TrackUnmuted, handleTrackUnmuted);
 
@@ -837,15 +837,24 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
           }
         } catch (err) {
           console.warn('[VideoTile] detach on no-track ignored:', err);
-        }
-        if (existing.parentNode && existing.parentNode instanceof Node) {
-          try {
-            if (container && container.contains(existing)) {
-              container.removeChild(existing);
+    }
+    
+        // ✅ CRITICAL: Only detach from LiveKit - DO NOT manually remove from DOM
+        // Let React handle DOM cleanup to avoid conflicts
+        try {
+          // Detach from LiveKit if track exists
+          const oldTrack = videoPublication?.track;
+          if (oldTrack) {
+            const attached =
+              (oldTrack as any)?.attachedElements ||
+              (oldTrack as any)?._attachedElements ||
+              [];
+            if (attached && attached.includes(existing)) {
+              oldTrack.detach(existing);
             }
-          } catch (err) {
-            console.warn('[VideoTile] safe removeChild (no-track) ignored:', err);
           }
+        } catch (err) {
+          // Ignore detach errors
         }
         videoElementRef.current = null;
       }
@@ -860,28 +869,190 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
     videoEl.muted = isLocal;
     videoEl.playsInline = true;
     videoEl.controls = false;
-    videoEl.style.width = '100%';
+    // ✅ CRITICAL FIX: Start with 'contain' to prevent zooming, will be adjusted based on aspect ratio
+    videoEl.style.objectFit = 'contain';
+    videoEl.style.width = 'auto';
     videoEl.style.height = '100%';
-    videoEl.style.objectFit = 'cover';
+    videoEl.style.maxWidth = '100%';
+    videoEl.style.maxHeight = '100%';
     videoEl.style.backgroundColor = 'black';
     videoEl.style.display = 'block';
     videoEl.style.position = 'relative';
     videoEl.style.zIndex = '1';
+    videoEl.style.margin = '0 auto'; // Center horizontally for letterboxing
+    videoEl.style.marginLeft = 'auto';
+    videoEl.style.marginRight = 'auto';
 
-    // Clear anything currently in the container (only our own children)
-    while (container.firstChild) {
-      container.removeChild(container.firstChild);
+    // ✅ CRITICAL: Detach old video element from LiveKit, but let React handle DOM cleanup
+    const existingVideo = videoElementRef.current;
+    if (existingVideo && existingVideo !== videoEl) {
+      try {
+        // Detach from LiveKit to free resources
+        const oldTrack = videoPublication?.track;
+        if (oldTrack) {
+          const attached =
+            (oldTrack as any)?.attachedElements ||
+            (oldTrack as any)?._attachedElements ||
+            [];
+          if (attached && attached.includes(existingVideo)) {
+            oldTrack.detach(existingVideo);
+          }
+        }
+      } catch (err) {
+        // Ignore detach errors
+      }
     }
 
-    container.appendChild(videoEl);
+    // ✅ CRITICAL: Append video element safely
+    // Only remove old video element if it exists and is different
+    try {
+      const oldVideo = videoElementRef.current;
+      
+      // If there's an old video element that's different, detach it from LiveKit
+      // but DON'T manually remove from DOM - let the cleanup function handle it
+      if (oldVideo && oldVideo !== videoEl && oldVideo.parentNode === container) {
+        // Detach from LiveKit to free resources
+        try {
+          const oldTrack = videoPublication?.track;
+          if (oldTrack) {
+            const attached =
+              (oldTrack as any)?.attachedElements ||
+              (oldTrack as any)?._attachedElements ||
+              [];
+            if (attached && attached.includes(oldVideo)) {
+              oldTrack.detach(oldVideo);
+            }
+          }
+        } catch (detachErr) {
+          // Ignore detach errors
+        }
+      }
+      
+      // Append new video element if not already in container
+      if (!container.contains(videoEl)) {
+        container.appendChild(videoEl);
+      } else if (container.contains(videoEl) && videoEl.parentNode !== container) {
+        // Video element exists but in wrong parent - move it
+        try {
+          videoEl.parentNode?.removeChild(videoEl);
+          container.appendChild(videoEl);
+        } catch (moveErr) {
+          // If move fails, just try to append (might already be there)
+          if (!container.contains(videoEl)) {
+            container.appendChild(videoEl);
+          }
+        }
+      }
+    } catch (err) {
+      // Fallback: try append if container manipulation fails
+      console.warn('[VideoTile] Error during container manipulation, trying fallback:', err);
+      try {
+        if (!container.contains(videoEl)) {
+          container.appendChild(videoEl);
+        }
+      } catch (fallbackErr) {
+        console.error('[VideoTile] Failed to append video element:', fallbackErr);
+      }
+    }
     console.log('[VideoTile] Video element appended to DOM');
 
     const handleLoaded = () => {
       console.log('[VideoTile] Video loaded metadata for', participant.identity);
-      // optional aspect-ratio logic
+      
+      // ✅ CRITICAL FIX: Detect phone devices (9:16 aspect ratio) and adjust display
+      if (videoEl.videoWidth && videoEl.videoHeight) {
+        const aspectRatio = videoEl.videoWidth / videoEl.videoHeight;
+        // 9:16 = 0.5625, so anything < 0.65 is portrait/phone (with some margin)
+        const isPhoneVideo = aspectRatio < 0.65;
+        
+        console.log('[VideoTile] Video aspect ratio detected:', {
+          participant: participant.identity,
+          width: videoEl.videoWidth,
+          height: videoEl.videoHeight,
+          aspectRatio: aspectRatio.toFixed(3),
+          isPhoneVideo,
+          expectedPhoneRatio: '0.5625 (9:16)'
+        });
+        
+        if (isPhoneVideo) {
+          // ✅ Phone device (9:16) - use 'contain' to show full video with letterboxing
+          // Add CSS class for gallery view compatibility
+          videoEl.classList.add('portrait-video');
+          // Force all styles to ensure proper display - CRITICAL for phone videos
+          videoEl.style.setProperty('object-fit', 'contain', 'important');
+          videoEl.style.setProperty('width', 'auto', 'important');
+          videoEl.style.setProperty('height', '100%', 'important');
+          videoEl.style.setProperty('max-width', '100%', 'important');
+          videoEl.style.setProperty('max-height', '100%', 'important');
+          videoEl.style.setProperty('margin', '0 auto', 'important');
+          videoEl.style.setProperty('margin-left', 'auto', 'important');
+          videoEl.style.setProperty('margin-right', 'auto', 'important');
+          videoEl.style.setProperty('display', 'block', 'important');
+          videoEl.style.setProperty('position', 'relative', 'important');
+          videoEl.style.setProperty('left', 'auto', 'important');
+          videoEl.style.setProperty('right', 'auto', 'important');
+          // Ensure video is centered both horizontally and vertically
+          videoEl.style.setProperty('align-self', 'center', 'important');
+          console.log('[VideoTile] ✅ Phone video (9:16) detected - using contain mode with letterboxing');
+        } else {
+          // Desktop/laptop (16:9 or similar) - use 'cover' to fill the tile
+          videoEl.classList.remove('portrait-video');
+          videoEl.style.setProperty('object-fit', 'cover', 'important');
+          videoEl.style.setProperty('width', '100%', 'important');
+          videoEl.style.setProperty('height', '100%', 'important');
+          videoEl.style.setProperty('max-width', '100%', 'important');
+          videoEl.style.setProperty('max-height', '100%', 'important');
+          videoEl.style.setProperty('margin', '0', 'important');
+          videoEl.style.setProperty('margin-left', '0', 'important');
+          videoEl.style.setProperty('margin-right', '0', 'important');
+          videoEl.style.setProperty('left', '0', 'important');
+          videoEl.style.setProperty('right', '0', 'important');
+          videoEl.style.setProperty('align-self', 'stretch', 'important');
+          console.log('[VideoTile] ✅ Desktop video (16:9) detected - using cover mode');
+        }
+      } else {
+        // If dimensions not available yet, default to contain for safety
+        console.warn('[VideoTile] Video dimensions not available, defaulting to contain');
+        videoEl.classList.add('portrait-video');
+        videoEl.style.setProperty('object-fit', 'contain', 'important');
+        videoEl.style.setProperty('width', 'auto', 'important');
+        videoEl.style.setProperty('height', '100%', 'important');
+        videoEl.style.setProperty('max-width', '100%', 'important');
+        videoEl.style.setProperty('margin', '0 auto', 'important');
+      }
+    };
+    
+    // ✅ CRITICAL: Also check on resize events in case video dimensions change
+    const handleResize = () => {
+      if (videoEl.videoWidth && videoEl.videoHeight) {
+        const aspectRatio = videoEl.videoWidth / videoEl.videoHeight;
+        const isPhoneVideo = aspectRatio < 0.65;
+        
+        if (isPhoneVideo) {
+          // Phone video - ensure contain mode with proper centering
+          videoEl.classList.add('portrait-video');
+          videoEl.style.setProperty('object-fit', 'contain', 'important');
+          videoEl.style.setProperty('width', 'auto', 'important');
+          videoEl.style.setProperty('height', '100%', 'important');
+          videoEl.style.setProperty('max-width', '100%', 'important');
+          videoEl.style.setProperty('margin', '0 auto', 'important');
+          videoEl.style.setProperty('margin-left', 'auto', 'important');
+          videoEl.style.setProperty('margin-right', 'auto', 'important');
+          videoEl.style.setProperty('align-self', 'center', 'important');
+        } else {
+          // Desktop video - use cover to fill
+          videoEl.classList.remove('portrait-video');
+          videoEl.style.setProperty('object-fit', 'cover', 'important');
+          videoEl.style.setProperty('width', '100%', 'important');
+          videoEl.style.setProperty('height', '100%', 'important');
+          videoEl.style.setProperty('margin', '0', 'important');
+          videoEl.style.setProperty('align-self', 'stretch', 'important');
+        }
+      }
     };
 
     videoEl.addEventListener('loadedmetadata', handleLoaded);
+    videoEl.addEventListener('resize', handleResize);
 
     // ✅ CRITICAL: Play video for both local and remote participants
     // Local video should also play (it's just muted)
@@ -898,6 +1069,8 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
     return () => {
       console.log('[VideoTile] Cleaning up video element for', participant.identity);
       videoEl.removeEventListener('loadedmetadata', handleLoaded);
+      videoEl.removeEventListener('resize', handleResize);
+      
       try {
         // detach from LiveKit first
         const attached =
@@ -907,16 +1080,14 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
         if (attached && attached.includes(videoEl)) {
           track.detach(videoEl);
         }
-      } catch (err) {
+          } catch (err) {
         console.warn('[VideoTile] detach ignored:', err);
-      }
-      try {
-        if (container && container.contains(videoEl)) {
-          container.removeChild(videoEl);
-        }
-      } catch (err) {
-        console.warn('[VideoTile] removeChild ignored:', err);
-      }
+          }
+      
+      // ✅ CRITICAL: DO NOT manually remove from DOM - React will handle it
+      // This prevents NotFoundError conflicts with React's DOM management
+      // We only detach from LiveKit, React handles the DOM cleanup
+      
       if (videoElementRef.current === videoEl) {
         videoElementRef.current = null;
       }
@@ -1341,10 +1512,11 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
           borderBottom: 'none',
           borderRadius: 0,
           // ✅ Show gradient background when camera is off, black when camera is on
+          // ✅ CRITICAL: Black background ensures letterboxing (black bars) for phone videos
           background: (!isCameraEnabled || !videoPublication) 
             ? 'linear-gradient(to bottom right, #1f2937, #111827, #000000)' 
-            : 'black',
-          backgroundColor: (!isCameraEnabled || !videoPublication) ? '#1f2937' : 'black',
+            : '#000000', // Pure black for letterboxing
+          backgroundColor: (!isCameraEnabled || !videoPublication) ? '#1f2937' : '#000000', // Pure black for letterboxing
           outline: 'none',
           outlineWidth: 0,
           outlineStyle: 'none',
@@ -1359,8 +1531,8 @@ const VideoTile: React.FC<VideoTileProps> = ({ participant, currentUserUid, isPr
           height: '100%',
           position: 'relative',
           display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center'
+          alignItems: 'center', // ✅ Center vertically for letterboxing
+          justifyContent: 'center' // ✅ Center horizontally for letterboxing
         }}
       >
         {/* ✅ Show profile picture and name when camera is off or no video track */}

@@ -2,22 +2,44 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { defaultMediaService, DefaultMedia } from '../lib/defaultMediaService';
 import { FileUploadProgress } from '../lib/fileStorageService';
+import { getFeedback, getFeedbackStats, MeetingFeedback } from '../lib/feedbackService';
 import toast from '../lib/toast';
 
 const AdminPage: React.FC = () => {
   const { user, isAdmin } = useAuth();
-  const [activeTab, setActiveTab] = useState<'background' | 'avatar' | 'filter' | 'effect'>('background');
+  const [activeTab, setActiveTab] = useState<'background' | 'avatar' | 'filter' | 'effect' | 'feedback'>('background');
   const [defaultMedia, setDefaultMedia] = useState<DefaultMedia[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<FileUploadProgress | null>(null);
   const [uploadQueue, setUploadQueue] = useState<{ total: number; current: number; completed: number; failed: number } | null>(null);
   const [loading, setLoading] = useState(false);
-  const [isSyncing, setIsSyncing] = useState(false);
+  
+  // Feedback state
+  const [feedback, setFeedback] = useState<MeetingFeedback[]>([]);
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [feedbackStats, setFeedbackStats] = useState<{
+    total: number;
+    positive: number;
+    negative: number;
+    averageDuration: number;
+  } | null>(null);
+  const [feedbackFilters, setFeedbackFilters] = useState<{
+    rating?: 'up' | 'down';
+    startDate?: Date;
+    endDate?: Date;
+    searchTerm?: string;
+  }>({});
+  const [selectedFeedback, setSelectedFeedback] = useState<MeetingFeedback | null>(null);
 
   // Load default media when tab changes
   useEffect(() => {
     if (isAdmin) {
-      loadDefaultMedia();
+      if (activeTab === 'feedback') {
+        loadFeedback();
+        loadFeedbackStats();
+      } else {
+        loadDefaultMedia();
+      }
     }
   }, [activeTab, isAdmin]);
 
@@ -25,6 +47,11 @@ const AdminPage: React.FC = () => {
   const loadDefaultMedia = async () => {
     setLoading(true);
     try {
+      // Skip loading media for feedback tab
+      if (activeTab === 'feedback') {
+        setLoading(false);
+        return;
+      }
       const media = await defaultMediaService.getDefaultMedia(activeTab);
       setDefaultMedia(media);
     } catch (error) {
@@ -38,6 +65,11 @@ const AdminPage: React.FC = () => {
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (!files || files.length === 0 || !user) return;
+
+    // Don't allow uploads on feedback tab
+    if (activeTab === 'feedback') {
+      return;
+    }
 
     setIsUploading(true);
     const filesArray = Array.from(files);
@@ -121,6 +153,11 @@ const AdminPage: React.FC = () => {
   const handleDeleteHardcodedDefaults = async () => {
     if (!user) return;
     
+    // Don't allow deletion on feedback tab
+    if (activeTab === 'feedback') {
+      return;
+    }
+    
     if (!confirm('Are you sure you want to delete all hardcoded default media? This will remove all backgrounds/images that were created before admin uploads were implemented.')) {
       return;
     }
@@ -135,21 +172,38 @@ const AdminPage: React.FC = () => {
     }
   };
 
-  const handleSyncMedia = async () => {
-    if (!user) return;
-    
-    setIsSyncing(true);
+  // Feedback functions
+  const loadFeedback = async () => {
+    setFeedbackLoading(true);
     try {
-      const result = await defaultMediaService.syncDefaultMediaToBothProjects();
-      toast.success(`Sync completed! ${result.synced} items synced, ${result.errors} errors`);
-      // Reload media after sync
-      await loadDefaultMedia();
+      const data = await getFeedback(feedbackFilters);
+      setFeedback(data);
     } catch (error: any) {
-      console.error('Error syncing default media:', error);
-      toast.error(`Failed to sync media: ${error.message}`);
+      console.error('Error loading feedback:', error);
+      toast.error('Failed to load feedback');
     } finally {
-      setIsSyncing(false);
+      setFeedbackLoading(false);
     }
+  };
+
+  const loadFeedbackStats = async () => {
+    try {
+      const stats = await getFeedbackStats();
+      setFeedbackStats(stats);
+    } catch (error: any) {
+      console.error('Error loading feedback stats:', error);
+    }
+  };
+
+  const handleFeedbackFilterChange = (key: string, value: any) => {
+    setFeedbackFilters((prev) => ({
+      ...prev,
+      [key]: value,
+    }));
+  };
+
+  const applyFeedbackFilters = () => {
+    loadFeedback();
   };
 
   // Check if user is admin - if not, show access denied
@@ -189,13 +243,6 @@ const AdminPage: React.FC = () => {
             </div>
             <div className="flex gap-3">
               <button
-                onClick={handleSyncMedia}
-                disabled={isSyncing}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isSyncing ? 'Syncing...' : 'Sync to Both Projects'}
-              </button>
-              <button
                 onClick={() => window.location.href = '/'}
                 className="px-4 py-2 bg-goldBright text-midnight rounded-lg hover:bg-yellow-400 transition-colors font-semibold"
               >
@@ -214,7 +261,8 @@ const AdminPage: React.FC = () => {
                 { id: 'background', label: 'Virtual Backgrounds' },
                 { id: 'avatar', label: 'Avatars' },
                 { id: 'filter', label: 'Video Filters' },
-                { id: 'effect', label: 'Studio Effects' }
+                { id: 'effect', label: 'Studio Effects' },
+                { id: 'feedback', label: 'Meeting Feedback' }
               ].map((tab) => (
                 <button
                   key={tab.id}
@@ -232,6 +280,152 @@ const AdminPage: React.FC = () => {
           </div>
 
           <div className="p-6">
+            {activeTab === 'feedback' ? (
+              // Feedback Dashboard
+              <div>
+                {/* Stats */}
+                {feedbackStats && (
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                    <div className="bg-midnight/60 rounded-lg border border-white/10 p-4">
+                      <p className="text-cloud/70 text-sm mb-1">Total Feedback</p>
+                      <p className="text-2xl font-bold text-cloud">{feedbackStats.total}</p>
+                    </div>
+                    <div className="bg-green-500/20 rounded-lg border border-green-500/30 p-4">
+                      <p className="text-green-400/70 text-sm mb-1">Positive</p>
+                      <p className="text-2xl font-bold text-green-400">{feedbackStats.positive}</p>
+                    </div>
+                    <div className="bg-red-500/20 rounded-lg border border-red-500/30 p-4">
+                      <p className="text-red-400/70 text-sm mb-1">Negative</p>
+                      <p className="text-2xl font-bold text-red-400">{feedbackStats.negative}</p>
+                    </div>
+                    <div className="bg-midnight/60 rounded-lg border border-white/10 p-4">
+                      <p className="text-cloud/70 text-sm mb-1">Avg Duration</p>
+                      <p className="text-2xl font-bold text-cloud">{feedbackStats.averageDuration} min</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Filters */}
+                <div className="mb-6 p-4 bg-midnight/60 rounded-lg border border-white/10">
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-cloud/70 mb-2">Rating</label>
+                      <select
+                        value={feedbackFilters.rating || ''}
+                        onChange={(e) => handleFeedbackFilterChange('rating', e.target.value || undefined)}
+                        className="w-full bg-white/5 border border-white/20 rounded-lg px-3 py-2 text-cloud focus:outline-none focus:ring-2 focus:ring-goldBright"
+                      >
+                        <option value="">All</option>
+                        <option value="up">Positive</option>
+                        <option value="down">Negative</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-cloud/70 mb-2">Start Date</label>
+                      <input
+                        type="date"
+                        value={feedbackFilters.startDate?.toISOString().split('T')[0] || ''}
+                        onChange={(e) => handleFeedbackFilterChange('startDate', e.target.value ? new Date(e.target.value) : undefined)}
+                        className="w-full bg-white/5 border border-white/20 rounded-lg px-3 py-2 text-cloud focus:outline-none focus:ring-2 focus:ring-goldBright"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-cloud/70 mb-2">End Date</label>
+                      <input
+                        type="date"
+                        value={feedbackFilters.endDate?.toISOString().split('T')[0] || ''}
+                        onChange={(e) => handleFeedbackFilterChange('endDate', e.target.value ? new Date(e.target.value) : undefined)}
+                        className="w-full bg-white/5 border border-white/20 rounded-lg px-3 py-2 text-cloud focus:outline-none focus:ring-2 focus:ring-goldBright"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-cloud/70 mb-2">Search</label>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          placeholder="Meeting ID, User ID..."
+                          value={feedbackFilters.searchTerm || ''}
+                          onChange={(e) => handleFeedbackFilterChange('searchTerm', e.target.value || undefined)}
+                          className="flex-1 bg-white/5 border border-white/20 rounded-lg px-3 py-2 text-cloud focus:outline-none focus:ring-2 focus:ring-goldBright"
+                        />
+                        <button
+                          onClick={applyFeedbackFilters}
+                          className="px-4 py-2 bg-goldBright text-midnight rounded-lg hover:bg-yellow-400 transition-colors font-semibold"
+                        >
+                          Apply
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Feedback List */}
+                {feedbackLoading ? (
+                  <div className="text-center py-12">
+                    <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-goldBright"></div>
+                    <p className="text-cloud/70 mt-2">Loading feedback...</p>
+                  </div>
+                ) : feedback.length === 0 ? (
+                  <div className="text-center py-12">
+                    <p className="text-cloud/70">No feedback found.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {feedback.map((item) => (
+                      <div
+                        key={item.id}
+                        onClick={() => setSelectedFeedback(item)}
+                        className="bg-midnight/60 rounded-lg border border-white/10 p-4 cursor-pointer hover:bg-midnight/80 transition-colors"
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-3 mb-2">
+                              {item.rating === 'up' ? (
+                                <svg className="w-6 h-6 text-green-400" fill="currentColor" viewBox="0 0 24 24">
+                                  <path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z" />
+                                </svg>
+                              ) : (
+                                <svg className="w-6 h-6 text-red-400" fill="currentColor" viewBox="0 0 24 24">
+                                  <path d="M15 3H6c-.83 0-1.54.5-1.84 1.22l-3.02 7.05c-.09.23-.14.47-.14.73v2c0 1.1.9 2 2 2h6.31l-.95 4.57-.03.32c0 .41.17.79.44 1.06L9.83 23l6.59-6.59c.36-.36.58-.86.58-1.41V5c0-1.1-.9-2-2-2zm4 0v12h4V3h-4z" />
+                                </svg>
+                              )}
+                              <div>
+                                <p className="font-semibold text-cloud">
+                                  {item.participantDisplayName || item.participantUserId}
+                                </p>
+                                <p className="text-sm text-cloud/60">
+                                  {item.createdAt?.toDate?.().toLocaleString() || 'Unknown date'}
+                                </p>
+                              </div>
+                            </div>
+                            {item.comment && (
+                              <p className="text-cloud/80 text-sm mb-2 line-clamp-2">{item.comment}</p>
+                            )}
+                            {item.quickReasons && item.quickReasons.length > 0 && (
+                              <div className="flex flex-wrap gap-2 mb-2">
+                                {item.quickReasons.map((reason) => (
+                                  <span
+                                    key={reason}
+                                    className="px-2 py-1 bg-white/10 text-cloud/70 rounded text-xs"
+                                  >
+                                    {reason}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                            <div className="flex gap-4 text-xs text-cloud/60">
+                              <span>Meeting: {item.meetingId.slice(0, 8)}...</span>
+                              <span>Duration: {item.meetingDuration} min</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <>
             {/* Upload Section */}
             <div className="mb-8 p-6 bg-midnight/60 rounded-lg border border-white/10">
               <div className="flex items-center justify-between">
@@ -387,9 +581,162 @@ const AdminPage: React.FC = () => {
                 </div>
               )}
             </div>
+              </>
+            )}
           </div>
         </div>
       </div>
+
+      {/* Detailed Feedback Modal */}
+      {selectedFeedback && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-midnight/95 backdrop-blur-lg rounded-2xl border border-white/20 shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            {/* Header */}
+            <div className="p-6 border-b border-white/10 sticky top-0 bg-midnight/95 backdrop-blur-lg">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  {selectedFeedback.rating === 'up' ? (
+                    <svg className="w-8 h-8 text-green-400" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z" />
+                    </svg>
+                  ) : (
+                    <svg className="w-8 h-8 text-red-400" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M15 3H6c-.83 0-1.54.5-1.84 1.22l-3.02 7.05c-.09.23-.14.47-.14.73v2c0 1.1.9 2 2 2h6.31l-.95 4.57-.03.32c0 .41.17.79.44 1.06L9.83 23l6.59-6.59c.36-.36.58-.86.58-1.41V5c0-1.1-.9-2-2-2zm4 0v12h4V3h-4z" />
+                    </svg>
+                  )}
+                  <div>
+                    <h2 className="text-2xl font-bold text-cloud">Feedback Details</h2>
+                    <p className="text-cloud/70 text-sm">
+                      {selectedFeedback.createdAt?.toDate?.().toLocaleString() || 'Unknown date'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setSelectedFeedback(null)}
+                  className="text-cloud/60 hover:text-cloud transition-colors p-2 hover:bg-white/10 rounded-lg"
+                  aria-label="Close"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="p-6 space-y-6">
+              {/* Participant Info */}
+              <div>
+                <h3 className="text-sm font-semibold text-cloud/70 mb-2">Participant</h3>
+                <div className="bg-midnight/60 rounded-lg border border-white/10 p-4">
+                  <p className="text-cloud font-medium">
+                    {selectedFeedback.participantDisplayName || 'Unknown'}
+                  </p>
+                  <p className="text-cloud/60 text-sm mt-1">ID: {selectedFeedback.participantUserId}</p>
+                </div>
+              </div>
+
+              {/* Meeting Info */}
+              <div>
+                <h3 className="text-sm font-semibold text-cloud/70 mb-2">Meeting</h3>
+                <div className="bg-midnight/60 rounded-lg border border-white/10 p-4 space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-cloud/70">Meeting ID:</span>
+                    <span className="text-cloud font-mono text-sm">{selectedFeedback.meetingId}</span>
+                  </div>
+                  {selectedFeedback.hostUserId && (
+                    <div className="flex justify-between">
+                      <span className="text-cloud/70">Host ID:</span>
+                      <span className="text-cloud font-mono text-sm">{selectedFeedback.hostUserId}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between">
+                    <span className="text-cloud/70">Duration:</span>
+                    <span className="text-cloud">{selectedFeedback.meetingDuration} minutes</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Quick Reasons */}
+              {selectedFeedback.quickReasons && selectedFeedback.quickReasons.length > 0 && (
+                <div>
+                  <h3 className="text-sm font-semibold text-cloud/70 mb-2">Quick Reasons</h3>
+                  <div className="flex flex-wrap gap-2">
+                    {selectedFeedback.quickReasons.map((reason) => (
+                      <span
+                        key={reason}
+                        className="px-3 py-1.5 bg-white/10 text-cloud rounded-lg text-sm font-medium"
+                      >
+                        {reason}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Comment */}
+              {selectedFeedback.comment && (
+                <div>
+                  <h3 className="text-sm font-semibold text-cloud/70 mb-2">Comment</h3>
+                  <div className="bg-midnight/60 rounded-lg border border-white/10 p-4">
+                    <p className="text-cloud whitespace-pre-wrap">{selectedFeedback.comment}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Metadata */}
+              {selectedFeedback.metadata && (
+                <div>
+                  <h3 className="text-sm font-semibold text-cloud/70 mb-2">Client Metadata</h3>
+                  <div className="bg-midnight/60 rounded-lg border border-white/10 p-4 space-y-2">
+                    {selectedFeedback.metadata.deviceType && (
+                      <div className="flex justify-between">
+                        <span className="text-cloud/70">Device:</span>
+                        <span className="text-cloud capitalize">{selectedFeedback.metadata.deviceType}</span>
+                      </div>
+                    )}
+                    {selectedFeedback.metadata.os && (
+                      <div className="flex justify-between">
+                        <span className="text-cloud/70">OS:</span>
+                        <span className="text-cloud text-sm">{selectedFeedback.metadata.os}</span>
+                      </div>
+                    )}
+                    {selectedFeedback.metadata.browser && (
+                      <div>
+                        <span className="text-cloud/70 text-sm">Browser:</span>
+                        <p className="text-cloud text-xs mt-1 break-all">{selectedFeedback.metadata.browser}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Timestamps */}
+              <div>
+                <h3 className="text-sm font-semibold text-cloud/70 mb-2">Timestamps</h3>
+                <div className="bg-midnight/60 rounded-lg border border-white/10 p-4 space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-cloud/70">Submitted:</span>
+                    <span className="text-cloud text-sm">
+                      {selectedFeedback.createdAt?.toDate?.().toLocaleString() || 'Unknown'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-6 border-t border-white/10">
+              <button
+                onClick={() => setSelectedFeedback(null)}
+                className="w-full px-4 py-3 bg-goldBright text-midnight rounded-lg hover:bg-yellow-400 transition-colors font-semibold"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

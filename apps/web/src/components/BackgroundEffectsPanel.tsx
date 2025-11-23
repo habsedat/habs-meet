@@ -334,12 +334,10 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
   };
 
   const handleBackgroundSelect = async (bg: 'none' | 'blur' | DefaultMedia | UploadedFile) => {
-    // If already changing, wait a short time then proceed (allows rapid changes)
+    // ✅ CRITICAL: Prevent multiple simultaneous changes with immediate lock
     if (isChangingBackground) {
-      console.log('[BG] Background change in progress, waiting briefly...');
-      // Wait a bit for previous change to complete, then proceed
-      await new Promise(resolve => setTimeout(resolve, 100));
-      // If still changing after wait, proceed anyway (prevents deadlock)
+      console.log('[BG] Background change already in progress, ignoring click');
+      return; // Ignore clicks while changing - prevents race conditions
     }
 
     setIsChangingBackground(true);
@@ -347,66 +345,57 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
     // Store previous selection to revert on error
     const previousSelection = selectedBackground;
     
-    // Set selection state IMMEDIATELY for visual feedback (optimistic update)
-    if (bg === 'none') {
-      setSelectedBackground('none');
-    } else if (bg === 'blur') {
-      setSelectedBackground('blur');
-    } else {
-      setSelectedBackground(bg.id);
-    }
+    // ✅ CRITICAL: Determine the exact background to apply BEFORE setting state
+    let bgType: 'none' | 'blur' | 'image' | 'video' = 'none';
+    let bgUrl: string | undefined = undefined;
+    let bgId: string | 'none' | 'blur' = 'none';
     
-    try {
-      if (bg === 'none') {
-        await onBackgroundChange('none');
-        // Selection already set above
-      } else if (bg === 'blur') {
-        await onBackgroundChange('blur');
-        // Selection already set above
-      } else {
-        // Use unique ID for each media item
-        const bgId = bg.id;
-        const bgUrl = bg.url;
+    if (bg === 'none') {
+      bgType = 'none';
+      bgId = 'none';
+    } else if (bg === 'blur') {
+      bgType = 'blur';
+      bgId = 'blur';
+    } else {
+      // ✅ CRITICAL: Validate and extract URL immediately
+      bgId = bg.id;
+      bgUrl = bg.url;
+      
+      if (!bgUrl || bgUrl.trim() === '') {
+        console.error('[BG] Invalid background URL:', bg);
+        toast.error('Invalid background URL');
+        setIsChangingBackground(false);
+        return;
+      }
         
         if (bg.type === 'image') {
-          try {
-            await onBackgroundChange('image', bgUrl);
-            // Selection already set above - confirm it's still correct
-            setSelectedBackground(bgId);
-          } catch (error: any) {
-            console.error('[BG] Error changing image background:', error);
-            // Only show error if it's not a cancellation or track-related error
-            const errorMsg = error?.message || '';
-            if (!errorMsg.includes('Cancelled') && 
-                !errorMsg.includes('aborted') &&
-                !errorMsg.includes('Track ended') &&
-                !errorMsg.includes('not ready')) {
-              toast.error('Failed to change background: ' + errorMsg);
-            }
-            // Revert selection on error
-            setSelectedBackground(previousSelection || 'none');
-            throw error; // Re-throw to be caught by outer catch
-          }
+        bgType = 'image';
         } else if (bg.type === 'video') {
-          // Validate video URL before attempting to load
-          if (!bgUrl || bgUrl.trim() === '' || bgUrl.includes('example.com')) {
+        bgType = 'video';
+        // Validate video URL
+        if (bgUrl.includes('example.com')) {
             toast.error('Video URL is not available. Please configure a valid video URL.');
-            // Revert selection on error
-            setSelectedBackground(previousSelection || 'none');
+          setIsChangingBackground(false);
             return;
           }
-          try {
-            await onBackgroundChange('video', bgUrl);
-            // Selection already set above - confirm it's still correct
-            setSelectedBackground(bgId);
-          } catch (error: any) {
-            console.error('Error loading video background:', error);
-            toast.error('Failed to load video background: ' + (error?.message || 'Unknown error'));
-            // Revert selection on error
-            setSelectedBackground(previousSelection || 'none');
-          }
-        }
+      } else {
+        console.error('[BG] Unknown background type:', bg);
+        setIsChangingBackground(false);
+        return;
       }
+    }
+    
+    // ✅ CRITICAL: Set selection state IMMEDIATELY with the exact ID/type we determined
+            setSelectedBackground(bgId);
+    
+    try {
+      // ✅ CRITICAL: Apply background with the exact type and URL we determined
+      console.log('[BG] Applying background:', { type: bgType, url: bgUrl, id: bgId });
+      await onBackgroundChange(bgType, bgUrl);
+      
+      // ✅ CRITICAL: Confirm selection is still correct after successful application
+      setSelectedBackground(bgId);
+      console.log('[BG] ✅ Background applied successfully:', bgId);
     } catch (error: any) {
       console.error('[BG] Error changing background:', error);
       // Only show error if it's not a cancellation or track-related error

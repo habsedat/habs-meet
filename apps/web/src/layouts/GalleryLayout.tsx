@@ -12,9 +12,21 @@ interface GalleryLayoutProps {
 const MAX_TILES_PER_PAGE = 9;
 
 // ✅ PERMANENT FIX: Zoom-style layout rules per participant count
-const getGridLayout = (count: number): { rows: number; cols: number } => {
+// ✅ CRITICAL FIX: Mobile-friendly layout - always show 2 columns when 2+ participants
+// This ensures phones show tiles side-by-side (inline-block style) instead of stacked
+const getGridLayout = (count: number, isMobile: boolean = false): { rows: number; cols: number } => {
   if (count === 0) return { rows: 1, cols: 1 };
   if (count === 1) return { rows: 1, cols: 1 }; // 1 participant → 1 column
+  
+  // ✅ CRITICAL: On mobile, always use 2 columns for 2+ participants to fit screen
+  if (isMobile) {
+    if (count === 2) return { rows: 1, cols: 2 }; // 2 participants → 2 columns side-by-side
+    if (count === 3 || count === 4) return { rows: 2, cols: 2 }; // 3–4 participants → 2x2 grid
+    // 5+ participants → 2 columns (fits better on mobile screens)
+    return { rows: Math.ceil(count / 2), cols: 2 };
+  }
+  
+  // Desktop layout
   if (count === 2) return { rows: 1, cols: 2 }; // 2 participants → 2 equal 16:9 tiles side-by-side
   if (count === 3 || count === 4) return { rows: 2, cols: 2 }; // 3–4 participants → 2x2 grid
   if (count >= 5 && count <= 9) return { rows: 3, cols: 3 }; // 5–9 participants → 3 columns
@@ -84,8 +96,24 @@ const GalleryLayout: React.FC<GalleryLayoutProps> = ({
   // ✅ Get current page participants
   const currentPageParticipants = pages[currentPage] || [];
   
-  // ✅ Get grid layout for current page
-  const { rows, cols } = getGridLayout(currentPageParticipants.length);
+  // ✅ CRITICAL FIX: Detect mobile device for responsive layout
+  const [isMobile, setIsMobile] = useState(false);
+  
+  useEffect(() => {
+    const checkMobile = () => {
+      // Detect mobile devices (phones and small tablets)
+      const isMobileDevice = window.innerWidth <= 768 || 
+        /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      setIsMobile(isMobileDevice);
+    };
+    
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+  
+  // ✅ Get grid layout for current page (mobile-aware)
+  const { rows, cols } = getGridLayout(currentPageParticipants.length, isMobile);
   
   // ✅ Pagination handlers
   const canGoPrevious = currentPage > 0;
@@ -224,6 +252,7 @@ const GalleryLayout: React.FC<GalleryLayoutProps> = ({
   }
   
   // ✅ Container style - centered with side margins, no scrolling with 1-2 participants
+  // ✅ CRITICAL FIX: Reduce padding on mobile to ensure tiles fit screen properly
   const wrapperStyle: React.CSSProperties = {
     display: 'flex',
     flexDirection: 'column',
@@ -236,8 +265,9 @@ const GalleryLayout: React.FC<GalleryLayoutProps> = ({
     margin: '0 auto', // Center horizontally
     marginTop: 0,
     marginBottom: 0,
-    paddingLeft: '32px', // Left margin - increased for more breathing room
-    paddingRight: '32px', // Right margin - increased for more breathing room
+    // ✅ Mobile: minimal padding to maximize tile space, Desktop: more breathing room
+    paddingLeft: isMobile ? '8px' : '32px',
+    paddingRight: isMobile ? '8px' : '32px',
     paddingTop: 0,
     paddingBottom: 0,
     border: 'none',
@@ -259,8 +289,12 @@ const GalleryLayout: React.FC<GalleryLayoutProps> = ({
       <div
         ref={gridRef}
         className="video-grid gallery-grid"
+        data-cols={cols}
+        data-rows={rows}
+        data-mobile={isMobile ? 'true' : 'false'}
         style={{
           display: 'grid',
+          // ✅ CRITICAL FIX: Use CSS custom property to ensure mobile 2-column layout works
           gridTemplateColumns: `repeat(${cols}, 1fr)`,
           gridAutoRows: 'auto', // Let rows size based on 16:9 aspect ratio
           gap: 0, // ZERO GAPS - edge-to-edge
@@ -282,7 +316,7 @@ const GalleryLayout: React.FC<GalleryLayoutProps> = ({
           border: 'none',
           outline: 'none',
           boxShadow: 'none'
-        }}
+        } as React.CSSProperties}
       >
         {currentPageParticipants.map((participant) => {
           const participantId = participant.identity || participant.sid;

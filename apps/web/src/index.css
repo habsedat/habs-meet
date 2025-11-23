@@ -590,27 +590,15 @@ textarea::placeholder {
   border-collapse: collapse !important;
 }
 
-/* 1 participant – center fullscreen 16:9 */
-.gallery-view .video-grid:has(> div:only-child) {
-  grid-template-columns: 1fr !important;
-}
+/* ✅ CRITICAL FIX: Removed CSS rules that force specific column counts */
+/* JavaScript in GalleryLayout.tsx now controls grid-template-columns dynamically */
+/* This allows mobile devices to show 2 columns side-by-side instead of stacked */
 
-/* 2 participants – side by side like Zoom */
-.gallery-view .video-grid:has(> div:nth-child(2)) {
-  grid-template-columns: repeat(2, 1fr) !important;
-}
-
-/* 3 or more – auto layout */
-@media (min-width: 600px) {
-  .gallery-view .video-grid {
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)) !important;
-  }
-}
-@media (max-width: 599px) {
-  .gallery-view .video-grid {
-    grid-template-columns: 1fr !important;
-  }
-}
+/* ✅ CRITICAL FIX: Allow JavaScript to control grid columns on all screen sizes */
+/* The GalleryLayout component handles responsive layout based on participant count */
+/* Mobile: 1 participant = 1 col, 2 participants = 2 cols, 3-4 = 2x2, 5+ = 3 cols */
+/* Desktop: Same logic applies */
+/* Remove CSS override to let JavaScript gridTemplateColumns work */
 
 /* Each tile EXACT 16:9 - ABSOLUTELY ZERO MARGINS/PADDING/GAPS, edge-to-edge */
 .gallery-view .video-grid > div,
@@ -646,10 +634,10 @@ textarea::placeholder {
 }
 
 /* Video element – FILL TILE COMPLETELY (cover), no black bars inside tile */
-.gallery-view video,
-.gallery-view .video-grid > div video,
-.gallery-view .gallery-grid > div video,
-.gallery-tile video {
+.gallery-view video:not(.portrait-video),
+.gallery-view .video-grid > div video:not(.portrait-video),
+.gallery-view .gallery-grid > div video:not(.portrait-video),
+.gallery-tile video:not(.portrait-video) {
   width: 100% !important;
   height: 100% !important;
   object-fit: cover !important; /* COVER fills tile completely, no black bars */
@@ -661,10 +649,19 @@ textarea::placeholder {
   display: block !important;
 }
 
-/* Portrait video (9:16) - CONTAIN fit with letterboxing */
+/* ✅ CRITICAL FIX: Portrait video (9:16) - CONTAIN fit with letterboxing */
 .gallery-view video.portrait-video,
 .gallery-view .video-grid > div video.portrait-video,
 .gallery-view .gallery-grid > div video.portrait-video,
 .gallery-tile video.portrait-video {
-  object-fit: contain !important; /* CONTAIN shows full frame with letterboxing for portrait videos */
+  width: auto !important;
+  height: 100% !important;
+  max-width: 100% !important;
+  object-fit: contain !important; /* CONTAIN shows full 9:16 video with letterboxing */
+  object-position: center !important;
+  background: black !important;
+  border: none !important;
+  margin: 0 auto !important; /* Center horizontally */
+  padding: 0 !important;
+  display: block !important;
 }

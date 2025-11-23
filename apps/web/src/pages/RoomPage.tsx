@@ -70,7 +70,7 @@ const RoomPage: React.FC = () => {
     if (!roomId || !user) return;
 
     const roomRef = doc(db, 'rooms', roomId);
-    const unsubscribe = onSnapshot(roomRef, (doc) => {
+    const unsubscribe = onSnapshot(roomRef, async (doc) => {
       if (doc.exists()) {
         const roomData = { id: doc.id, ...doc.data() } as any;
         setRoomData(roomData);
@@ -86,7 +86,20 @@ const RoomPage: React.FC = () => {
             activeMeetingService.clearActiveMeeting(user.uid).catch(console.error);
           }
           
-          // Clear all meeting-related storage IMMEDIATELY
+          // ✅ CRITICAL: Store roomId for feedback check BEFORE clearing anything
+          // Use a small delay to ensure sessionStorage is persisted
+          if (roomId && user) {
+            try {
+              sessionStorage.setItem('pendingFeedbackCheck', JSON.stringify({ roomId }));
+              console.log('[RoomPage] ✅ Stored pendingFeedbackCheck for room:', roomId);
+              // Small delay to ensure sessionStorage is persisted before navigation
+              await new Promise(resolve => setTimeout(resolve, 100));
+            } catch (err) {
+              console.warn('[RoomPage] Failed to store feedback check:', err);
+            }
+          }
+          
+          // Clear all meeting-related storage (but keep pendingFeedbackCheck)
           sessionStorage.removeItem('currentRoomId');
           sessionStorage.removeItem('isParticipant');
           sessionStorage.removeItem('pendingInvite');
@@ -104,11 +117,11 @@ const RoomPage: React.FC = () => {
             console.error('[RoomPage] ❌ Error during disconnect:', disconnectError);
           }
           
-          // ✅ CRITICAL: Navigate IMMEDIATELY - use replace to prevent back navigation
-          // Use window.location for absolute navigation to prevent any routing issues
+          // ✅ CRITICAL: Navigate using React Router to preserve sessionStorage
+          // Navigate to home page for authenticated users
           setTimeout(() => {
-            window.location.href = '/';
-          }, 200);
+            navigate('/home');
+          }, 300);
         }
       } else {
         toast.error('Room not found');
@@ -814,7 +827,32 @@ const RoomPage: React.FC = () => {
       await activeMeetingService.clearActiveMeeting(user.uid).catch(console.error);
     }
     
-    // Clean up all meeting-related storage
+    // ✅ CRITICAL: Set leftAt timestamp FIRST before any navigation
+    // This must complete before we navigate to ensure duration calculation works
+    if (roomId && user) {
+      try {
+        console.log('[RoomPage] Setting leftAt timestamp for room:', roomId);
+        await api.leaveMeeting(roomId);
+        console.log('[RoomPage] ✅ Successfully set leftAt timestamp');
+      } catch (err) {
+        console.warn('[RoomPage] Failed to set leftAt timestamp:', err);
+        // Continue even if this fails - feedback system will handle gracefully
+      }
+    }
+    
+    // ✅ CRITICAL: Store roomId for feedback check BEFORE clearing sessionStorage
+    if (roomId && user) {
+      try {
+        sessionStorage.setItem('pendingFeedbackCheck', JSON.stringify({ roomId }));
+        console.log('[RoomPage] ✅ Stored pendingFeedbackCheck for room:', roomId);
+        // Small delay to ensure sessionStorage is persisted
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } catch (err) {
+        console.warn('[RoomPage] Failed to store feedback check:', err);
+      }
+    }
+    
+    // Clean up all meeting-related storage (but keep pendingFeedbackCheck)
     if (roomId) {
       localStorage.removeItem(`meeting-active-${roomId}`);
     }
@@ -854,8 +892,8 @@ const RoomPage: React.FC = () => {
     // Force complete disconnect - don't wait
     disconnect();
     
-    // Navigate immediately
-    navigate('/');
+    // Navigate to home page (not AuthPage) - use React Router to preserve sessionStorage
+    navigate('/home');
   }, [disconnect, navigate, isHost, roomId, user]);
 
   const handleEndMeeting = useCallback(async () => {
@@ -884,7 +922,19 @@ const RoomPage: React.FC = () => {
         await activeMeetingService.clearActiveMeeting(user.uid).catch(console.error);
       }
       
-      // Clear all session storage related to this meeting
+      // ✅ CRITICAL: Store roomId for feedback check BEFORE clearing sessionStorage
+      if (roomId && user) {
+        try {
+          sessionStorage.setItem('pendingFeedbackCheck', JSON.stringify({ roomId }));
+          console.log('[RoomPage] ✅ Stored pendingFeedbackCheck for room:', roomId);
+          // Small delay to ensure sessionStorage is persisted
+          await new Promise(resolve => setTimeout(resolve, 100));
+        } catch (err) {
+          console.warn('[RoomPage] Failed to store feedback check:', err);
+        }
+      }
+      
+      // Clear all session storage related to this meeting (but keep pendingFeedbackCheck)
       sessionStorage.removeItem('currentRoomId');
       sessionStorage.removeItem('isParticipant');
       sessionStorage.removeItem('pendingInvite');
@@ -899,8 +949,11 @@ const RoomPage: React.FC = () => {
       
       toast.success('Meeting ended for all participants. The meeting link has expired.');
       
-      // Navigate immediately
-      navigate('/', { replace: true });
+      // ✅ CRITICAL: Navigate using React Router to preserve sessionStorage
+      // Navigate to home page for authenticated users
+      setTimeout(() => {
+        navigate('/home');
+      }, 500);
     } catch (error: any) {
       console.error('[RoomPage] ❌ Failed to end room:', error);
       toast.error('Failed to end meeting: ' + error.message);
