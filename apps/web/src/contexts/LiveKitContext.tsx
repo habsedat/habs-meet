@@ -1725,7 +1725,14 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
     
     // ✅ CRITICAL: Apply immediately - no delays to prevent 5+ minute delays
     // Apply synchronously to ensure background appears immediately
-    applyBackgroundFromFirestore();
+    // Use a small timeout to ensure the track is fully ready
+    const timeoutId = setTimeout(() => {
+      applyBackgroundFromFirestore();
+    }, 100);
+    
+    return () => {
+      clearTimeout(timeoutId);
+    };
   }, [room, isConnected, localParticipant, userProfile?.savedBackground, userProfile?.preferences?.backgroundEffectsEnabled]);
 
   const value: LiveKitContextType = {

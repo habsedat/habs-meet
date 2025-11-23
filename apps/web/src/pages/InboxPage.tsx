@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { collection, onSnapshot, addDoc, updateDoc, doc, serverTimestamp, getDocs, getDoc, arrayUnion } from 'firebase/firestore';
+import { collection, onSnapshot, addDoc, updateDoc, doc, serverTimestamp, getDocs, getDoc, arrayUnion, query, where } from 'firebase/firestore';
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '../lib/firebase';
 import toast from '../lib/toast';
@@ -136,7 +136,8 @@ const InboxPage: React.FC = () => {
     }
   };
 
-  // Load all private messages from all rooms where user is a participant
+  // ✅ CRITICAL FIX: Load all private messages from all rooms where user has messages
+  // This includes messages from ended rooms or rooms where user is no longer a participant
   useEffect(() => {
     if (!user) return;
 
@@ -144,53 +145,105 @@ const InboxPage: React.FC = () => {
       try {
         const roomsSnapshot = await getDocs(collection(db, 'rooms'));
         const unsubscribes: Array<() => void> = [];
+        const roomIdsWithMessages = new Set<string>();
         
-        // Check each room to see if user is a participant before subscribing
+        // ✅ First, find all rooms where user has messages (by checking privateMessages collections)
+        // This ensures we load messages even from ended rooms or where user is no longer a participant
         for (const roomDoc of roomsSnapshot.docs) {
           const roomId = roomDoc.id;
           
-          // Check if user is a participant in this room
           try {
-            const participantDoc = await getDoc(doc(db, 'rooms', roomId, 'participants', user.uid));
-            if (!participantDoc.exists()) {
-              // User is not a participant, skip this room
-              continue;
-            }
-          } catch (error) {
-            // If we can't check participant status, skip this room
-            console.warn(`Could not check participant status for room ${roomId}:`, error);
-            continue;
-          }
-          
-          // User is a participant, subscribe to messages
-          const messagesRef = collection(db, 'rooms', roomId, 'privateMessages');
-          const unsubscribe = onSnapshot(
-            messagesRef,
-            (snapshot) => {
-              const roomMessages = snapshot.docs.map(doc => ({
-                id: doc.id,
-                roomId,
-                ...doc.data()
-              } as PrivateMessage));
+            // Try to query for messages where user is sender or receiver
+            // Use a limit query to check if any messages exist
+            const messagesRef = collection(db, 'rooms', roomId, 'privateMessages');
+            
+            // ✅ CRITICAL FIX: Use WHERE queries instead of fetching all and filtering
+            // Firestore security rules can't evaluate resource.data in collection queries
+            // So we query for messages where user is sender OR receiver using separate queries
+            
+            // Query 1: Messages where user is the sender
+            const sentMessagesQuery = query(
+              messagesRef,
+              where('senderId', '==', user.uid)
+            );
+            
+            // Query 2: Messages where user is the receiver
+            const receivedMessagesQuery = query(
+              messagesRef,
+              where('receiverId', '==', user.uid)
+            );
+            
+            const allRoomMessages = new Map<string, PrivateMessage>();
+            
+            const updateRoomMessages = () => {
+              const roomMessages = Array.from(allRoomMessages.values())
+                .filter((msg) => {
+                  // Skip self-messages
+                  return msg.senderId !== msg.receiverId;
+                });
               
-              const userMessages = roomMessages.filter(
-                (msg) => msg.senderId === user.uid || msg.receiverId === user.uid
-              );
+              if (roomMessages.length > 0) {
+                roomIdsWithMessages.add(roomId);
+              }
               
               setMessages(prev => {
                 const filtered = prev.filter(m => m.roomId !== roomId);
-                return [...filtered, ...userMessages];
+                return [...filtered, ...roomMessages];
               });
-            },
-            (error) => {
-              // Silently handle permission errors - user might not have access to this room
-              if (error.code !== 'permission-denied') {
-                console.error(`Error loading messages for room ${roomId}:`, error);
+            };
+            
+            // Subscribe to sent messages
+            const sentUnsubscribe = onSnapshot(
+              sentMessagesQuery,
+              (snapshot) => {
+                snapshot.docs.forEach(doc => {
+                  allRoomMessages.set(doc.id, {
+                    id: doc.id,
+                    roomId,
+                    ...doc.data()
+                  } as PrivateMessage);
+                });
+                updateRoomMessages();
+              },
+              (error) => {
+                // Silently handle permission errors - user might not have access to this room
+                if (error.code !== 'permission-denied') {
+                  console.error(`Error loading sent messages for room ${roomId}:`, error);
+                }
               }
-            }
-          );
-          
-          unsubscribes.push(unsubscribe);
+            );
+            
+            // Subscribe to received messages
+            const receivedUnsubscribe = onSnapshot(
+              receivedMessagesQuery,
+              (snapshot) => {
+                snapshot.docs.forEach(doc => {
+                  allRoomMessages.set(doc.id, {
+                    id: doc.id,
+                    roomId,
+                    ...doc.data()
+                  } as PrivateMessage);
+                });
+                updateRoomMessages();
+              },
+              (error) => {
+                // Silently handle permission errors - user might not have access to this room
+                if (error.code !== 'permission-denied') {
+                  console.error(`Error loading received messages for room ${roomId}:`, error);
+                }
+              }
+            );
+            
+            // Store both unsubscribe functions
+            unsubscribes.push(() => {
+              sentUnsubscribe();
+              receivedUnsubscribe();
+            });
+          } catch (error) {
+            // If we can't access messages, skip this room silently
+            console.warn(`Could not access messages for room ${roomId}:`, error);
+            continue;
+          }
         }
         
         return () => {
@@ -208,16 +261,24 @@ const InboxPage: React.FC = () => {
     };
   }, [user]);
 
-  // Get conversations grouped by participant
+  // ✅ CRITICAL FIX: Get conversations grouped by participant ONLY (like WhatsApp - one conversation per contact)
+  // All messages with the same contact are grouped together, regardless of which room they're from
   const conversations = useMemo(() => {
     const conversationMap = new Map<string, Conversation>();
 
     messages.forEach((message) => {
+      // Skip self-messages
+      if (message.senderId === message.receiverId) {
+        return;
+      }
+      
       const isSender = message.senderId === user?.uid;
       const otherParticipantId = isSender ? message.receiverId : message.senderId;
       const otherParticipantName = isSender ? message.receiverName : message.senderName;
       const profile = participantProfiles.get(otherParticipantId);
       
+      // ✅ CRITICAL FIX: Use ONLY participantId as key (not roomId) to group all messages with same contact
+      // This creates one conversation per contact, like WhatsApp
       const key = otherParticipantId;
 
       if (!conversationMap.has(key)) {
@@ -233,12 +294,14 @@ const InboxPage: React.FC = () => {
       
       const conv = conversationMap.get(key)!;
       
+      // Update last message if this one is more recent
       const lastTime = conv.lastMessage.createdAt?.toDate?.() || new Date(0);
       const msgTime = message.createdAt?.toDate?.() || new Date(0);
       if (msgTime > lastTime) {
         conv.lastMessage = message;
       }
       
+      // ✅ Count unread messages (only for messages received by user, not sent)
       if (message.receiverId === user?.uid && !message.read) {
         conv.unreadCount++;
         conv.hasUnread = true;
@@ -254,16 +317,27 @@ const InboxPage: React.FC = () => {
     });
   }, [messages, user, participantProfiles]);
 
-  // Get messages for selected conversation
+  // ✅ CRITICAL FIX: Get ALL messages with selected contact from ALL rooms (like WhatsApp)
   const conversationMessages = useMemo(() => {
     if (!selectedConversation || !user) return [];
     
     return messages
       .filter(
-        (m) =>
-          ((m.senderId === user.uid && m.receiverId === selectedConversation.participantId) ||
-           (m.senderId === selectedConversation.participantId && m.receiverId === user.uid)) &&
-          !(m.deletedBy || []).includes(user.uid) // Filter out messages deleted by current user
+        (m) => {
+          // Skip self-messages
+          if (m.senderId === m.receiverId) {
+            return false;
+          }
+          
+          // Include all messages where user is sender and contact is receiver, OR contact is sender and user is receiver
+          // This includes messages from ALL rooms, not just one room
+          const isNormalMessage = 
+            (m.senderId === user.uid && m.receiverId === selectedConversation.participantId) ||
+            (m.senderId === selectedConversation.participantId && m.receiverId === user.uid);
+          
+          return isNormalMessage &&
+            !(m.deletedBy || []).includes(user.uid); // Filter out messages deleted by current user
+        }
       )
       .sort((a, b) => {
         const timeA = a.createdAt?.toDate?.() || new Date(0);
@@ -477,10 +551,11 @@ const InboxPage: React.FC = () => {
     setUploadingFiles(fileUploads);
 
     try {
+      // ✅ CRITICAL FIX: Use the most recent message's roomId for sending new messages
       const lastMsgForRoom = conversationMessages.length > 0 
         ? conversationMessages[conversationMessages.length - 1]
         : selectedConversation!.lastMessage;
-      const targetRoomIdForFiles = lastMsgForRoom.roomId;
+      const targetRoomIdForFiles = lastMsgForRoom?.roomId || selectedConversation!.lastMessage.roomId;
 
       const uploadPromises = validFiles.map(async (file, index) => {
         const timestamp = Date.now();
@@ -562,10 +637,11 @@ const InboxPage: React.FC = () => {
     if ((newMessage.trim() || uploading) && newMessage.length <= MAX_LENGTH) {
       if (!uploading) {
         try {
+          // ✅ CRITICAL FIX: Use the most recent message's roomId for sending new messages
           const lastMsgForText = conversationMessages.length > 0 
             ? conversationMessages[conversationMessages.length - 1]
             : selectedConversation.lastMessage;
-          const targetRoomIdForText = lastMsgForText.roomId;
+          const targetRoomIdForText = lastMsgForText?.roomId || selectedConversation.lastMessage.roomId;
           
           const messageData: any = {
             senderId: user.uid,

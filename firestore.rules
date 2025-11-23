@@ -49,10 +49,16 @@ service cloud.firestore {
       
       // Private Messages subcollection - only sender and receiver can access
       match /privateMessages/{msgId} {
-        // Allow read if user is a participant in the room (we filter client-side for sender/receiver)
-        allow read: if isAuthenticated() && isParticipant(roomId);
+        // ✅ CRITICAL FIX: Allow read if user is sender or receiver, even if no longer a participant
+        // This ensures users can see their messages in inbox even after leaving/ending room
+        // IMPORTANT: This rule allows reading messages even if user is not currently a participant
+        // For collection queries with WHERE clauses, Firestore evaluates the query first, then checks this rule
+        // The WHERE clauses (senderId == user.uid OR receiverId == user.uid) ensure only user's messages are queried
+        allow read: if isAuthenticated() && 
+          (request.auth.uid == resource.data.senderId || request.auth.uid == resource.data.receiverId);
         allow create: if isAuthenticated() && 
           request.auth.uid == request.resource.data.senderId &&
+          request.resource.data.senderId != request.resource.data.receiverId && // Prevent self-messages
           isParticipant(roomId); // Must be a participant in the room
         // Allow update for: receiver marking as read, sender/receiver adding themselves to deletedBy, or sender/receiver updating files array
         allow update: if isAuthenticated() && 
@@ -184,6 +190,26 @@ service cloud.firestore {
       allow create: if isAuthenticated() && request.auth.uid == userId;
       allow update: if isAuthenticated() && request.auth.uid == userId;
       allow delete: if isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // ✅ CRITICAL: User feedback metadata collection - for 24-hour cooldown tracking
+    match /userFeedbackMeta/{userId} {
+      allow read: if isAuthenticated() && request.auth.uid == userId;
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+      allow update: if isAuthenticated() && request.auth.uid == userId;
+      allow delete: if false; // Prevent deletion
+    }
+    
+    // ✅ CRITICAL: Meeting feedback collection - stores user feedback about meetings
+    match /meetingFeedback/{feedbackId} {
+      // Users can read their own feedback
+      allow read: if isAuthenticated() && 
+        (request.auth.uid == resource.data.participantUserId || isAdmin());
+      // Users can create feedback for meetings they participated in
+      allow create: if isAuthenticated() && 
+        request.auth.uid == request.resource.data.participantUserId;
+      // Only admins can update/delete feedback
+      allow update, delete: if isAdmin();
     }
   }
 }

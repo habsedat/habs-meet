@@ -133,22 +133,59 @@ body {
   align-items: center;
   justify-content: center;
   padding: 0.5rem 3rem; /* Space for navigation buttons */
+  overflow: hidden; /* ✅ CRITICAL: Prevent overflow that could cover screen share */
 }
 
 .video-grid-cameras-content {
   flex: 1;
   display: flex;
   justify-content: center;
+  align-items: center;
   height: 100%;
+  width: 100%;
+  overflow: hidden; /* ✅ CRITICAL: Prevent overflow that could cover screen share */
+  min-width: 0; /* Allow flex shrinking */
 }
 
-.video-grid[data-screen-share="true"] {
-  /* Professional camera tiles - show max 3, centered - Zoom style borderless */
-  grid-template-columns: repeat(3, 1fr);
-  grid-template-rows: 1fr;
-  gap: 0 !important; /* No gaps - borderless like Zoom */
+/* ✅ CRITICAL FIX: Screen share camera tiles - Horizontal flex row, never vertical stacking */
+.video-grid-screen-share-cameras {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  gap: 4px !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 100% !important;
+  height: 100% !important;
+  overflow: hidden !important;
   padding: 0 !important;
-  max-width: 600px; /* Professional width limit */
+  margin: 0 !important;
+  border: none !important;
+}
+
+.video-grid-screen-share-cameras > div {
+  /* ✅ CRITICAL: Fixed dimensions to prevent vertical stacking */
+  flex-shrink: 0 !important;
+  width: auto !important;
+  height: 100% !important;
+  min-width: 120px !important;
+  max-width: 160px !important;
+  aspect-ratio: 16/9 !important;
+  border: none !important;
+  border-radius: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+}
+
+/* Legacy support for old grid-based layout (if still used elsewhere) */
+.video-grid[data-screen-share="true"] {
+  /* Professional camera tiles - show max 6, centered - Zoom style borderless */
+  grid-template-columns: repeat(6, 1fr);
+  grid-template-rows: 1fr;
+  gap: 4px !important;
+  padding: 0 !important;
+  max-width: 100%;
   width: 100%;
   height: 100%;
   margin: 0 !important;
@@ -157,7 +194,8 @@ body {
 
 .video-grid[data-screen-share="true"] > div {
   /* Professional camera tile dimensions - allow flexible aspect ratio - borderless */
-  max-width: 190px; /* Professional size */
+  max-width: 160px;
+  min-width: 120px;
   min-height: auto;
   width: 100%;
   height: 100%;
@@ -165,6 +203,7 @@ body {
   border-radius: 0 !important;
   margin: 0 !important;
   padding: 0 !important;
+  aspect-ratio: 16/9;
   /* Let video maintain its natural aspect ratio */
 }
 
@@ -204,14 +243,16 @@ body {
 /* Page indicator */
 .camera-page-indicator {
   position: absolute;
-  bottom: 0.25rem;
-  right: 0.5rem;
+  bottom: 4px;
+  left: 50%;
+  transform: translateX(-50%);
   background: rgba(0, 0, 0, 0.7);
   color: white;
   padding: 0.25rem 0.5rem;
   border-radius: 0.25rem;
   font-size: 0.75rem;
-  z-index: 10;
+  z-index: 20;
+  pointer-events: none; /* Don't interfere with clicks */
 }
 
 /* ✅ Professional Screen Share Display - Centered, not full width */

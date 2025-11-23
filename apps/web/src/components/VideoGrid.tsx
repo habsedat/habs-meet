@@ -198,7 +198,8 @@ const VideoGrid: React.FC = () => {
 
   const hasScreenShare = activeScreenShares.length > 0;
   const screenShareCount = activeScreenShares.length;
-  const camerasPerPage = 3;
+  // ✅ CRITICAL FIX: Show more cameras per page (5-6) in horizontal row to prevent covering screen share
+  const camerasPerPage = 6; // Increased from 3 to show more participants horizontally
 
   // ✅ Reset to first page when participants change or screen share toggles
   // ✅ Also force a re-render when screen share state changes to recover camera tracks
@@ -251,8 +252,8 @@ const VideoGrid: React.FC = () => {
 
     return (
       <div className="h-full w-full flex flex-col" style={{ margin: 0, padding: 0, border: 'none' }}>
-        {/* ✅ Cameras section - Top (professional height, ~12-15% height) */}
-        <div className={`video-grid-cameras-wrapper ${screenShareCount === 2 ? 'h-[12%]' : 'h-[15%]'}`} style={{ border: 'none', margin: 0, padding: 0 }}>
+        {/* ✅ CRITICAL FIX: Cameras section - Top horizontal row, fixed height, never covers screen share */}
+        <div className={`video-grid-cameras-wrapper ${screenShareCount === 2 ? 'h-[10%]' : 'h-[12%]'}`} style={{ border: 'none', margin: 0, padding: 0, position: 'relative', zIndex: 10 }}>
           <div className="video-grid-cameras-container">
             {/* Left navigation button */}
             {canGoLeft && (
@@ -260,6 +261,7 @@ const VideoGrid: React.FC = () => {
                 onClick={() => setCameraPage(cameraPage - 1)}
                 className="camera-nav-btn camera-nav-left"
                 aria-label="Previous cameras"
+                style={{ zIndex: 20 }}
               >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -267,20 +269,38 @@ const VideoGrid: React.FC = () => {
               </button>
             )}
 
-            {/* Camera tiles container */}
+            {/* ✅ CRITICAL FIX: Camera tiles container - Horizontal flex row, no wrapping */}
             <div className="video-grid-cameras-content">
-              <div className="video-grid" data-count={visibleCameras.length} data-screen-share="true">
+              <div 
+                className="video-grid-screen-share-cameras" 
+                data-count={visibleCameras.length} 
+                data-screen-share="true"
+                style={{
+                  display: 'flex',
+                  flexDirection: 'row',
+                  flexWrap: 'nowrap',
+                  gap: '4px',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '100%',
+                  height: '100%',
+                  overflow: 'hidden'
+                }}
+              >
                 {visibleCameras.map((participant) => {
                   const participantId = getParticipantId(participant);
                   return (
                     <div
                       key={participantId}
-                      draggable
-                      onDragStart={() => handleDragStart(participantId)}
-                      onDragOver={(e) => handleDragOver(e, participantId)}
-                      onDrop={handleDrop}
-                      onDragEnd={handleDrop}
-                      style={{ cursor: draggingId === participantId ? 'grabbing' : 'grab' }}
+                      draggable={false}
+                      style={{ 
+                        flexShrink: 0,
+                        width: 'auto',
+                        height: '100%',
+                        minWidth: '120px',
+                        maxWidth: '160px',
+                        aspectRatio: '16/9'
+                      }}
                     >
                       <VideoTile 
                         participant={participant} 
@@ -299,6 +319,7 @@ const VideoGrid: React.FC = () => {
                 onClick={() => setCameraPage(cameraPage + 1)}
                 className="camera-nav-btn camera-nav-right"
                 aria-label="Next cameras"
+                style={{ zIndex: 20 }}
               >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -309,14 +330,21 @@ const VideoGrid: React.FC = () => {
 
           {/* Page indicator (if more than 1 page) */}
           {totalPages > 1 && (
-            <div className="camera-page-indicator">
+            <div className="camera-page-indicator" style={{ position: 'absolute', bottom: '4px', left: '50%', transform: 'translateX(-50%)', zIndex: 20 }}>
               {cameraPage + 1} / {totalPages}
             </div>
           )}
         </div>
 
-        {/* ✅ Screen share section - Bottom (centered, professional width, full content visible) */}
-        <div className="flex-1 flex items-center justify-center gap-2 p-4 overflow-auto">
+        {/* ✅ CRITICAL FIX: Screen share section - Takes remaining space, never covered by cameras */}
+        <div 
+          className="flex-1 flex items-center justify-center gap-2 p-4 overflow-auto" 
+          style={{ 
+            minHeight: 0, /* Allow flex shrinking */
+            position: 'relative',
+            zIndex: 1 /* Below camera wrapper but above background */
+          }}
+        >
           <div className={`screen-share-container ${screenShareCount === 2 ? 'flex-row' : 'flex-col'} gap-2`}>
             {activeScreenShares.map((screenShare, index) => (
               <ScreenShareTile

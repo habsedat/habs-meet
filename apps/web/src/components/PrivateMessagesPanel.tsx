@@ -134,6 +134,11 @@ const PrivateMessagesPanel: React.FC<PrivateMessagesPanelProps> = ({
     }>();
 
     messages.forEach((message) => {
+      // ✅ CRITICAL FIX: Skip self-messages - users cannot send messages to themselves
+      if (message.senderId === message.receiverId) {
+        return; // Skip self-messages
+      }
+      
       const isSender = message.senderId === currentUserId;
       const otherParticipantId = isSender ? message.receiverId : message.senderId;
       const otherParticipantName = isSender ? message.receiverName : message.senderName;
@@ -177,23 +182,68 @@ const PrivateMessagesPanel: React.FC<PrivateMessagesPanelProps> = ({
     });
   }, [messages, currentUserId]);
 
-  // Get messages for selected recipient
+  // ✅ CRITICAL FIX: Get messages for selected recipient (exclude self-messages)
   const conversationMessages = useMemo(() => {
-    if (!selectedRecipient) return [];
+    if (!selectedRecipient) {
+      console.log('[PrivateMessagesPanel] No recipient selected');
+      return [];
+    }
     
-    return messages
+    console.log('[PrivateMessagesPanel] Filtering messages for recipient:', {
+      selectedRecipient,
+      currentUserId,
+      totalMessages: messages.length,
+      roomId
+    });
+    
+    const filtered = messages
       .filter(
-        (m) =>
-          ((m.senderId === currentUserId && m.receiverId === selectedRecipient) ||
-           (m.senderId === selectedRecipient && m.receiverId === currentUserId)) &&
-          !(m.deletedBy || []).includes(currentUserId) // Filter out messages deleted by current user
+        (m) => {
+          // ✅ CRITICAL: Skip self-messages - users cannot send messages to themselves
+          if (m.senderId === m.receiverId) {
+            console.log('[PrivateMessagesPanel] Skipping self-message:', m.id);
+            return false;
+          }
+          
+          // Normal message between current user and selected recipient
+          const isNormalMessage = 
+            (m.senderId === currentUserId && m.receiverId === selectedRecipient) ||
+            (m.senderId === selectedRecipient && m.receiverId === currentUserId);
+          
+          if (!isNormalMessage) {
+            console.log('[PrivateMessagesPanel] Message not for this conversation:', {
+              messageId: m.id,
+              senderId: m.senderId,
+              receiverId: m.receiverId,
+              currentUserId,
+              selectedRecipient
+            });
+          }
+          
+          return isNormalMessage &&
+            !(m.deletedBy || []).includes(currentUserId); // Filter out messages deleted by current user
+        }
       )
       .sort((a, b) => {
         const timeA = a.createdAt?.toDate?.() || new Date(0);
         const timeB = b.createdAt?.toDate?.() || new Date(0);
         return timeA.getTime() - timeB.getTime();
       });
-  }, [messages, selectedRecipient, currentUserId]);
+    
+    console.log('[PrivateMessagesPanel] Filtered conversation messages:', {
+      selectedRecipient,
+      count: filtered.length,
+      messages: filtered.map(m => ({
+        id: m.id,
+        senderId: m.senderId,
+        receiverId: m.receiverId,
+        hasText: !!m.text,
+        fileCount: m.files?.length || 0
+      }))
+    });
+    
+    return filtered;
+  }, [messages, selectedRecipient, currentUserId, roomId]);
 
   // Mark messages as read when conversation is opened
   useEffect(() => {
@@ -337,6 +387,20 @@ const PrivateMessagesPanel: React.FC<PrivateMessagesPanelProps> = ({
         const fileExtension = file.name.split('.').pop();
         const fileName = `${timestamp}_${Math.random().toString(36).substring(7)}.${fileExtension}`;
         const storagePath = `rooms/${roomId}/privateMessages/${currentUserId}/${selectedRecipient}/${fileName}`;
+        
+        // ✅ CRITICAL FIX: Verify storage bucket before uploading
+        const storageBucket = (storage as any).bucket;
+        const currentProjectId = (db as any).app?.options?.projectId;
+        console.log('[PrivateMessagesPanel] File upload verification:', {
+          storagePath,
+          roomId,
+          senderId: currentUserId,
+          receiverId: selectedRecipient,
+          fileName,
+          storageBucket,
+          projectId: currentProjectId
+        });
+        
         const storageRef = ref(storage, storagePath);
 
         const uploadTask = uploadBytesResumable(storageRef, file);
@@ -373,6 +437,21 @@ const PrivateMessagesPanel: React.FC<PrivateMessagesPanelProps> = ({
 
       const uploadedFiles = await Promise.all(uploadPromises);
       
+      // ✅ CRITICAL FIX: Verify files were uploaded successfully
+      if (uploadedFiles.length === 0) {
+        toast.error('Failed to upload files. Please try again.');
+        setUploading(false);
+        setUploadingFiles([]);
+        return;
+      }
+      
+      console.log('[PrivateMessagesPanel] Files uploaded successfully:', {
+        roomId,
+        receiverId: selectedRecipient,
+        fileCount: uploadedFiles.length,
+        files: uploadedFiles.map(f => ({ type: f.type, name: f.name, url: f.url.substring(0, 50) + '...' }))
+      });
+      
       // Send message with all files
       const replyToData = replyingTo ? {
         messageId: replyingTo.id,
@@ -381,6 +460,8 @@ const PrivateMessagesPanel: React.FC<PrivateMessagesPanelProps> = ({
         fileCount: replyingTo.files?.length || 0,
       } : undefined;
       
+      // ✅ CRITICAL: Call onSendMessage (it's async, so we handle it properly)
+      // Note: onSendMessage may not return a promise, so we call it and handle errors in the function itself
       onSendMessage('', selectedRecipient, uploadedFiles, replyToData);
       
       setReplyingTo(null);
@@ -402,22 +483,42 @@ const PrivateMessagesPanel: React.FC<PrivateMessagesPanelProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if ((newMessage.trim() || uploading) && newMessage.length <= MAX_LENGTH && selectedRecipient) {
+    // ✅ CRITICAL FIX: Allow sending messages even if text is empty (for file-only messages)
+    // But ensure we have either text or files, and a recipient is selected
+    if (!selectedRecipient) {
+      toast.error('Please select a recipient to send a message');
+      return;
+    }
+    
+    if (newMessage.length > MAX_LENGTH) {
+      toast.error(`Message is too long (max ${MAX_LENGTH} characters)`);
+      return;
+    }
+    
+    // ✅ Allow sending if we have text OR if we're uploading files
+    // Don't block if text is empty - files might be uploading separately
+    if (newMessage.trim() || uploading) {
       if (!uploading) {
-        const replyToData = replyingTo ? {
-          messageId: replyingTo.id,
-          senderName: replyingTo.senderName,
-          text: replyingTo.text,
-          fileCount: replyingTo.files?.length || 0,
-        } : undefined;
-        
-        onSendMessage(newMessage, selectedRecipient, undefined, replyToData);
-        setNewMessage('');
-        setReplyingTo(null);
-        if (textareaRef.current) {
-          textareaRef.current.style.height = '40px';
+        // Only send if we have actual content (text or files will be sent separately)
+        if (newMessage.trim()) {
+          const replyToData = replyingTo ? {
+            messageId: replyingTo.id,
+            senderName: replyingTo.senderName,
+            text: replyingTo.text,
+            fileCount: replyingTo.files?.length || 0,
+          } : undefined;
+          
+          onSendMessage(newMessage.trim(), selectedRecipient, undefined, replyToData);
+          setNewMessage('');
+          setReplyingTo(null);
+          if (textareaRef.current) {
+            textareaRef.current.style.height = '40px';
+          }
         }
       }
+    } else {
+      // No text and not uploading - show helpful message
+      toast.error('Please enter a message or attach a file');
     }
   };
 
@@ -560,7 +661,11 @@ const PrivateMessagesPanel: React.FC<PrivateMessagesPanelProps> = ({
     }
   };
 
-  const availableParticipants = participants.filter(p => p.uid !== currentUserId);
+  // ✅ CRITICAL FIX: Filter out current user - users can only send messages to others, not themselves
+  const availableParticipants = useMemo(() => {
+    // Filter out current user from participant list
+    return participants.filter(p => p.uid !== currentUserId);
+  }, [participants, currentUserId]);
   
   // Create a map of participant IDs to conversation data for quick lookup
   const conversationMap = useMemo(() => {

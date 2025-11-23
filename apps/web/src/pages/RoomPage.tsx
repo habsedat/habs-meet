@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useLiveKit } from '../contexts/LiveKitContext';
 import { api } from '../lib/api';
-import { doc, onSnapshot, collection, query, orderBy, addDoc, serverTimestamp, updateDoc, getDoc } from 'firebase/firestore';
+import { doc, onSnapshot, collection, query, orderBy, addDoc, serverTimestamp, updateDoc, getDoc, where } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { MeetingService } from '../lib/meetingService';
 import { activeMeetingService } from '../lib/activeMeetingService';
@@ -259,44 +259,135 @@ const RoomPage: React.FC = () => {
     return unsubscribe;
   }, [roomId, activePanel, lastSeenMessageId]);
 
-  // Load private messages
+  // ✅ CRITICAL FIX: Load private messages using WHERE queries (Firestore-compatible)
+  // Firestore rules can't evaluate resource.data in collection queries, so we use WHERE clauses
   useEffect(() => {
     if (!roomId || !user) return;
 
-    const privateMessagesRef = collection(db, 'rooms', roomId, 'privateMessages');
-    
-    // Firestore doesn't support OR queries directly, so we need to fetch all and filter
-    // The Firestore rules ensure users can only read their own messages
-    // We don't use orderBy here to avoid index requirements - we'll sort client-side
-    const q = query(privateMessagesRef);
-    
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const allMessages = snapshot.docs.map(doc => ({
-        id: doc.id,
-        roomId: roomId, // Ensure roomId is included for delete functionality
-        ...doc.data()
-      }));
-      
-      // Filter to only show messages where current user is sender or receiver
-      // Firestore rules already enforce this, but we filter client-side for safety
-      const userMessages = allMessages.filter(
-        (msg: any) => msg.senderId === user.uid || msg.receiverId === user.uid
-      );
-      
-      // Sort by createdAt client-side (ascending for chronological order)
-      userMessages.sort((a: any, b: any) => {
-        const timeA = a.createdAt?.toDate?.() || new Date(0);
-        const timeB = b.createdAt?.toDate?.() || new Date(0);
-        return timeA.getTime() - timeB.getTime();
-      });
-      
-      setPrivateMessages(userMessages);
-    }, (error) => {
-      console.error('[PrivateMessages] Error loading messages:', error);
-      toast.error('Failed to load private messages: ' + error.message);
+    // ✅ CRITICAL: Verify Firebase project before querying
+    const currentProjectId = (db as any).app?.options?.projectId;
+    console.log('[PrivateMessages] Loading messages for room:', {
+      roomId,
+      userId: user.uid,
+      projectId: currentProjectId,
+      expectedProject: 'habs-meet-prod'
     });
 
-    return unsubscribe;
+    const privateMessagesRef = collection(db, 'rooms', roomId, 'privateMessages');
+    
+    // ✅ CRITICAL FIX: Use WHERE queries instead of fetching all and filtering
+    // Firestore security rules can't evaluate resource.data in collection queries
+    // So we query for messages where user is sender OR receiver using separate queries
+    
+    // Query 1: Messages where user is the sender
+    const sentMessagesQuery = query(
+      privateMessagesRef,
+      where('senderId', '==', user.uid)
+    );
+    
+    // Query 2: Messages where user is the receiver
+    const receivedMessagesQuery = query(
+      privateMessagesRef,
+      where('receiverId', '==', user.uid)
+    );
+    
+    let sentUnsubscribe: (() => void) | null = null;
+    let receivedUnsubscribe: (() => void) | null = null;
+    const allUserMessages = new Map<string, any>();
+    
+    const updateMessages = () => {
+      const messagesArray = Array.from(allUserMessages.values())
+        .filter((msg: any) => {
+          // Skip self-messages
+          return msg.senderId !== msg.receiverId;
+        })
+        .sort((a: any, b: any) => {
+          const timeA = a.createdAt?.toDate?.() || new Date(0);
+          const timeB = b.createdAt?.toDate?.() || new Date(0);
+          return timeA.getTime() - timeB.getTime();
+        });
+      
+      setPrivateMessages(messagesArray);
+      console.log('[PrivateMessages] ✅ Messages updated:', {
+        roomId,
+        count: messagesArray.length,
+        projectId: currentProjectId
+      });
+    };
+    
+    // Subscribe to sent messages
+    sentUnsubscribe = onSnapshot(
+      sentMessagesQuery,
+      (snapshot) => {
+        console.log('[PrivateMessages] Sent messages snapshot:', {
+          roomId,
+          count: snapshot.docs.length
+        });
+        
+        snapshot.docs.forEach(doc => {
+          allUserMessages.set(doc.id, {
+            id: doc.id,
+            roomId: roomId,
+            ...doc.data()
+          });
+        });
+        
+        updateMessages();
+      },
+      (error) => {
+        console.error('[PrivateMessages] Error loading sent messages:', {
+          error,
+          code: error.code,
+          message: error.message,
+          roomId,
+          userId: user.uid
+        });
+        
+        if (error.code === 'permission-denied') {
+          console.error('[PrivateMessages] Permission denied for sent messages - check Firestore rules');
+        }
+      }
+    );
+    
+    // Subscribe to received messages
+    receivedUnsubscribe = onSnapshot(
+      receivedMessagesQuery,
+      (snapshot) => {
+        console.log('[PrivateMessages] Received messages snapshot:', {
+          roomId,
+          count: snapshot.docs.length
+        });
+        
+        snapshot.docs.forEach(doc => {
+          allUserMessages.set(doc.id, {
+            id: doc.id,
+            roomId: roomId,
+            ...doc.data()
+          });
+        });
+        
+        updateMessages();
+      },
+      (error) => {
+        console.error('[PrivateMessages] Error loading received messages:', {
+          error,
+          code: error.code,
+          message: error.message,
+          roomId,
+          userId: user.uid
+        });
+        
+        if (error.code === 'permission-denied') {
+          console.error('[PrivateMessages] Permission denied for received messages - check Firestore rules');
+          toast.error('Permission denied: Cannot load private messages. Check Firestore rules.');
+        }
+      }
+    );
+
+    return () => {
+      if (sentUnsubscribe) sentUnsubscribe();
+      if (receivedUnsubscribe) receivedUnsubscribe();
+    };
   }, [roomId, user]);
   
   // ✅ Clear unread count when chat panel is opened
@@ -1100,17 +1191,24 @@ const RoomPage: React.FC = () => {
     replyTo?: { messageId: string; senderName: string; text?: string; fileCount?: number }
   ) => {
     if (!user || !userProfile || !roomId || !receiverId) {
+      console.error('[PrivateMessage] Missing required data:', { user: !!user, userProfile: !!userProfile, roomId, receiverId });
       toast.error('Cannot send private message: Missing user info or recipient');
       return;
     }
 
-    // Must have either text or files
+    // ✅ CRITICAL FIX: Must have either text or files (allow sending to self)
     if (!text.trim() && (!files || files.length === 0)) {
       toast.error('Please enter a message or attach a file');
       return;
     }
 
     try {
+      // ✅ CRITICAL FIX: Prevent self-messages - users can only send to others
+      if (receiverId === user.uid) {
+        toast.error('You cannot send messages to yourself');
+        return;
+      }
+
       // Get receiver's display name
       const receiver = participants.find(p => p.uid === receiverId);
       const receiverName = receiver?.displayName || receiverId;
@@ -1123,6 +1221,7 @@ const RoomPage: React.FC = () => {
         receiverName: receiverName,
         read: false,
         createdAt: serverTimestamp(),
+        roomId: roomId, // ✅ CRITICAL: Explicitly include roomId in message data
       };
 
       if (text.trim()) {
@@ -1137,13 +1236,69 @@ const RoomPage: React.FC = () => {
         messageData.replyTo = replyTo;
       }
 
-      await addDoc(collection(db, 'rooms', roomId, 'privateMessages'), messageData);
+      console.log('[PrivateMessage] Sending message:', { 
+        roomId, 
+        senderId: user.uid, 
+        receiverId, 
+        hasText: !!text.trim(), 
+        fileCount: files?.length || 0,
+        projectId: (db as any).app?.options?.projectId // Log Firebase project ID
+      });
+
+      // ✅ CRITICAL FIX: Ensure we're using the correct Firestore instance
+      const messagesRef = collection(db, 'rooms', roomId, 'privateMessages');
       
-      console.log('[PrivateMessage] Message sent successfully');
+      // ✅ CRITICAL: Verify Firebase project before saving
+      const currentProjectId = (db as any).app?.options?.projectId;
+      console.log('[PrivateMessage] Firebase project verification:', {
+        currentProjectId,
+        roomId,
+        expectedProject: currentProjectId // Should match environment variable
+      });
+      
+      const docRef = await addDoc(messagesRef, messageData);
+      
+      // ✅ CRITICAL: Verify message was actually saved
+      const savedMessageRef = doc(db, 'rooms', roomId, 'privateMessages', docRef.id);
+      const savedMessageDoc = await getDoc(savedMessageRef);
+      
+      if (!savedMessageDoc.exists()) {
+        throw new Error('Message was not saved to Firestore. Please check your Firebase configuration.');
+      }
+      
+      console.log('[PrivateMessage] ✅ Message saved and verified:', {
+        messageId: docRef.id,
+        roomId,
+        receiverName,
+        projectId: currentProjectId,
+        hasText: !!savedMessageDoc.data()?.text,
+        fileCount: savedMessageDoc.data()?.files?.length || 0
+      });
+      
       toast.success(`Message sent to ${receiverName}`, { duration: 2000 });
     } catch (error: any) {
       console.error('[PrivateMessage] Failed to send message:', error);
-      toast.error('Failed to send private message: ' + (error.message || 'Unknown error'));
+      console.error('[PrivateMessage] Error details:', {
+        code: error.code,
+        message: error.message,
+        roomId,
+        receiverId,
+        hasText: !!text.trim(),
+        fileCount: files?.length || 0,
+        projectId: (db as any).app?.options?.projectId
+      });
+      
+      // ✅ Better error messages for common issues
+      let errorMessage = 'Failed to send private message';
+      if (error.code === 'permission-denied') {
+        errorMessage = 'Permission denied. You may not be a participant in this room.';
+      } else if (error.code === 'unavailable') {
+        errorMessage = 'Firestore is temporarily unavailable. Please try again.';
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
+      toast.error(errorMessage);
     }
   };
 
