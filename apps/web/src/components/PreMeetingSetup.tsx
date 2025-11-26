@@ -923,8 +923,18 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
           }
 
           // ✅ CRITICAL: Initialize immediately - no delays
+          // ✅ CRITICAL: Check track readiness before initializing
+          const tracks = videoTrack.mediaStream?.getVideoTracks();
+          if (!tracks || tracks.length === 0 || tracks[0].readyState !== 'live') {
+            console.warn('[BG] Track not ready, state:', tracks?.[0]?.readyState);
+            isApplyingBackgroundRef.current = false;
+            return;
+          }
+          
           try {
             await backgroundEngine.init(videoTrack);
+            // ✅ CRITICAL: Small delay to ensure initialization is complete
+            await new Promise(resolve => setTimeout(resolve, 50));
           } catch (initError: any) {
             // Continue anyway - might already be initialized
             console.warn('[BG] Init warning (continuing):', initError);

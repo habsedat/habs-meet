@@ -228,11 +228,14 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
         // +1 for local participant
         setParticipantCount(map.size + 1);
         console.log('[LiveKit] participants updated:', Array.from(map.keys()));
+        // ✅ CRITICAL FIX: Force UI update when participants change to prevent screen going dark
+        forceUpdate({});
       };
 
       // CONNECTION EVENTS
       newRoom.on(RoomEvent.Connected, () => {
         console.log('[LiveKit] ✅ Connected to room:', newRoom.name);
+        // ✅ STABILITY FIX: Update all state synchronously to prevent race conditions
         setRoom(newRoom);
         setRoomName(newRoom.name || '');
         setLocalParticipant(newRoom.localParticipant);
@@ -241,6 +244,19 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
         setIsConnectingToRoom(false);
         connectingRef.current = false;
         rebuildParticipants();
+        
+        // ✅ STABILITY FIX: Verify connection is truly ready
+        // Small delay to ensure all state updates are processed
+        setTimeout(() => {
+          if (newRoom.state === 'connected' && newRoom.localParticipant) {
+            console.log('[LiveKit] ✅ Connection fully verified and ready');
+          } else {
+            console.warn('[LiveKit] ⚠️ Connection event fired but room not fully ready:', {
+              roomState: newRoom.state,
+              hasLocalParticipant: !!newRoom.localParticipant
+            });
+          }
+        }, 100);
       });
 
       newRoom.on(RoomEvent.Disconnected, (reason) => {
@@ -280,6 +296,11 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
         console.log('[LiveKit] ➖ Participant disconnected:', participant.identity);
         if (participant instanceof RemoteParticipant) {
           rebuildParticipants();
+          // ✅ CRITICAL FIX: Force UI update when participant leaves to prevent screen going dark
+          forceUpdate({});
+          // Additional delayed update to ensure VideoGrid re-renders
+          setTimeout(() => forceUpdate({}), 100);
+          setTimeout(() => forceUpdate({}), 300);
         }
       });
 
@@ -327,9 +348,26 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
       });
 
       newRoom.on(RoomEvent.LocalTrackPublished, (publication) => {
-        // Force re-render by setting a new object
-        console.log('[LiveKit] Local track published:', publication.kind, publication.source);
+        // ✅ CRITICAL FIX: Force immediate re-render when local track is published
+        console.log('[LiveKit] 📹 Local track published:', publication.kind, publication.source, {
+          trackSid: publication.trackSid,
+          isMuted: publication.isMuted,
+          hasTrack: !!publication.track
+        });
+        
+        // ✅ CRITICAL: Update camera/mic state immediately
+        if (publication.source === Track.Source.Camera) {
+          setIsCameraEnabled(true);
+          console.log('[LiveKit] ✅ Camera enabled state set to true');
+        } else if (publication.source === Track.Source.Microphone) {
+          setIsMicrophoneEnabled(true);
+          console.log('[LiveKit] ✅ Microphone enabled state set to true');
+        }
+        
+        // Force re-render multiple times to ensure UI updates
         forceUpdate({});
+        setTimeout(() => forceUpdate({}), 100);
+        setTimeout(() => forceUpdate({}), 300);
       });
 
       // ✅ CRITICAL: Listen for local participant track mute/unmute events
@@ -532,16 +570,89 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
       const videoTrack = roomRef.current.localParticipant.getTrack(Track.Source.Camera);
       
       if (enabled && !videoTrack) {
-        // Need to create and publish video track
+        // ✅ CRITICAL FIX: Explicitly start camera device FIRST using getUserMedia
+        // This ensures the camera device is actually turned on before creating the track
+        console.log('[LiveKit] 📹 setCameraEnabled: Starting camera device explicitly...');
+        
         // Get video device preference from userProfile (Firestore) - user-specific
         const videoDeviceId = userProfile?.preferences?.videoDeviceId;
         
         // ✅ Video constraints optimized for device type
         const videoConstraints = getVideoConstraints();
-        const vTrack = await createLocalVideoTrack({
-          deviceId: videoDeviceId ? { exact: videoDeviceId } : undefined,
-          resolution: videoConstraints,
-        });
+        
+        // ✅ CRITICAL: Request camera access and start the device explicitly
+        let cameraStream: MediaStream | null = null;
+        let vTrack: LocalVideoTrack;
+        
+        try {
+          // Build constraints for getUserMedia
+          const getUserMediaConstraints: MediaStreamConstraints = {
+            video: videoDeviceId 
+              ? { 
+                  deviceId: { exact: videoDeviceId },
+                  width: videoConstraints.width,
+                  height: videoConstraints.height,
+                  frameRate: videoConstraints.frameRate
+                }
+              : {
+                  width: videoConstraints.width,
+                  height: videoConstraints.height,
+                  frameRate: videoConstraints.frameRate
+                },
+            audio: false // We handle audio separately
+          };
+          
+          // ✅ CRITICAL: Explicitly start camera device via getUserMedia
+          console.log('[LiveKit] 📹 setCameraEnabled: Requesting camera access via getUserMedia...');
+          cameraStream = await navigator.mediaDevices.getUserMedia(getUserMediaConstraints);
+          
+          // ✅ CRITICAL: Verify camera is actually on
+          const activeVideoTrack = cameraStream.getVideoTracks()[0];
+          if (activeVideoTrack) {
+            console.log('[LiveKit] ✅ setCameraEnabled: Camera device started successfully:', {
+              readyState: activeVideoTrack.readyState,
+              enabled: activeVideoTrack.enabled,
+              label: activeVideoTrack.label
+            });
+            
+            // ✅ CRITICAL: Ensure track is enabled (camera is on)
+            if (!activeVideoTrack.enabled) {
+              activeVideoTrack.enabled = true;
+            }
+            
+            // ✅ CRITICAL: Wait for camera to be live
+            if (activeVideoTrack.readyState !== 'live') {
+              console.log('[LiveKit] ⚠️ setCameraEnabled: Waiting for camera to become live...');
+              await new Promise<void>((resolve) => {
+                const checkReady = () => {
+                  if (activeVideoTrack.readyState === 'live') {
+                    console.log('[LiveKit] ✅ setCameraEnabled: Camera is now live!');
+                    resolve();
+                  } else {
+                    setTimeout(checkReady, 100);
+                  }
+                };
+                setTimeout(() => resolve(), 2000); // Max 2 seconds
+                checkReady();
+              });
+            }
+            
+            // ✅ CRITICAL FIX: Create LocalVideoTrack from existing MediaStreamTrack
+            // This ensures the camera device stays active
+            vTrack = new LocalVideoTrack(activeVideoTrack);
+            console.log('[LiveKit] ✅ setCameraEnabled: LiveKit track created from active camera device');
+          } else {
+            throw new Error('No video track in camera stream');
+          }
+        } catch (getUserMediaError: any) {
+          console.warn('[LiveKit] ⚠️ setCameraEnabled: getUserMedia failed, falling back to createLocalVideoTrack:', getUserMediaError);
+          
+          // Fallback to createLocalVideoTrack if getUserMedia fails
+          vTrack = await createLocalVideoTrack({
+            deviceId: videoDeviceId ? { exact: videoDeviceId } : undefined,
+            resolution: videoConstraints,
+          });
+        }
         
         // ✅ CRITICAL: Apply background IMMEDIATELY before publishing to prevent raw camera from showing
         // Read saved background directly from Firestore for latest value
@@ -628,9 +739,20 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
           source: Track.Source.Camera,
           simulcast: true, // Enable simulcast for adaptive quality
         });
+        
+        // ✅ CRITICAL FIX: Set camera state to enabled IMMEDIATELY after publishing
+        setIsCameraEnabled(true);
+        forceUpdate({});
+        setLocalParticipant(roomRef.current.localParticipant);
+        console.log('[LiveKit] ✅ setCameraEnabled: Camera track published and state set to enabled');
       } else if (videoTrack) {
         // Just enable/disable existing track
         await roomRef.current.localParticipant.setCameraEnabled(enabled);
+        
+        // ✅ CRITICAL FIX: Update state immediately
+        setIsCameraEnabled(enabled);
+        forceUpdate({});
+        setLocalParticipant(roomRef.current.localParticipant);
         
         // ✅ CRITICAL: If re-enabling camera, reapply background effect
         if (enabled) {
@@ -663,14 +785,24 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
                                      (chosenBg.type === 'blur' || (chosenBg.type === 'image' && chosenBg.url) || (chosenBg.type === 'video' && chosenBg.url));
             const isMobileDeviceCheck = isMobileDevice();
             
-            // Reapply background if enabled and valid - with retry logic
+            // Reapply background if enabled and valid - with improved retry logic
             if (bgEnabled && hasValidBackground && backgroundEngine && !isMobileDeviceCheck && chosenBg) {
-              // ✅ CRITICAL: Retry logic to ensure background applies reliably
+              // ✅ CRITICAL: Improved retry logic with faster retries and track readiness checks
               let retryCount = 0;
-              const maxRetries = 3;
+              const maxRetries = 8; // Increased retries for better reliability
               const applyBg = async (): Promise<boolean> => {
                 try {
+              // ✅ CRITICAL: Check if track is ready before applying
+              // Check track state via mediaStream
+              const tracks = existingTrack.mediaStream?.getVideoTracks();
+              if (!tracks || tracks.length === 0 || tracks[0].readyState !== 'live') {
+                console.warn('[LiveKit] Track not ready for background, state:', tracks?.[0]?.readyState);
+                return false;
+              }
+                  
                   await backgroundEngine.init(existingTrack);
+                  // ✅ CRITICAL: Small delay to ensure initialization is complete
+                  await new Promise(resolve => setTimeout(resolve, 50));
                   
                   if (chosenBg.type === 'blur') {
                     if (typeof backgroundEngine.setBlur === 'function') {
@@ -701,10 +833,11 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
               // Try immediately
               let success = await applyBg();
               
-              // Retry with exponential backoff
+              // ✅ CRITICAL: Faster retries with shorter delays for immediate application
               while (!success && retryCount < maxRetries) {
                 retryCount++;
-                const delay = Math.min(500 * Math.pow(2, retryCount - 1), 2000);
+                // Faster retries: 100ms, 200ms, 400ms, 800ms, 1s, 1.5s, 2s, 2.5s (max)
+                const delay = Math.min(100 * Math.pow(2, retryCount - 1), 2500);
                 await new Promise(resolve => setTimeout(resolve, delay));
                 success = await applyBg();
               }
@@ -1260,38 +1393,215 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
       console.warn('[LiveKit] No current user, cannot read from Firestore');
     }
 
-    // Get preferences from latest data (Firestore or userProfile fallback)
-    const videoOn = latestPreferences?.videoEnabled !== false;
-    const audioOn = latestPreferences?.audioEnabled !== false;
+    // ✅ CRITICAL FIX: Default to true for video/audio when joining a meeting
+    // Only disable if explicitly set to false in preferences
+    // This ensures camera/mic are ON by default when joining
+    // ✅ IMPORTANT: If videoEnabled is undefined/null, default to TRUE (camera ON)
+    const videoOn = latestPreferences?.videoEnabled !== false; // undefined/null = true, false = false
+    const audioOn = latestPreferences?.audioEnabled !== false; // undefined/null = true, false = false
+    
+    // ✅ CRITICAL FIX: If no preferences exist at all, default to enabled
+    // This handles first-time users who haven't set preferences
+    const hasPreferences = latestPreferences && Object.keys(latestPreferences).length > 0;
+    const finalVideoOn = hasPreferences ? videoOn : true; // Default to true if no preferences
+    const finalAudioOn = hasPreferences ? audioOn : true; // Default to true if no preferences
+    
+    console.log('[LiveKit] 📹 Track publishing preferences:', {
+      hasPreferences,
+      videoEnabled: latestPreferences?.videoEnabled,
+      videoOn: finalVideoOn,
+      audioEnabled: latestPreferences?.audioEnabled,
+      audioOn: finalAudioOn,
+      willPublishVideo: finalVideoOn,
+      willPublishAudio: finalAudioOn
+    });
 
     // VIDEO
-    if (videoOn) {
+    if (finalVideoOn) {
       try {
         let vTrack: LocalVideoTrack;
+        
+        // ✅ CRITICAL FIX: Explicitly start camera device FIRST using getUserMedia
+        // This ensures the camera device is actually turned on before creating the track
+        console.log('[LiveKit] 📹 Starting camera device explicitly...');
         
         // ✅ Video constraints optimized for device type
         const videoConstraints = getVideoConstraints();
         
-        // Try with saved device from latest preferences (Firestore or userProfile fallback)
+        // ✅ CRITICAL: Request camera access and start the device explicitly
         const savedVideoDeviceId = latestPreferences?.videoDeviceId;
-        if (savedVideoDeviceId) {
-          try {
-            vTrack = await createLocalVideoTrack({
-              deviceId: { exact: savedVideoDeviceId },
-              resolution: videoConstraints,
+        let cameraStream: MediaStream | null = null;
+        
+        try {
+          // Build constraints for getUserMedia
+          const getUserMediaConstraints: MediaStreamConstraints = {
+            video: savedVideoDeviceId 
+              ? { 
+                  deviceId: { exact: savedVideoDeviceId },
+                  width: videoConstraints.width,
+                  height: videoConstraints.height,
+                  frameRate: videoConstraints.frameRate
+                }
+              : {
+                  width: videoConstraints.width,
+                  height: videoConstraints.height,
+                  frameRate: videoConstraints.frameRate
+                },
+            audio: false // We handle audio separately
+          };
+          
+          // ✅ CRITICAL: Explicitly start camera device via getUserMedia
+          console.log('[LiveKit] 📹 Requesting camera access via getUserMedia...');
+          cameraStream = await navigator.mediaDevices.getUserMedia(getUserMediaConstraints);
+          
+          // ✅ CRITICAL: Verify camera is actually on
+          const videoTrack = cameraStream.getVideoTracks()[0];
+          if (videoTrack) {
+            console.log('[LiveKit] ✅ Camera device started successfully:', {
+              readyState: videoTrack.readyState,
+              enabled: videoTrack.enabled,
+              label: videoTrack.label,
+              deviceId: videoTrack.getSettings().deviceId
             });
-          } catch (exactError: any) {
-            console.warn('[LiveKit] Failed with exact device, trying ideal:', exactError);
-            // If exact device fails, try ideal constraint
+            
+            // ✅ CRITICAL: Ensure track is enabled (camera is on)
+            if (!videoTrack.enabled) {
+              console.log('[LiveKit] ⚠️ Camera track disabled, enabling...');
+              videoTrack.enabled = true;
+            }
+            
+            // ✅ CRITICAL FIX: Set camera state to enabled IMMEDIATELY after device starts
+            // This ensures UI shows camera as on right away
+            setIsCameraEnabled(true);
+            forceUpdate({});
+            console.log('[LiveKit] ✅ Camera state set to enabled immediately after device start');
+            
+            // ✅ CRITICAL: Wait for camera to be live
+            if (videoTrack.readyState !== 'live') {
+              console.log('[LiveKit] ⚠️ Waiting for camera to become live...');
+              await new Promise<void>((resolve) => {
+                const checkReady = () => {
+                  if (videoTrack.readyState === 'live') {
+                    console.log('[LiveKit] ✅ Camera is now live!');
+                    // ✅ CRITICAL: Update state again when camera becomes live
+                    setIsCameraEnabled(true);
+                    forceUpdate({});
+                    resolve();
+                  } else {
+                    setTimeout(checkReady, 100);
+                  }
+                };
+                setTimeout(() => {
+                  // Even if not live yet, ensure state is set
+                  setIsCameraEnabled(true);
+                  forceUpdate({});
+                  resolve();
+                }, 2000); // Max 2 seconds
+                checkReady();
+              });
+            }
+          }
+          
+          // ✅ CRITICAL: Create LiveKit track from the active camera stream
+          console.log('[LiveKit] 📹 Creating LiveKit track from active camera stream...');
+          const activeVideoTrack = cameraStream.getVideoTracks()[0];
+          
+          // ✅ CRITICAL: Ensure the track is enabled and live before creating LiveKit track
+          if (!activeVideoTrack.enabled) {
+            activeVideoTrack.enabled = true;
+          }
+          
+          // ✅ CRITICAL FIX: Create LocalVideoTrack from existing MediaStreamTrack
+          // This ensures the camera device stays active - we use the MediaStreamTrack directly
+          vTrack = new LocalVideoTrack(activeVideoTrack);
+          
+          console.log('[LiveKit] ✅ LiveKit track created from active camera device');
+          
+          // ✅ CRITICAL: Keep the original stream active - don't stop it
+          // The LiveKit track will use the same MediaStreamTrack, so the camera stays on
+        } catch (getUserMediaError: any) {
+          console.warn('[LiveKit] ⚠️ getUserMedia failed, falling back to createLocalVideoTrack:', getUserMediaError);
+          
+          // Fallback to createLocalVideoTrack if getUserMedia fails
+          if (savedVideoDeviceId) {
+            try {
+              vTrack = await createLocalVideoTrack({
+                deviceId: { exact: savedVideoDeviceId },
+                resolution: videoConstraints,
+              });
+            } catch (exactError: any) {
+              console.warn('[LiveKit] Failed with exact device, trying ideal:', exactError);
+              vTrack = await createLocalVideoTrack({
+                deviceId: { ideal: savedVideoDeviceId },
+                resolution: videoConstraints,
+              });
+            }
+          } else {
             vTrack = await createLocalVideoTrack({
-              deviceId: { ideal: savedVideoDeviceId },
               resolution: videoConstraints,
             });
           }
-        } else {
-          // No device saved, use default
-          vTrack = await createLocalVideoTrack({
-            resolution: videoConstraints,
+          
+          // ✅ CRITICAL FIX: Set camera state immediately after track creation in fallback path
+          if (vTrack && vTrack.mediaStreamTrack) {
+            setIsCameraEnabled(true);
+            forceUpdate({});
+            console.log('[LiveKit] ✅ Camera state set to enabled after fallback track creation');
+          }
+        }
+        
+        // ✅ CRITICAL FIX: Ensure camera device is ACTUALLY STARTED
+        // The track might be created but the camera device might not be active
+        if (vTrack && vTrack.mediaStreamTrack) {
+          // ✅ CRITICAL: Check if the camera device is actually running
+          const streamTrack = vTrack.mediaStreamTrack;
+          console.log('[LiveKit] 📹 Camera track created, checking device state:', {
+            readyState: streamTrack.readyState,
+            enabled: streamTrack.enabled,
+            muted: streamTrack.muted,
+            id: streamTrack.id,
+            label: streamTrack.label
+          });
+          
+          // ✅ CRITICAL: Ensure the track is enabled (this starts the camera device)
+          if (!streamTrack.enabled) {
+            console.log('[LiveKit] ⚠️ Camera track is disabled, enabling it to start the device...');
+            streamTrack.enabled = true;
+          }
+          
+          // ✅ CRITICAL: If track is not live, wait for it to become live
+          if (streamTrack.readyState !== 'live') {
+            console.log('[LiveKit] ⚠️ Camera track is not live yet, waiting for device to start...');
+            await new Promise<void>((resolve) => {
+              const checkReady = () => {
+                if (streamTrack.readyState === 'live') {
+                  console.log('[LiveKit] ✅ Camera device is now live!');
+                  resolve();
+                } else {
+                  setTimeout(checkReady, 100);
+                }
+              };
+              // Wait up to 3 seconds for camera to start
+              setTimeout(() => {
+                if (streamTrack.readyState !== 'live') {
+                  console.warn('[LiveKit] ⚠️ Camera device did not become live within 3 seconds');
+                }
+                resolve();
+              }, 3000);
+              checkReady();
+            });
+          }
+          
+          // ✅ CRITICAL: Ensure track is not muted
+          // Note: muted is read-only, we'll handle unmuting via setCameraEnabled after publishing
+          if (streamTrack.muted) {
+            console.log('[LiveKit] ⚠️ Camera track is muted, will unmute after publishing...');
+          }
+          
+          console.log('[LiveKit] ✅ Camera device verified as active:', {
+            readyState: streamTrack.readyState,
+            enabled: streamTrack.enabled,
+            muted: streamTrack.muted
           });
         }
 
@@ -1373,6 +1683,22 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
           throw new Error('Room disconnected before publishing video track');
         }
         
+        // ✅ CRITICAL FIX: Final verification that camera device is active before publishing
+        if (vTrack && vTrack.mediaStreamTrack) {
+          const streamTrack = vTrack.mediaStreamTrack;
+          if (streamTrack.readyState !== 'live' || !streamTrack.enabled) {
+            console.warn('[LiveKit] ⚠️ Camera device not fully active before publishing, ensuring it is...');
+            streamTrack.enabled = true;
+            // Wait a moment for device to activate
+            await new Promise(resolve => setTimeout(resolve, 200));
+            console.log('[LiveKit] ✅ Camera device state after activation:', {
+              readyState: streamTrack.readyState,
+              enabled: streamTrack.enabled,
+              muted: streamTrack.muted
+            });
+          }
+        }
+        
         // ✅ CRITICAL: Publish track with background already applied (if successful)
         // This ensures users never see their raw camera feed
         // ✅ MOBILE OPTIMIZATION: Add timeout and disable simulcast for mobile devices
@@ -1397,8 +1723,53 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
           } else {
             await publishPromise;
           }
+          
+          // ✅ CRITICAL FIX: Ensure track is UNMUTED after publishing
+          // Tracks might be muted by default, so we explicitly unmute them
+          try {
+            const publishedTrack = r.localParticipant.getTrack(Track.Source.Camera);
+            if (publishedTrack && publishedTrack.track) {
+              // Unmute the track to ensure video is visible
+              await r.localParticipant.setCameraEnabled(true);
+              console.log('[LiveKit] ✅ Camera track explicitly unmuted after publishing');
+            }
+          } catch (unmuteError) {
+            console.warn('[LiveKit] Failed to unmute camera track:', unmuteError);
+          }
+          
+          // ✅ CRITICAL FIX: Set camera state to enabled IMMEDIATELY after publishing
+          // This ensures UI shows camera as on right away
           setIsCameraEnabled(true);
-          console.log('[LiveKit] ✅ Video track published successfully');
+          forceUpdate({});
+          setLocalParticipant(r.localParticipant);
+          
+          console.log('[LiveKit] ✅ Video track published successfully, camera state set to enabled');
+          
+          // ✅ CRITICAL FIX: Ensure track is UNMUTED after publishing
+          // Tracks might be muted by default, so we explicitly unmute them
+          try {
+            const publishedTrack = r.localParticipant.getTrack(Track.Source.Camera);
+            if (publishedTrack && publishedTrack.track) {
+              // ✅ CRITICAL: Check if track is muted and unmute if needed
+              const isMuted = publishedTrack.isMuted || (publishedTrack.track as any).isMuted;
+              if (isMuted) {
+                console.log('[LiveKit] ⚠️ Track is muted after publishing, unmuting...');
+                await r.localParticipant.setCameraEnabled(true);
+                console.log('[LiveKit] ✅ Camera track explicitly unmuted after publishing');
+              } else {
+                console.log('[LiveKit] ✅ Camera track is already unmuted');
+              }
+              
+              // ✅ CRITICAL: Update state again after unmuting
+              setIsCameraEnabled(true);
+              forceUpdate({});
+            }
+          } catch (unmuteError) {
+            console.warn('[LiveKit] Failed to unmute camera track:', unmuteError);
+            // Still ensure state is set even if unmute fails
+            setIsCameraEnabled(true);
+            forceUpdate({});
+          }
           
           // ✅ CRITICAL FIX: Verify track is actually published and visible to others
           // This fixes the bug where track exists locally but isn't visible to other participants
@@ -1440,6 +1811,8 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
                     simulcast: shouldUseSimulcast,
                   });
                   console.log('[LiveKit] ✅ Camera track force-published after delay - now visible to all participants');
+                  // ✅ CRITICAL: Ensure camera state is set to enabled
+                  setIsCameraEnabled(true);
                   forceUpdate({});
                   setLocalParticipant(r.localParticipant);
                 } else {
@@ -1450,8 +1823,11 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
               }
             } else {
               console.log('[LiveKit] ✅ Camera track verified as visible to all participants after delay');
+              // ✅ CRITICAL: Ensure camera state is enabled even if track was already there
+              setIsCameraEnabled(true);
+              forceUpdate({});
             }
-          }, 1000); // 1 second delay to allow publish to propagate
+          }, 500); // Reduced delay to 500ms for faster UI update
         } catch (publishError: any) {
           // If publishing fails, stop the track to free resources
           console.error('[LiveKit] ❌ Failed to publish video track:', publishError);
@@ -1462,9 +1838,23 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
         // Background should already be applied before publishing
         // If it wasn't applied, it means it failed - don't retry here to avoid delays
         
-        // Force a re-render to allow VideoTile to pick up the track with background applied
+        // ✅ CRITICAL FIX: Force multiple re-renders to ensure VideoTile picks up the track
+        // Sometimes React needs multiple updates to detect the new track
         forceUpdate({});
         setLocalParticipant(r.localParticipant);
+        
+        // ✅ CRITICAL FIX: Additional state update after a brief delay to ensure UI syncs
+        setTimeout(() => {
+          if (r && r.state === 'connected' && r.localParticipant) {
+            const camTrack = r.localParticipant.getTrack(Track.Source.Camera);
+            if (camTrack && camTrack.track) {
+              setIsCameraEnabled(true);
+              forceUpdate({});
+              setLocalParticipant(r.localParticipant);
+              console.log('[LiveKit] ✅ Camera state synchronized after track publication');
+            }
+          }
+        }, 200);
       } catch (error: any) {
         console.error('[LiveKit] Failed to create/publish video track:', error);
         
@@ -1493,7 +1883,7 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
     }
 
     // AUDIO - ✅ Optimized for LOW LATENCY and ECHO CANCELLATION
-    if (audioOn) {
+    if (finalAudioOn) {
       try {
         // Get audio device preference from userProfile (Firestore) - user-specific
         const audioDeviceId = userProfile?.preferences?.audioDeviceId;
@@ -1570,8 +1960,8 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
     
     // ✅ CRITICAL: Only set hasPublishedRef to true if we successfully published at least one track
     // This allows retries if publishing failed due to connection issues
-    const videoPublished = videoOn && r.localParticipant?.getTrack(Track.Source.Camera);
-    const audioPublished = audioOn && r.localParticipant?.getTrack(Track.Source.Microphone);
+    const videoPublished = finalVideoOn && r.localParticipant?.getTrack(Track.Source.Camera);
+    const audioPublished = finalAudioOn && r.localParticipant?.getTrack(Track.Source.Microphone);
     
     if (videoPublished || audioPublished) {
       hasPublishedRef.current = true;
@@ -1649,14 +2039,25 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
         });
 
         if (bgEnabled && hasValidBackground && backgroundEngine && !isMobileDeviceCheck && chosenBg) {
-          // ✅ CRITICAL: Retry logic with exponential backoff to ensure background applies reliably
+          // ✅ CRITICAL: Improved retry logic with faster retries and better track readiness checks
           let retryCount = 0;
-          const maxRetries = 5;
+          const maxRetries = 8; // Increased retries for better reliability
           const applyBackground = async (): Promise<boolean> => {
             try {
+              // ✅ CRITICAL: Check if track is ready before applying
+              // Check track state via mediaStream
+              const tracks = vTrack.mediaStream?.getVideoTracks();
+              if (!tracks || tracks.length === 0 || tracks[0].readyState !== 'live') {
+                console.warn('[LiveKit] Track not ready, state:', tracks?.[0]?.readyState);
+                return false;
+              }
+              
               // Re-initialize background engine to ensure it's ready
-              console.log('[LiveKit] Initializing background engine for track:', vTrack.id);
+              console.log('[LiveKit] Initializing background engine for track:', vTrack.id, 'readyState:', tracks[0].readyState);
               await backgroundEngine.init(vTrack);
+              
+              // ✅ CRITICAL: Small delay to ensure initialization is complete
+              await new Promise(resolve => setTimeout(resolve, 50));
               
               if (chosenBg.type === 'blur') {
                 if (typeof backgroundEngine.setBlur === 'function') {
@@ -1690,10 +2091,11 @@ export const LiveKitProvider: React.FC<{ children: React.ReactNode }> = ({
           // Try immediately first
           let success = await applyBackground();
           
-          // Retry with exponential backoff if failed
+          // ✅ CRITICAL: Faster retries with shorter delays for immediate application
           while (!success && retryCount < maxRetries) {
             retryCount++;
-            const delay = Math.min(1000 * Math.pow(2, retryCount - 1), 5000); // Max 5 seconds
+            // Faster retries: 100ms, 200ms, 400ms, 800ms, 1s, 1.5s, 2s, 2.5s (max)
+            const delay = Math.min(100 * Math.pow(2, retryCount - 1), 2500);
             console.log(`[LiveKit] Retrying background application in ${delay}ms (attempt ${retryCount + 1}/${maxRetries})`);
             await new Promise(resolve => setTimeout(resolve, delay));
             success = await applyBackground();

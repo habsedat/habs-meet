@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useLiveKit } from '../contexts/LiveKitContext';
@@ -19,12 +19,13 @@ import DeviceConflictModal from '../components/DeviceConflictModal';
 import { recordingService, RecordingService } from '../lib/recordingService';
 import { ViewMode } from '../types/viewModes';
 import { useCostOptimizations } from '../hooks/useCostOptimizations';
+import { Track } from 'livekit-client';
 
 const RoomPage: React.FC = () => {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
   const { user, userProfile, updateUserPreferences } = useAuth();
-  const { connect, disconnect, isConnected, isConnecting, publishFromSavedSettings, room, participantCount, setMicrophoneEnabled } = useLiveKit();
+  const { connect, disconnect, isConnected, isConnecting, publishFromSavedSettings, room, participantCount, setMicrophoneEnabled, setCameraEnabled } = useLiveKit();
   
   // Apply cost optimizations: active speaker quality, background pause, auto-disconnect
   useCostOptimizations(room);
@@ -41,6 +42,7 @@ const RoomPage: React.FC = () => {
   const [showShareModal, setShowShareModal] = useState(false);
   const [shareLink, setShareLink] = useState('');
   const [isGeneratingLink, setIsGeneratingLink] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
   const [showBottomControls, setShowBottomControls] = useState(true);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [lastSeenMessageId, setLastSeenMessageId] = useState<string | null>(null);
@@ -459,11 +461,23 @@ const RoomPage: React.FC = () => {
     };
   }, [roomId, navigate]);
 
+  // ✅ STABILITY FIX: Add connection state ref to prevent race conditions
+  const connectionAttemptRef = useRef(false);
+  const connectionEstablishedRef = useRef(false);
+
   // Check for device conflicts and connect to LiveKit room
   useEffect(() => {
-    if (!roomId || !user || isConnected || isConnecting) return;
+    if (!roomId || !user) return;
+    
+    // ✅ STABILITY FIX: Prevent multiple simultaneous connection attempts
+    if (isConnected || isConnecting || connectionAttemptRef.current) {
+      return;
+    }
 
     const connectToRoom = async () => {
+      // ✅ STABILITY FIX: Set flag immediately to prevent race conditions
+      connectionAttemptRef.current = true;
+      
       try {
         // Check lobby status first
         const participantRef = doc(db, 'rooms', roomId, 'participants', user.uid);
@@ -474,11 +488,13 @@ const RoomPage: React.FC = () => {
           const lobbyStatus = participantData.lobbyStatus || 'admitted';
           
           if (lobbyStatus === 'waiting') {
+            connectionAttemptRef.current = false;
             navigate('/waiting-room');
             return;
           }
           
           if (lobbyStatus === 'denied') {
+            connectionAttemptRef.current = false;
             toast.error('You have been denied access to this meeting');
             navigate('/home');
             return;
@@ -499,12 +515,15 @@ const RoomPage: React.FC = () => {
             currentDevice: currentDeviceName,
           });
           setShowDeviceConflictModal(true);
+          connectionAttemptRef.current = false; // Reset on conflict
           return; // Don't connect yet, wait for user choice
         }
 
         // No conflict - proceed with connection
         await proceedWithConnection();
       } catch (error: any) {
+        connectionAttemptRef.current = false;
+        console.error('[RoomPage] Connection error:', error);
         toast.error('Failed to join room: ' + error.message);
         navigate('/');
       }
@@ -540,39 +559,73 @@ const RoomPage: React.FC = () => {
           token = response.token;
         }
         
+        console.log('[RoomPage] 🔄 Starting connection...');
+        
         // Connect first - the connect() function resolves when connection starts
-        // Wait for connection to be fully established before proceeding
         await connect(token);
         
-        // Wait for connection to be fully established
-        // Poll for connection state with longer timeout and more reliable checks
+        // ✅ STABILITY FIX: Improved connection verification with better state checks
+        // Wait for connection to be fully established with more reliable checks
         let attempts = 0;
-        const maxAttempts = 150; // 15 seconds max wait (increased for slower connections)
+        const maxAttempts = 200; // 20 seconds max wait
         let connectionEstablished = false;
         
-        while (attempts < maxAttempts) {
-          // Check isConnected state (set by RoomEvent.Connected)
-          // Also check if room exists and is connected
-          const currentRoom = room; // Get current room from context
+        while (attempts < maxAttempts && !connectionEstablished) {
+          // ✅ CRITICAL: Check both isConnected AND room state for reliability
+          const currentRoom = room;
+          const currentIsConnected = isConnected;
           
-          // More flexible connection check: isConnected is the primary indicator
-          if (isConnected) {
-            // If room is available, check its state for additional confirmation
-            if (currentRoom) {
-              // Accept 'connected' or 'reconnecting' states (reconnecting means we were connected)
-              if (currentRoom.state === 'connected' || currentRoom.state === 'reconnecting') {
-                connectionEstablished = true;
-                console.log('[RoomPage] Connection fully established, room state:', currentRoom.state);
-                break;
-              } else {
-                console.log('[RoomPage] Waiting for room state to be connected, current:', currentRoom.state);
-              }
-            } else {
-              // Room might not be set yet, but isConnected is true, so connection is established
-              // This is acceptable - the room will be set shortly
+          // Connection is established when:
+          // 1. isConnected is true AND
+          // 2. room exists AND room.state is 'connected' AND
+          // 3. localParticipant exists (indicates full connection)
+          if (currentIsConnected && currentRoom) {
+            if (currentRoom.state === 'connected' && currentRoom.localParticipant) {
               connectionEstablished = true;
-              console.log('[RoomPage] Connection established (isConnected=true, room not yet set)');
+              connectionEstablishedRef.current = true;
+              
+              // ✅ CRITICAL FIX: Force camera ON immediately when connection is established
+              // This ensures camera starts automatically like Zoom, before any track publishing
+              const videoPub = currentRoom.localParticipant.getTrack(Track.Source.Camera);
+              const hasVideoTrack = !!videoPub && !!videoPub.track && !videoPub.isMuted;
+              
+              if (!hasVideoTrack) {
+                console.log('[RoomPage] 🚀 Connection established - forcing camera ON immediately (Zoom-style)');
+                // Force camera ON immediately - don't wait for track publishing
+                setCameraEnabled(true).catch((err) => {
+                  console.error('[RoomPage] ❌ Failed to force-enable camera on connection:', err);
+                });
+              }
+              
+              // ✅ CRITICAL FIX: Force microphone ON immediately when connection is established
+              const audioPub = currentRoom.localParticipant.getTrack(Track.Source.Microphone);
+              const hasAudioTrack = !!audioPub && !!audioPub.track && !audioPub.isMuted;
+              
+              if (!hasAudioTrack) {
+                console.log('[RoomPage] 🚀 Connection established - forcing microphone ON immediately (Zoom-style)');
+                // Force microphone ON immediately - don't wait for track publishing
+                setMicrophoneEnabled(true).catch((err) => {
+                  console.error('[RoomPage] ❌ Failed to force-enable microphone on connection:', err);
+                });
+              }
+              
+              console.log('[RoomPage] ✅ Connection fully established:', {
+                isConnected: currentIsConnected,
+                roomState: currentRoom.state,
+                hasLocalParticipant: !!currentRoom.localParticipant,
+                attempts
+              });
               break;
+            } else {
+              // Log progress every 10 attempts (1 second)
+              if (attempts % 10 === 0) {
+                console.log('[RoomPage] Waiting for connection...', {
+                  isConnected: currentIsConnected,
+                  roomState: currentRoom?.state,
+                  hasLocalParticipant: !!currentRoom?.localParticipant,
+                  attempts
+                });
+              }
             }
           }
           
@@ -581,40 +634,86 @@ const RoomPage: React.FC = () => {
           attempts++;
         }
         
-        // Don't fail on timeout - connection might still be establishing
-        // The LiveKit connection will continue in the background
+        // ✅ STABILITY FIX: If connection not established, verify before proceeding
         if (!connectionEstablished) {
-          // ✅ STABILITY FIX: Reduce warning frequency - only log once, not repeatedly
-          if (attempts === 150) { // Only log on first timeout
-            console.warn('[RoomPage] Connection check timeout, but continuing anyway', {
-              isConnected,
-              roomState: room?.state,
+          // Final check - sometimes state updates are delayed
+          const finalRoom = room;
+          const finalIsConnected = isConnected;
+          
+          if (finalIsConnected && finalRoom && finalRoom.state === 'connected' && finalRoom.localParticipant) {
+            connectionEstablished = true;
+            connectionEstablishedRef.current = true;
+            
+            // ✅ CRITICAL FIX: Force camera ON immediately when connection is verified
+            const videoPub = finalRoom.localParticipant.getTrack(Track.Source.Camera);
+            const hasVideoTrack = !!videoPub && !!videoPub.track && !videoPub.isMuted;
+            
+            if (!hasVideoTrack) {
+              console.log('[RoomPage] 🚀 Connection verified - forcing camera ON immediately (Zoom-style)');
+              setCameraEnabled(true).catch((err) => {
+                console.error('[RoomPage] ❌ Failed to force-enable camera on verification:', err);
+              });
+            }
+            
+            // ✅ CRITICAL FIX: Force microphone ON immediately when connection is verified
+            const audioPub = finalRoom.localParticipant.getTrack(Track.Source.Microphone);
+            const hasAudioTrack = !!audioPub && !!audioPub.track && !audioPub.isMuted;
+            
+            if (!hasAudioTrack) {
+              console.log('[RoomPage] 🚀 Connection verified - forcing microphone ON immediately (Zoom-style)');
+              setMicrophoneEnabled(true).catch((err) => {
+                console.error('[RoomPage] ❌ Failed to force-enable microphone on verification:', err);
+              });
+            }
+            
+            console.log('[RoomPage] ✅ Connection verified on final check');
+          } else {
+            console.warn('[RoomPage] ⚠️ Connection check timeout', {
+              isConnected: finalIsConnected,
+              roomState: finalRoom?.state,
+              hasLocalParticipant: !!finalRoom?.localParticipant,
               attempts
             });
+            // Don't block - connection might still be establishing
+            // But set flag so we know to be cautious
+            connectionEstablishedRef.current = false;
           }
-          // Don't block - let connection continue
-          // The connection might still succeed even if our check timed out
         }
         
-        console.log('[RoomPage] Connection fully established, waiting before setting active meeting');
-        
-        // Set active meeting AFTER successful connection is stable
-        // Add a delay to ensure connection is fully ready and stable
-        await new Promise(resolve => setTimeout(resolve, 2000)); // Increased to 2 seconds
-        
-        if (roomData?.title) {
-          await activeMeetingService.setActiveMeeting(user.uid, roomId, roomData.title);
-          console.log('[RoomPage] Active meeting set successfully');
+        // ✅ STABILITY FIX: Only set active meeting if connection is truly established
+        if (connectionEstablished) {
+          console.log('[RoomPage] Connection stable, setting active meeting...');
+          
+          // Small delay to ensure connection is fully ready
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          if (roomData?.title) {
+            await activeMeetingService.setActiveMeeting(user.uid, roomId, roomData.title);
+            console.log('[RoomPage] ✅ Active meeting set successfully');
+          }
+        } else {
+          console.warn('[RoomPage] ⚠️ Skipping active meeting set - connection not fully established');
         }
       } catch (error: any) {
-        console.error('[RoomPage] Failed to connect:', error);
+        connectionAttemptRef.current = false;
+        connectionEstablishedRef.current = false;
+        console.error('[RoomPage] ❌ Failed to connect:', error);
         toast.error('Failed to join room: ' + (error.message || 'Unknown error'));
         navigate('/');
       }
     };
 
     connectToRoom();
-  }, [roomId, user, navigate, disconnect, isConnected, isConnecting, roomData, connect]);
+    
+    // ✅ STABILITY FIX: Cleanup function to reset flags
+    return () => {
+      // Only reset if we're not actually connected
+      if (!isConnected) {
+        connectionAttemptRef.current = false;
+        connectionEstablishedRef.current = false;
+      }
+    };
+  }, [roomId, user, navigate, disconnect, isConnected, isConnecting, roomData, connect, room]);
 
   // Handle device conflict modal choices
   const handleChooseCurrentDevice = async () => {
@@ -699,6 +798,16 @@ const RoomPage: React.FC = () => {
     };
   }, [user, isConnected, roomId, disconnect, navigate]);
 
+  // ✅ STABILITY FIX: Reset connection flags when disconnecting
+  useEffect(() => {
+    if (!isConnected && !isConnecting) {
+      // Reset flags when disconnected
+      connectionAttemptRef.current = false;
+      connectionEstablishedRef.current = false;
+      trackPublishingRef.current = false;
+    }
+  }, [isConnected, isConnecting]);
+
   // Clear active meeting when disconnecting or leaving
   useEffect(() => {
     if (!user || !roomId) return;
@@ -710,146 +819,266 @@ const RoomPage: React.FC = () => {
       if (!isConnected) {
         activeMeetingService.clearActiveMeeting(user.uid).catch(console.error);
       }
+      // ✅ STABILITY FIX: Reset all flags on unmount
+      connectionAttemptRef.current = false;
+      connectionEstablishedRef.current = false;
+      trackPublishingRef.current = false;
     };
   }, [user, roomId, isConnected]);
 
-  // Create and publish local tracks after connecting
-  // Add a significant delay to ensure connection is fully established and stable before publishing
+  // ✅ CRITICAL FIX: Force camera ON immediately when room connects (before track publishing)
+  // This ensures camera starts automatically like Zoom
   useEffect(() => {
-    if (!isConnected || !roomId || !room) {
-      console.log('[RoomPage] Not ready to publish tracks:', { isConnected, roomId: !!roomId, room: !!room });
+    if (!isConnected || !room || !room.localParticipant || room.state !== 'connected') {
       return;
     }
     
-    // Wait for room to be fully connected before publishing tracks
-    // Check room state to ensure it's actually connected
+    // ✅ CRITICAL: Check if camera track exists - if not, force it ON immediately
+    const videoPub = room.localParticipant.getTrack(Track.Source.Camera);
+    const hasVideoTrack = !!videoPub && !!videoPub.track && !videoPub.isMuted && !(videoPub.track as any).isMuted;
+    
+    if (!hasVideoTrack) {
+      console.log('[RoomPage] 🚀 Room connected - forcing camera ON immediately (Zoom-style auto-start)');
+      // Force camera ON immediately - this will start the camera device
+      setCameraEnabled(true).catch((err) => {
+        console.error('[RoomPage] ❌ Failed to force-enable camera on room connect:', err);
+      });
+    }
+    
+    // ✅ CRITICAL FIX: Check if microphone track exists - if not, force it ON immediately
+    const audioPub = room.localParticipant.getTrack(Track.Source.Microphone);
+    const hasAudioTrack = !!audioPub && !!audioPub.track && !audioPub.isMuted && !(audioPub.track as any).isMuted;
+    
+    if (!hasAudioTrack) {
+      console.log('[RoomPage] 🚀 Room connected - forcing microphone ON immediately (Zoom-style auto-start)');
+      // Force microphone ON immediately - this will start the microphone device
+      setMicrophoneEnabled(true).catch((err) => {
+        console.error('[RoomPage] ❌ Failed to force-enable microphone on room connect:', err);
+      });
+    }
+  }, [isConnected, room, setCameraEnabled, setMicrophoneEnabled]);
+
+  // ✅ STABILITY FIX: Track publishing ref to prevent multiple simultaneous attempts
+  const trackPublishingRef = useRef(false);
+  const trackPublishAttemptRef = useRef(0);
+
+  // Create and publish local tracks after connecting
+  // ✅ STABILITY FIX: Only publish tracks after connection is FULLY established and stable
+  useEffect(() => {
+    // ✅ CRITICAL: Multiple guards to ensure we only publish when truly ready
+    if (!isConnected || !roomId || !room) {
+      return;
+    }
+    
+    // ✅ CRITICAL: Must have connection established flag
+    if (!connectionEstablishedRef.current) {
+      console.log('[RoomPage] Connection not fully established yet, waiting...');
+      return;
+    }
+    
+    // ✅ CRITICAL: Room MUST be in connected state
     if (room.state !== 'connected') {
       console.log('[RoomPage] Room not fully connected yet, waiting...', room.state);
       return;
     }
     
-    console.log('[RoomPage] Connection stable, scheduling track publication...');
+    // ✅ CRITICAL: Must have localParticipant
+    if (!room.localParticipant) {
+      console.log('[RoomPage] No localParticipant yet, waiting...');
+      return;
+    }
     
-    // ✅ STABILITY FIX: Reduce delay to prevent dark screen and blinking
-    // Wait for connection to stabilize before publishing tracks
-    // This prevents "cannot publish track when not connected" errors
-    const timeoutId = setTimeout(() => {
-      // More flexible connection check - accept 'connected' or 'reconnecting' states
-      if (!room || (!isConnected && room.state !== 'reconnecting')) {
-        console.warn('[RoomPage] Room not ready for publishing tracks', {
-          room: !!room,
+    // ✅ STABILITY FIX: Prevent multiple simultaneous publishing attempts
+    if (trackPublishingRef.current) {
+      console.log('[RoomPage] Track publishing already in progress, skipping...');
+      return;
+    }
+    
+    console.log('[RoomPage] ✅ All conditions met, publishing tracks IMMEDIATELY...');
+    
+    // ✅ CRITICAL FIX: Publish tracks IMMEDIATELY - no delay
+    // The connection is already verified, so we can publish right away
+    // This ensures camera opens immediately when joining
+    const publishTracks = async () => {
+      // ✅ CRITICAL: Final verification before publishing
+      if (!room || room.state !== 'connected' || !isConnected || !room.localParticipant) {
+        console.warn('[RoomPage] ⚠️ Connection state changed, aborting track publication', {
+          hasRoom: !!room,
           roomState: room?.state,
-          isConnected
+          isConnected,
+          hasLocalParticipant: !!room?.localParticipant
         });
         return;
       }
       
-      // ✅ CRITICAL: Final verification - room MUST be connected
-      if (room.state !== 'connected') {
-        // ✅ STABILITY FIX: Only log once, not repeatedly
-        if (room.state !== 'reconnecting') {
-          console.warn('[RoomPage] Room not connected, cannot publish tracks. State:', room.state);
-        }
-        // Retry after a delay if room is reconnecting
-        if (room.state === 'reconnecting') {
-          setTimeout(() => {
-            if (room && room.state === 'connected' && isConnected) {
-              console.log('[RoomPage] Publishing tracks after reconnection...');
-              publishFromSavedSettings().catch((e) => {
-                console.error('[Room] publishFromSavedSettings failed', e);
-                const errorMsg = e.message || String(e);
+      // ✅ STABILITY FIX: Set flag to prevent concurrent attempts
+      trackPublishingRef.current = true;
+      trackPublishAttemptRef.current++;
+      const attemptNumber = trackPublishAttemptRef.current;
+      
+      console.log(`[RoomPage] 🔄 Publishing tracks IMMEDIATELY (attempt ${attemptNumber})...`);
+      
+      try {
+        // ✅ STABILITY FIX: Add timeout and retry logic with better error handling
+        const publishWithRetry = async (retries = 3) => {
+          for (let i = 0; i < retries; i++) {
+            try {
+              // ✅ CRITICAL: Verify connection state before each attempt
+              if (!room || room.state !== 'connected' || !isConnected || !room.localParticipant) {
+                throw new Error('Connection lost during publish attempt');
+              }
+              
+              await Promise.race([
+                publishFromSavedSettings(),
+                new Promise((_, reject) => 
+                  setTimeout(() => reject(new Error('Publish timeout')), 20000)
+                )
+              ]);
+              
+              console.log(`[RoomPage] ✅ Tracks published successfully (attempt ${attemptNumber})`);
+              
+              // ✅ CRITICAL FIX: Verify tracks are actually published with hard fallback
+              setTimeout(() => {
+                if (room && room.localParticipant) {
+                  const videoPub = room.localParticipant.getTrack(Track.Source.Camera);
+                  const audioTrack = room.localParticipant.getTrack(Track.Source.Microphone);
+
+                  const hasVideoTrack =
+                    !!videoPub &&
+                    !!videoPub.track &&
+                    !videoPub.isMuted &&
+                    !(videoPub.track as any).isMuted;
+
+                  const hasAudioTrack =
+                    !!audioTrack &&
+                    !!audioTrack.track &&
+                    !audioTrack.isMuted &&
+                    !(audioTrack.track as any).isMuted;
+
+                  console.log('[RoomPage] 📹 Track verification (with force-camera/mic fallback):', {
+                    hasVideoTrack,
+                    hasAudioTrack,
+                    videoTrackId: (videoPub as any)?.trackSid,
+                    audioTrackId: audioTrack?.trackSid,
+                  });
+
+                  if (!hasVideoTrack && room.state === 'connected') {
+                    console.warn(
+                      '[RoomPage] ⚠️ Video track missing or muted after publish, forcing camera ON via setCameraEnabled(true).'
+                    );
+
+                    // Release the publishing flag so future attempts are allowed
+                    trackPublishingRef.current = false;
+
+                    // 🚀 HARD FALLBACK: force camera ON just like Zoom
+                    setCameraEnabled(true).catch((err) => {
+                      console.error('[RoomPage] ❌ Failed to force-enable camera:', err);
+                    });
+                  }
+                  
+                  // ✅ CRITICAL FIX: Force microphone ON if missing or muted
+                  if (!hasAudioTrack && room.state === 'connected') {
+                    console.warn(
+                      '[RoomPage] ⚠️ Audio track missing or muted after publish, forcing microphone ON via setMicrophoneEnabled(true).'
+                    );
+
+                    // 🚀 HARD FALLBACK: force microphone ON just like Zoom
+                    setMicrophoneEnabled(true).catch((err) => {
+                      console.error('[RoomPage] ❌ Failed to force-enable microphone:', err);
+                    });
+                  }
+                }
+              }, 500);
+              
+              trackPublishingRef.current = false;
+              return; // Success - exit retry loop
+            } catch (e: any) {
+              const errorMsg = e.message || String(e);
+              console.warn(`[RoomPage] Publish attempt ${i + 1}/${retries} failed:`, errorMsg);
+              
+              // ✅ CRITICAL: If connection is lost, don't retry
+              if (!room || room.state !== 'connected' || !isConnected) {
+                console.error('[RoomPage] ❌ Connection lost, aborting track publication');
+                trackPublishingRef.current = false;
+                return;
+              }
+              
+              // If it's a connection issue, wait and retry
+              if (errorMsg.includes('not connected') || 
+                  errorMsg.includes('closed') || 
+                  errorMsg.includes('timeout') ||
+                  errorMsg.includes('timed out') ||
+                  errorMsg.includes('Cannot publish')) {
+                if (i < retries - 1) {
+                  // Wait before retry (exponential backoff)
+                  const backoffDelay = 500 * (i + 1); // Faster retries: 500ms, 1000ms, 1500ms
+                  console.log(`[RoomPage] Retrying in ${backoffDelay}ms...`);
+                  await new Promise(resolve => setTimeout(resolve, backoffDelay));
+                  continue;
+                }
+              }
+              
+              // Last attempt or non-connection error
+              if (i === retries - 1) {
                 if (!errorMsg.includes('not connected') && 
                     !errorMsg.includes('closed') && 
                     !errorMsg.includes('timeout') &&
-                    !errorMsg.includes('timed out')) {
+                    !errorMsg.includes('timed out') &&
+                    !errorMsg.includes('Track ended') &&
+                    !errorMsg.includes('Cannot publish')) {
                   toast.error('Failed to start camera/microphone: ' + errorMsg);
+                } else {
+                  console.warn('[RoomPage] Track publishing failed due to connection/track issue:', errorMsg);
                 }
-              });
-            }
-          }, 1000);
-        }
-        return;
-      }
-      
-      // ✅ CRITICAL: Verify localParticipant exists
-      if (!room.localParticipant) {
-        // ✅ STABILITY FIX: Only log once, not repeatedly
-        console.warn('[RoomPage] No localParticipant, cannot publish tracks. Will retry...');
-        // Retry after a short delay
-        setTimeout(() => {
-          if (room && room.localParticipant && room.state === 'connected' && isConnected) {
-            console.log('[RoomPage] localParticipant now available, publishing tracks...');
-            publishFromSavedSettings().catch((e) => {
-              const errorMsg = e.message || String(e);
-              if (!errorMsg.includes('not connected') && 
-                  !errorMsg.includes('closed') && 
-                  !errorMsg.includes('timeout') &&
-                  !errorMsg.includes('timed out')) {
-                toast.error('Failed to start camera/microphone: ' + errorMsg);
-              }
-            });
-          }
-        }, 500);
-        return;
-      }
-      
-      console.log('[RoomPage] ✅ Room verified as connected, publishing tracks now...');
-      // ✅ STABILITY FIX: Add timeout and retry logic
-      const publishWithRetry = async (retries = 3) => {
-        for (let i = 0; i < retries; i++) {
-          try {
-            await Promise.race([
-              publishFromSavedSettings(),
-              new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('Publish timeout')), 15000)
-              )
-            ]);
-            console.log('[RoomPage] ✅ Tracks published and background applied successfully');
-            return; // Success - exit retry loop
-          } catch (e: any) {
-            const errorMsg = e.message || String(e);
-            console.warn(`[RoomPage] Publish attempt ${i + 1}/${retries} failed:`, errorMsg);
-            
-            // If it's a connection issue, wait and retry
-            if (errorMsg.includes('not connected') || 
-                errorMsg.includes('closed') || 
-                errorMsg.includes('timeout') ||
-                errorMsg.includes('timed out')) {
-              if (i < retries - 1) {
-                // Wait before retry (exponential backoff)
-                await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
-                continue;
-              }
-            }
-            
-            // Last attempt or non-connection error
-            if (i === retries - 1) {
-              if (!errorMsg.includes('not connected') && 
-                  !errorMsg.includes('closed') && 
-                  !errorMsg.includes('timeout') &&
-                  !errorMsg.includes('timed out') &&
-                  !errorMsg.includes('Track ended') &&
-                  !errorMsg.includes('Cannot publish')) {
-                toast.error('Failed to start camera/microphone: ' + errorMsg);
-              } else {
-                console.warn('[RoomPage] Track publishing failed due to connection/track issue:', errorMsg);
+                trackPublishingRef.current = false;
               }
             }
           }
+        };
+        
+        await publishWithRetry();
+      } catch (error: any) {
+        console.error('[RoomPage] ❌ Track publishing failed:', error);
+        trackPublishingRef.current = false;
+      }
+    };
+    
+    // ✅ CRITICAL FIX: Listen for track published events to ensure immediate detection
+    const handleTrackPublished = (publication: any) => {
+      if (publication.kind === 'video' || publication.source === Track.Source.Camera) {
+        console.log('[RoomPage] 📹 Camera track published event detected!', {
+          trackSid: publication.trackSid,
+          source: publication.source
+        });
+        // Force a re-render to ensure VideoTile picks up the track
+        // This is handled by the LiveKitContext forceUpdate, but we log it here
+      }
+    };
+    
+    if (room && room.localParticipant) {
+      room.localParticipant.on('trackPublished', handleTrackPublished);
+    }
+    
+    // ✅ CRITICAL FIX: Publish tracks IMMEDIATELY (no delay)
+    publishTracks();
+    
+    // ✅ CRITICAL FIX: Fallback - if tracks aren't published after 1 second, try again
+    const fallbackTimeout = setTimeout(() => {
+      if (room && room.localParticipant && room.state === 'connected') {
+        const hasVideo = room.localParticipant.getTrack(Track.Source.Camera);
+        const hasAudio = room.localParticipant.getTrack(Track.Source.Microphone);
+        if (!hasVideo && !hasAudio && !trackPublishingRef.current) {
+          console.warn('[RoomPage] ⚠️ Tracks not published after 1s, retrying...');
+          publishTracks();
         }
-      };
-      
-      publishWithRetry();
-    }, (() => {
-      // ✅ STABILITY FIX: Reduced delays to prevent dark screen and blinking
-      // ✅ MOBILE OPTIMIZATION: Shorter delay for mobile devices
-      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
-                      (typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches);
-      return isMobile ? 800 : 2000; // Reduced: 800ms for mobile, 2s for desktop (was 1.5s/4s)
-    })());
+      }
+    }, 1000);
     
     return () => {
-      clearTimeout(timeoutId);
+      clearTimeout(fallbackTimeout);
+      if (room && room.localParticipant) {
+        room.localParticipant.off('trackPublished', handleTrackPublished);
+      }
     };
   }, [isConnected, roomId, room, publishFromSavedSettings]);
 
@@ -1338,8 +1567,15 @@ const RoomPage: React.FC = () => {
   const copyToClipboard = async () => {
     try {
       await navigator.clipboard.writeText(shareLink);
-      toast.success('Link copied to clipboard!');
+      // Show inline success message next to the button
+      setLinkCopied(true);
+      // Close modal after a short delay
+      setTimeout(() => {
+        setShowShareModal(false);
+        setLinkCopied(false);
+      }, 1500);
     } catch (error: any) {
+      // Only show error if copy fails
       toast.error('Failed to copy link: ' + error.message);
     }
   };
@@ -1616,20 +1852,35 @@ const RoomPage: React.FC = () => {
               <label className="block text-sm font-medium text-gray-300 mb-2">
                 Invite participants to join this meeting
               </label>
-              <div className="flex flex-col sm:flex-row gap-2 sm:gap-2">
+              <div className="flex flex-col sm:flex-row gap-2 sm:gap-2 items-start sm:items-center">
                 <input
                   type="text"
                   value={shareLink}
                   readOnly
                   className="flex-1 bg-gray-700 text-cloud px-3 sm:px-4 py-2 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-techBlue focus:border-transparent text-sm sm:text-base min-w-0"    
                 />
-                <button
-                  onClick={copyToClipboard}
-                  className="bg-techBlue hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition-colors font-medium text-sm sm:text-base whitespace-nowrap flex-shrink-0 w-full sm:w-auto"
-                  title="Copy link"
-                >
-                  Copy
-                </button>
+                <div className="relative w-full sm:w-auto">
+                  <button
+                    onClick={copyToClipboard}
+                    className="bg-techBlue hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition-colors font-medium text-sm sm:text-base whitespace-nowrap flex-shrink-0 w-full sm:w-auto"
+                    title="Copy link"
+                  >
+                    {linkCopied ? 'Copied!' : 'Copy'}
+                  </button>
+                  {linkCopied && (
+                    <div 
+                      className="absolute -top-10 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-3 py-1.5 rounded-lg shadow-lg whitespace-nowrap z-10"
+                      style={{
+                        animation: 'fadeIn 0.2s ease-in'
+                      }}
+                    >
+                      Link copied!
+                      <div className="absolute bottom-0 left-1/2 transform -translate-x-1/2 translate-y-full">
+                        <div className="w-2 h-2 bg-gray-900 transform rotate-45 -mt-1"></div>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 

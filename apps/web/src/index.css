@@ -706,3 +706,140 @@ textarea::placeholder {
   padding: 0 !important;
   display: block !important;
 }
+
+/* ✅ CRITICAL STABILITY FIX: Speaker View - Prevent video resizing when speaker changes */
+/* Works on ALL devices and browsers with multiple selectors for maximum compatibility */
+.speaker-primary-container,
+[data-speaker-view="true"],
+.speaker-primary-container .video-container,
+[data-speaker-view="true"] .video-container,
+.speaker-primary-container [data-video-container="true"],
+[data-speaker-view="true"] [data-video-container="true"] {
+  overflow: hidden !important;
+  -webkit-box-sizing: border-box !important;
+  -moz-box-sizing: border-box !important;
+  box-sizing: border-box !important;
+  -webkit-contain: layout style paint !important;
+  contain: layout style paint !important;
+  min-width: 70% !important; /* Lock minimum width to prevent shrinking */
+  min-height: 100% !important; /* Lock minimum height to prevent shrinking */
+  max-width: 100% !important;
+  max-height: 100% !important;
+  position: relative !important;
+  -webkit-flex-shrink: 0 !important;
+  flex-shrink: 0 !important; /* Prevent flex shrinking */
+  -webkit-flex-grow: 0 !important;
+  flex-grow: 0 !important; /* Prevent flex growing */
+}
+
+/* ✅ CRITICAL: In speaker view, ALWAYS use cover mode - NEVER allow contain mode */
+/* This prevents resizing when speaker changes, regardless of aspect ratio */
+/* Multiple selectors for maximum browser/device compatibility */
+.speaker-primary-container video,
+[data-speaker-view="true"] video,
+.speaker-primary-container [data-speaker-primary="true"] video,
+[data-speaker-view="true"][data-speaker-primary="true"] video {
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 100% !important; /* Lock minimum width */
+  min-height: 100% !important; /* Lock minimum height */
+  max-width: 100% !important;
+  max-height: 100% !important;
+  -webkit-object-fit: cover !important;
+  -moz-object-fit: cover !important;
+  object-fit: cover !important; /* ALWAYS cover in speaker view */
+  -webkit-object-position: center !important;
+  -moz-object-position: center !important;
+  object-position: center !important;
+  -webkit-box-sizing: border-box !important;
+  -moz-box-sizing: border-box !important;
+  box-sizing: border-box !important;
+  -webkit-contain: layout style paint !important;
+  contain: layout style paint !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  -webkit-flex-shrink: 0 !important;
+  flex-shrink: 0 !important;
+  -webkit-flex-grow: 0 !important;
+  flex-grow: 0 !important;
+}
+
+/* ✅ CRITICAL: Portrait videos in speaker view use contain mode (like gallery view) */
+/* This maintains device aspect ratio with letterboxing for phone videos */
+.speaker-primary-container video.portrait-video,
+[data-speaker-view="true"] video.portrait-video,
+.speaker-primary-container [data-speaker-primary="true"] video.portrait-video,
+[data-speaker-view="true"][data-speaker-primary="true"] video.portrait-video {
+  width: auto !important; /* Auto width for letterboxing */
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 100% !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  -webkit-object-fit: contain !important;
+  -moz-object-fit: contain !important;
+  object-fit: contain !important; /* Contain mode for phone videos (like gallery view) */
+  -webkit-object-position: center !important;
+  -moz-object-position: center !important;
+  object-position: center !important;
+  margin: 0 auto !important; /* Center horizontally for letterboxing */
+  padding: 0 !important;
+  position: relative !important;
+  display: block !important;
+  -webkit-flex-shrink: 0 !important;
+  flex-shrink: 0 !important;
+  -webkit-flex-grow: 0 !important;
+  flex-grow: 0 !important;
+}
+
+.speaker-filmstrip-tile,
+.speaker-filmstrip-tile .video-container,
+.speaker-filmstrip-tile [data-video-container="true"] {
+  overflow: hidden !important;
+  box-sizing: border-box !important;
+  contain: layout style paint !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  position: relative !important;
+  /* ✅ CRITICAL: Flexbox centering for phone videos (like gallery view) */
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+.speaker-filmstrip-tile video {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  object-fit: cover !important;
+  object-position: center !important;
+  box-sizing: border-box !important;
+  contain: layout style paint !important;
+}
+
+.speaker-filmstrip-tile video.portrait-video {
+  width: auto !important;
+  height: 100% !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  -webkit-object-fit: contain !important;
+  -moz-object-fit: contain !important;
+  object-fit: contain !important;
+  -webkit-object-position: center !important;
+  -moz-object-position: center !important;
+  object-position: center !important;
+  margin: 0 auto !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+  display: block !important;
+  position: relative !important;
+  align-self: center !important;
+}

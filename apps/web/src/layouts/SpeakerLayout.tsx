@@ -39,15 +39,37 @@ const SpeakerLayout: React.FC<SpeakerLayoutProps> = ({
   return (
     <div className="h-full w-full flex flex-col">
       {/* Primary speaker - reduced width, centered */}
-      <div className="flex-1 min-h-0 flex items-center justify-center">
+      <div className="flex-1 min-h-0 flex items-center justify-center" style={{
+        /* ✅ CRITICAL STABILITY FIX: Prevent container from resizing when speaker changes */
+        overflow: 'hidden',
+        boxSizing: 'border-box',
+        contain: 'layout style paint',
+        minWidth: 0,
+        minHeight: 0,
+        maxWidth: '100%',
+        maxHeight: '100%'
+      }}>
         {primaryParticipant && (
           <div 
-            className="relative transition-opacity duration-300"
+            className="relative transition-opacity duration-300 speaker-primary-container"
+            data-speaker-view="true"
+            data-speaker-primary="true"
             style={{
               width: '70%', /* Reduced width - 70% of container */
               maxWidth: '1200px', /* Maximum width for very large screens */
               height: '100%',
-              margin: '0 auto' /* Center horizontally */
+              margin: '0 auto', /* Center horizontally */
+              /* ✅ CRITICAL STABILITY FIX: Prevent container from resizing when speaker changes */
+              overflow: 'hidden',
+              boxSizing: 'border-box',
+              contain: 'layout style paint',
+              minWidth: '70%', /* Lock minimum width to prevent shrinking */
+              minHeight: '100%', /* Lock minimum height to prevent shrinking */
+              maxHeight: '100%',
+              position: 'relative',
+              /* ✅ CRITICAL: Prevent any flex shrinking or growing */
+              flexShrink: 0,
+              flexGrow: 0
             }}
           >
             <VideoTile
@@ -63,13 +85,40 @@ const SpeakerLayout: React.FC<SpeakerLayoutProps> = ({
 
       {/* Filmstrip - horizontal scrollable row at bottom - NO BORDERS */}
       {otherParticipants.length > 0 && (
-        <div className="h-24 bg-gray-900/50 overflow-x-auto overflow-y-hidden" style={{ border: 'none', borderTop: 'none' }}>
-          <div className="flex items-center h-full gap-2 px-2 py-2">
+        <div className="h-24 bg-gray-900/50 overflow-x-auto overflow-y-hidden" style={{ 
+          border: 'none', 
+          borderTop: 'none',
+          /* ✅ CRITICAL STABILITY FIX: Prevent container from resizing */
+          boxSizing: 'border-box',
+          contain: 'layout style paint',
+          minWidth: 0,
+          minHeight: 0,
+          maxWidth: '100%',
+          maxHeight: '100%'
+        }}>
+          <div className="flex items-center h-full gap-2 px-2 py-2" style={{
+            /* ✅ CRITICAL STABILITY FIX: Prevent flex container from resizing */
+            boxSizing: 'border-box',
+            contain: 'layout style paint',
+            minWidth: 0,
+            minHeight: 0
+          }}>
             {otherParticipants.map((participant) => (
               <div
                 key={participant.identity || participant.sid}
-                className="flex-shrink-0 w-32 h-full overflow-hidden transition-transform hover:scale-105"
-                style={{ borderRadius: 0, border: 'none' }}
+                className="flex-shrink-0 w-32 h-full overflow-hidden transition-transform hover:scale-105 speaker-filmstrip-tile"
+                style={{ 
+                  borderRadius: 0, 
+                  border: 'none',
+                  /* ✅ CRITICAL STABILITY FIX: Prevent tile from resizing */
+                  boxSizing: 'border-box',
+                  contain: 'layout style paint',
+                  minWidth: 0,
+                  minHeight: 0,
+                  maxWidth: '100%',
+                  maxHeight: '100%',
+                  position: 'relative'
+                }}
               >
                 <VideoTile
                   participant={participant}
