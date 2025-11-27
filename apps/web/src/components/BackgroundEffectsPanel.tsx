@@ -39,6 +39,8 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
       const [uploadProgress, setUploadProgress] = useState<FileUploadProgress | null>(null);
   const [selectedBackground, setSelectedBackground] = useState<'none' | 'blur' | string | null>('none');
   const [isChangingBackground, setIsChangingBackground] = useState(false); // Prevent multiple simultaneous changes
+  const [loadingMessage, setLoadingMessage] = useState<string | null>(null); // Show loading message to user
+  const userSelectionRef = useRef<'none' | 'blur' | string | null>(null); // Track user's active selection to prevent override
   const videoPreviewRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   
@@ -114,8 +116,10 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
 
   // Match savedBackground to the actual media ID (only on initial load, not when user is actively selecting)
   useEffect(() => {
-    // Only update if user is not currently changing background (prevents race conditions)
-    if (isChangingBackground) return;
+    // ✅ CRITICAL FIX: Never override user's active selection
+    if (isChangingBackground || userSelectionRef.current !== null) {
+      return;
+    }
     
     // Only update selection if it's not already set to a valid value
     // This prevents overriding user's current selection
@@ -189,8 +193,9 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
         }
       }
     } else if (!savedBackground) {
-      // If no saved background, default to 'none' only if no selection is set
-      if (!selectedBackground || selectedBackground === 'none') {
+      // ✅ CRITICAL FIX: Only default to 'none' if user hasn't made a selection
+      // Never override user's active selection
+      if (userSelectionRef.current === null && (!selectedBackground || selectedBackground === 'none')) {
         setSelectedBackground('none');
       }
     }
@@ -334,13 +339,21 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
   };
 
   const handleBackgroundSelect = async (bg: 'none' | 'blur' | DefaultMedia | UploadedFile) => {
-    // ✅ CRITICAL: Prevent multiple simultaneous changes with immediate lock
+    // ⛔️ CRITICAL FIX: If a change is already in progress, ignore extra clicks
+    // This prevents multiple overlapping operations that cause freezes and wrong images
     if (isChangingBackground) {
-      console.log('[BG] Background change already in progress, ignoring click');
-      return; // Ignore clicks while changing - prevents race conditions
+      console.log('[BG] Change already in progress, ignoring extra click');
+      return;
     }
 
+    // ✅ CRITICAL FIX: Set flag and user selection ref IMMEDIATELY to prevent useEffect override
+    const selectedId = bg === 'none' ? 'none' : bg === 'blur' ? 'blur' : bg.id;
+    userSelectionRef.current = selectedId; // Track user's selection immediately
     setIsChangingBackground(true);
+    
+    // ✅ CRITICAL FIX: Set selection state IMMEDIATELY and synchronously (like Zoom)
+    // Update state immediately so UI shows selection right away
+    setSelectedBackground(selectedId);
     
     // Store previous selection to revert on error
     const previousSelection = selectedBackground;
@@ -348,7 +361,7 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
     // ✅ CRITICAL: Determine the exact background to apply BEFORE setting state
     let bgType: 'none' | 'blur' | 'image' | 'video' = 'none';
     let bgUrl: string | undefined = undefined;
-    let bgId: string | 'none' | 'blur' = 'none';
+    let bgId: 'none' | 'blur' | string = 'none';
     
     if (bg === 'none') {
       bgType = 'none';
@@ -365,52 +378,118 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
         console.error('[BG] Invalid background URL:', bg);
         toast.error('Invalid background URL');
         setIsChangingBackground(false);
+        userSelectionRef.current = null;
+        setSelectedBackground(previousSelection || 'none');
         return;
       }
         
-        if (bg.type === 'image') {
+      if (bg.type === 'image') {
         bgType = 'image';
-        } else if (bg.type === 'video') {
+      } else if (bg.type === 'video') {
         bgType = 'video';
         // Validate video URL
         if (bgUrl.includes('example.com')) {
-            toast.error('Video URL is not available. Please configure a valid video URL.');
+          toast.error('Video URL is not available. Please configure a valid video URL.');
           setIsChangingBackground(false);
-            return;
-          }
+          userSelectionRef.current = null;
+          setSelectedBackground(previousSelection || 'none');
+          return;
+        }
       } else {
         console.error('[BG] Unknown background type:', bg);
         setIsChangingBackground(false);
+        userSelectionRef.current = null;
+        setSelectedBackground(previousSelection || 'none');
         return;
       }
     }
     
-    // ✅ CRITICAL: Set selection state IMMEDIATELY with the exact ID/type we determined
-            setSelectedBackground(bgId);
-    
     try {
-      // ✅ CRITICAL: Apply background with the exact type and URL we determined
-      console.log('[BG] Applying background:', { type: bgType, url: bgUrl, id: bgId });
+      // ✅ CRITICAL: Apply background IMMEDIATELY with the exact type and URL we determined
+      console.log('[BG] Applying background IMMEDIATELY:', { type: bgType, url: bgUrl, id: bgId });
+      
+      // ✅ CRITICAL: Show loading feedback to user
+      if (bgType === 'image' || bgType === 'video') {
+        setLoadingMessage('Loading background...');
+      } else if (bgType === 'blur') {
+        setLoadingMessage('Applying blur...');
+      } else {
+        setLoadingMessage('Removing background...');
+      }
+      
+      // ✅ CRITICAL FIX: Apply background immediately - no delays (like Zoom)
       await onBackgroundChange(bgType, bgUrl);
       
-      // ✅ CRITICAL: Confirm selection is still correct after successful application
-      setSelectedBackground(bgId);
-      console.log('[BG] ✅ Background applied successfully:', bgId);
+      // ✅ CRITICAL: Clear loading message on success
+      setLoadingMessage(null);
+      
+      // ✅ CRITICAL FIX: Verify this is still the selected background after application
+      // Only confirm if this is still the current selection (user didn't click another)
+      if (userSelectionRef.current === bgId) {
+        // Double-check the selection state matches
+        setSelectedBackground(bgId);
+        console.log('[BG] ✅ Background applied successfully and verified:', bgId, 'URL:', bgUrl);
+      } else {
+        console.log('[BG] ⚠️ Selection changed during application - user clicked different image. This ID:', bgId, 'Current selection:', userSelectionRef.current);
+        // Update to the new selection if user clicked another
+        if (userSelectionRef.current) {
+          setSelectedBackground(userSelectionRef.current);
+        }
+      }
     } catch (error: any) {
       console.error('[BG] Error changing background:', error);
-      // Only show error if it's not a cancellation or track-related error
+      
+      // ✅ CRITICAL: Clear loading message and show error
       const errorMsg = error?.message || '';
+      let userErrorMessage: string | null = null;
+      
       if (!errorMsg.includes('Cancelled') && 
           !errorMsg.includes('aborted') &&
           !errorMsg.includes('Track ended') &&
           !errorMsg.includes('not ready')) {
-        toast.error('Failed to change background: ' + errorMsg);
+        // Provide user-friendly error message
+        if (errorMsg.includes('timeout') || errorMsg.includes('load')) {
+          userErrorMessage = 'Background failed to load. Please check your internet connection and try again.';
+        } else if (errorMsg.includes('processor') || errorMsg.includes('Failed to apply')) {
+          userErrorMessage = 'Failed to apply background. Please try again or select a different image.';
+        } else if (errorMsg.includes('fetch') || errorMsg.includes('network')) {
+          userErrorMessage = 'Network error. Please check your connection and try again.';
+        } else {
+          userErrorMessage = 'Failed to change background: ' + errorMsg;
+        }
       }
-      // Revert selection on error
-      setSelectedBackground(previousSelection || 'none');
+      
+      // Show error message to user
+      if (userErrorMessage) {
+        setLoadingMessage(userErrorMessage);
+        // Clear error message after 5 seconds
+        const errorMsgToClear = userErrorMessage;
+        setTimeout(() => {
+          setLoadingMessage((current) => {
+            // Only clear if it's still the same error message
+            return current === errorMsgToClear ? null : current;
+          });
+        }, 5000);
+      } else {
+        setLoadingMessage(null);
+      }
+      // Only revert if this is still the current selection
+      if (userSelectionRef.current === bgId) {
+        setSelectedBackground(previousSelection || 'none');
+        userSelectionRef.current = previousSelection || 'none';
+      }
     } finally {
-      // Always reset flag, even on error
-      setIsChangingBackground(false);
+      // ✅ CRITICAL FIX: Clear flags immediately if this is still the current operation
+      if (userSelectionRef.current === bgId || userSelectionRef.current === null) {
+        if (userSelectionRef.current === bgId) {
+          userSelectionRef.current = null;
+        }
+        setIsChangingBackground(false);
+        // Clear loading message if operation completed (not an error - error message stays for 5 seconds)
+        if (!loadingMessage || (!loadingMessage.includes('error') && !loadingMessage.includes('failed') && !loadingMessage.includes('Failed'))) {
+          setLoadingMessage(null);
+        }
+      }
     }
   };
 
@@ -453,11 +532,31 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
         </div>
 
         {/* Video Preview - Fixed at top, not scrollable, with borders */}
-        <div className="w-full aspect-video max-h-[280px] sm:max-h-[360px] bg-black flex-shrink-0 overflow-hidden sm:rounded-lg border-2 border-white/20 m-2 sm:m-4">
+        <div className="w-full aspect-video max-h-[280px] sm:max-h-[360px] bg-black flex-shrink-0 overflow-hidden sm:rounded-lg border-2 border-white/20 m-2 sm:m-4 relative">
           <div ref={videoPreviewRef} className="w-full h-full" />
           {!videoTrack && (
             <div className="absolute inset-0 flex items-center justify-center text-cloud/50 text-sm">
               Camera not available
+            </div>
+          )}
+          {/* ✅ CRITICAL: Show loading/error message overlay */}
+          {loadingMessage && (
+            <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-50">
+              <div className="text-center px-4">
+                {loadingMessage.includes('error') || loadingMessage.includes('failed') || loadingMessage.includes('Failed') ? (
+                  <div className="text-red-400">
+                    <svg className="w-8 h-8 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <p className="text-sm font-medium">{loadingMessage}</p>
+                  </div>
+                ) : (
+                  <div className="text-cloud">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-goldBright mx-auto mb-2"></div>
+                    <p className="text-sm font-medium">{loadingMessage}</p>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -494,8 +593,10 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
                 {/* None and Blur buttons */}
                 <div className="grid grid-cols-2 gap-2 mb-3 sm:mb-4">
                   <button
-                    onClick={async () => {
-                      await handleBackgroundSelect('none');
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      handleBackgroundSelect('none').catch(console.error);
                     }}
                     disabled={isChangingBackground}
                     className={`p-2 sm:p-3 rounded-lg border-2 transition-all ${
@@ -513,8 +614,10 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
                   </button>
 
                   <button
-                    onClick={async () => {
-                      await handleBackgroundSelect('blur');
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      handleBackgroundSelect('blur').catch(console.error);
                     }}
                     disabled={isChangingBackground}
                     className={`p-2 sm:p-3 rounded-lg border-2 transition-all ${
@@ -588,7 +691,11 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
                         return (
                         <button
                           key={file.id}
-                          onClick={() => handleBackgroundSelect(file)}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleBackgroundSelect(file).catch(console.error);
+                          }}
                           disabled={isChangingBackground}
                           className={`relative rounded-lg overflow-hidden border-2 transition-all ${
                             selectedBackground === file.id
@@ -645,7 +752,11 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
                         return (
                         <button
                           key={bg.id}
-                          onClick={() => handleBackgroundSelect(bg)}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleBackgroundSelect(bg).catch(console.error);
+                          }}
                           disabled={isChangingBackground}
                           className={`relative rounded-lg overflow-hidden border-2 transition-all ${
                             selectedBackground === bg.id

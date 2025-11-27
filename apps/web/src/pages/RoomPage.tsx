@@ -567,7 +567,7 @@ const RoomPage: React.FC = () => {
         // ✅ STABILITY FIX: Improved connection verification with better state checks
         // Wait for connection to be fully established with more reliable checks
         let attempts = 0;
-        const maxAttempts = 200; // 20 seconds max wait
+        const maxAttempts = 50; // ✅ REDUCED: 5 seconds max wait (was 20 seconds)
         let connectionEstablished = false;
         
         while (attempts < maxAttempts && !connectionEstablished) {
@@ -584,31 +584,6 @@ const RoomPage: React.FC = () => {
               connectionEstablished = true;
               connectionEstablishedRef.current = true;
               
-              // ✅ CRITICAL FIX: Force camera ON immediately when connection is established
-              // This ensures camera starts automatically like Zoom, before any track publishing
-              const videoPub = currentRoom.localParticipant.getTrack(Track.Source.Camera);
-              const hasVideoTrack = !!videoPub && !!videoPub.track && !videoPub.isMuted;
-              
-              if (!hasVideoTrack) {
-                console.log('[RoomPage] 🚀 Connection established - forcing camera ON immediately (Zoom-style)');
-                // Force camera ON immediately - don't wait for track publishing
-                setCameraEnabled(true).catch((err) => {
-                  console.error('[RoomPage] ❌ Failed to force-enable camera on connection:', err);
-                });
-              }
-              
-              // ✅ CRITICAL FIX: Force microphone ON immediately when connection is established
-              const audioPub = currentRoom.localParticipant.getTrack(Track.Source.Microphone);
-              const hasAudioTrack = !!audioPub && !!audioPub.track && !audioPub.isMuted;
-              
-              if (!hasAudioTrack) {
-                console.log('[RoomPage] 🚀 Connection established - forcing microphone ON immediately (Zoom-style)');
-                // Force microphone ON immediately - don't wait for track publishing
-                setMicrophoneEnabled(true).catch((err) => {
-                  console.error('[RoomPage] ❌ Failed to force-enable microphone on connection:', err);
-                });
-              }
-              
               console.log('[RoomPage] ✅ Connection fully established:', {
                 isConnected: currentIsConnected,
                 roomState: currentRoom.state,
@@ -617,8 +592,8 @@ const RoomPage: React.FC = () => {
               });
               break;
             } else {
-              // Log progress every 10 attempts (1 second)
-              if (attempts % 10 === 0) {
+              // Log progress every 5 attempts (0.5 seconds)
+              if (attempts % 5 === 0) {
                 console.log('[RoomPage] Waiting for connection...', {
                   isConnected: currentIsConnected,
                   roomState: currentRoom?.state,
@@ -643,57 +618,41 @@ const RoomPage: React.FC = () => {
           if (finalIsConnected && finalRoom && finalRoom.state === 'connected' && finalRoom.localParticipant) {
             connectionEstablished = true;
             connectionEstablishedRef.current = true;
-            
-            // ✅ CRITICAL FIX: Force camera ON immediately when connection is verified
-            const videoPub = finalRoom.localParticipant.getTrack(Track.Source.Camera);
-            const hasVideoTrack = !!videoPub && !!videoPub.track && !videoPub.isMuted;
-            
-            if (!hasVideoTrack) {
-              console.log('[RoomPage] 🚀 Connection verified - forcing camera ON immediately (Zoom-style)');
-              setCameraEnabled(true).catch((err) => {
-                console.error('[RoomPage] ❌ Failed to force-enable camera on verification:', err);
-              });
-            }
-            
-            // ✅ CRITICAL FIX: Force microphone ON immediately when connection is verified
-            const audioPub = finalRoom.localParticipant.getTrack(Track.Source.Microphone);
-            const hasAudioTrack = !!audioPub && !!audioPub.track && !audioPub.isMuted;
-            
-            if (!hasAudioTrack) {
-              console.log('[RoomPage] 🚀 Connection verified - forcing microphone ON immediately (Zoom-style)');
-              setMicrophoneEnabled(true).catch((err) => {
-                console.error('[RoomPage] ❌ Failed to force-enable microphone on verification:', err);
-              });
-            }
-            
             console.log('[RoomPage] ✅ Connection verified on final check');
           } else {
-            console.warn('[RoomPage] ⚠️ Connection check timeout', {
+            // ✅ CRITICAL: Don't block on timeout - connection might still be establishing
+            // But log warning for debugging
+            console.warn('[RoomPage] ⚠️ Connection check timeout (continuing anyway)', {
               isConnected: finalIsConnected,
               roomState: finalRoom?.state,
               hasLocalParticipant: !!finalRoom?.localParticipant,
               attempts
             });
-            // Don't block - connection might still be establishing
-            // But set flag so we know to be cautious
-            connectionEstablishedRef.current = false;
+            // ✅ CRITICAL: Set flag but don't block - allow track publishing to proceed
+            // Connection might be established but state updates are delayed
+            connectionEstablishedRef.current = finalIsConnected && finalRoom?.state === 'connected';
           }
         }
         
-        // ✅ STABILITY FIX: Only set active meeting if connection is truly established
-        if (connectionEstablished) {
-          console.log('[RoomPage] Connection stable, setting active meeting...');
-          
-          // Small delay to ensure connection is fully ready
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          
-          if (roomData?.title) {
-            await activeMeetingService.setActiveMeeting(user.uid, roomId, roomData.title);
-            console.log('[RoomPage] ✅ Active meeting set successfully');
-          }
-        } else {
-          console.warn('[RoomPage] ⚠️ Skipping active meeting set - connection not fully established');
+    // ✅ STABILITY FIX: Set active meeting if connection is established (even if timeout)
+    // Don't block on timeout - connection might still be establishing
+    if (connectionEstablished || (isConnected && room && room.state === 'connected')) {
+      console.log('[RoomPage] Connection ready, setting active meeting...');
+      
+      // Small delay to ensure connection is fully ready
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      if (roomData?.title) {
+        try {
+          await activeMeetingService.setActiveMeeting(user.uid, roomId, roomData.title);
+          console.log('[RoomPage] ✅ Active meeting set successfully');
+        } catch (error) {
+          console.warn('[RoomPage] ⚠️ Failed to set active meeting:', error);
         }
+      }
+    } else {
+      console.warn('[RoomPage] ⚠️ Skipping active meeting set - connection not ready');
+    }
       } catch (error: any) {
         connectionAttemptRef.current = false;
         connectionEstablishedRef.current = false;
@@ -826,37 +785,9 @@ const RoomPage: React.FC = () => {
     };
   }, [user, roomId, isConnected]);
 
-  // ✅ CRITICAL FIX: Force camera ON immediately when room connects (before track publishing)
-  // This ensures camera starts automatically like Zoom
-  useEffect(() => {
-    if (!isConnected || !room || !room.localParticipant || room.state !== 'connected') {
-      return;
-    }
-    
-    // ✅ CRITICAL: Check if camera track exists - if not, force it ON immediately
-    const videoPub = room.localParticipant.getTrack(Track.Source.Camera);
-    const hasVideoTrack = !!videoPub && !!videoPub.track && !videoPub.isMuted && !(videoPub.track as any).isMuted;
-    
-    if (!hasVideoTrack) {
-      console.log('[RoomPage] 🚀 Room connected - forcing camera ON immediately (Zoom-style auto-start)');
-      // Force camera ON immediately - this will start the camera device
-      setCameraEnabled(true).catch((err) => {
-        console.error('[RoomPage] ❌ Failed to force-enable camera on room connect:', err);
-      });
-    }
-    
-    // ✅ CRITICAL FIX: Check if microphone track exists - if not, force it ON immediately
-    const audioPub = room.localParticipant.getTrack(Track.Source.Microphone);
-    const hasAudioTrack = !!audioPub && !!audioPub.track && !audioPub.isMuted && !(audioPub.track as any).isMuted;
-    
-    if (!hasAudioTrack) {
-      console.log('[RoomPage] 🚀 Room connected - forcing microphone ON immediately (Zoom-style auto-start)');
-      // Force microphone ON immediately - this will start the microphone device
-      setMicrophoneEnabled(true).catch((err) => {
-        console.error('[RoomPage] ❌ Failed to force-enable microphone on room connect:', err);
-      });
-    }
-  }, [isConnected, room, setCameraEnabled, setMicrophoneEnabled]);
+  // ✅ REMOVED: This effect was causing conflicts with track publishing
+  // Track publishing is now handled in the main publishing effect below
+  // Camera/mic are enabled automatically via publishFromSavedSettings
 
   // ✅ STABILITY FIX: Track publishing ref to prevent multiple simultaneous attempts
   const trackPublishingRef = useRef(false);
@@ -870,10 +801,18 @@ const RoomPage: React.FC = () => {
       return;
     }
     
-    // ✅ CRITICAL: Must have connection established flag
+    // ✅ CRITICAL: Check connection - don't require flag, just verify room state
+    // This allows publishing even if the flag check timed out (connection might still be good)
     if (!connectionEstablishedRef.current) {
-      console.log('[RoomPage] Connection not fully established yet, waiting...');
-      return;
+      // ✅ CRITICAL: If flag is false but room is connected, allow publishing anyway
+      // This handles cases where connection is established but flag check timed out
+      if (room.state === 'connected' && room.localParticipant) {
+        console.log('[RoomPage] Connection flag not set but room is connected, allowing publishing...');
+        connectionEstablishedRef.current = true; // Set flag now
+      } else {
+        console.log('[RoomPage] Connection not fully established yet, waiting...');
+        return;
+      }
     }
     
     // ✅ CRITICAL: Room MUST be in connected state
