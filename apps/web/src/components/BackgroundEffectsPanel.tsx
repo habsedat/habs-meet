@@ -30,7 +30,7 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
       selectedAudioDevice = '',
       savedBackground = null
     }) => {
-      const { user } = useAuth();
+      const { user, userProfile } = useAuth();
       const [activeTab, setActiveTab] = useState<TabType>('background');
       const [backgrounds, setBackgrounds] = useState<DefaultMedia[]>([]);
       const [userMedia, setUserMedia] = useState<UploadedFile[]>([]);
@@ -286,6 +286,27 @@ type TabType = 'camera' | 'background' | 'avatar' | 'filter' | 'effect';
     }
     
     // For videos, duration validation is handled by fileStorageService (max 2 minutes)
+
+    // ✅ SUBSCRIPTION CHECK: Verify user can upload media (PERSONAL)
+    if (userProfile) {
+      try {
+        const { canUploadMedia, getSubscriptionFromProfile } = await import('../lib/subscriptionService');
+        const subscription = getSubscriptionFromProfile(userProfile);
+        const mediaType = isImage ? 'backgroundImage' : 'backgroundVideo';
+        const check = canUploadMedia(subscription, file.size, mediaType);
+        
+        if (!check.allowed) {
+          toast.error(check.reason || 'Upload not allowed');
+          if (fileInputRef.current) {
+            fileInputRef.current.value = '';
+          }
+          return;
+        }
+      } catch (error: any) {
+        console.error('[Subscription] Error checking upload permission:', error);
+        // Continue anyway (backend will enforce)
+      }
+    }
 
     setUploading(true);
     setUploadProgress({

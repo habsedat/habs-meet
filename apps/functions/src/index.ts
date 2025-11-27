@@ -3,6 +3,9 @@ import * as admin from 'firebase-admin';
 import cors from 'cors';
 import { AccessToken, RoomServiceClient as RoomService } from 'livekit-server-sdk';
 import * as crypto from 'crypto';
+import { canParticipantJoin, canHostStartMeeting } from './subscriptionChecks';
+import { trackMeetingDuration, trackRecordingDuration, initializeUserSubscription } from './subscriptionTracking';
+import { createCheckoutSession, billingWebhook } from './billing';
 
 // Initialize Firebase Admin
 admin.initializeApp();
@@ -316,6 +319,28 @@ export const getMeetingToken = functions.https.onRequest(async (req, res) => {
 
       // If not room creator and not a participant, deny access
       if (!isRoomCreator && !participantDoc.exists) {
+        // ✅ SUBSCRIPTION CHECK: Check participant limit before allowing join (HOST-BASED)
+        const hostUserId = roomData.createdBy;
+        if (hostUserId) {
+          // Get current participant count
+          const participantsSnapshot = await admin.firestore()
+            .collection('rooms')
+            .doc(roomId)
+            .collection('participants')
+            .where('leftAt', '==', null)
+            .get();
+          const currentParticipantCount = participantsSnapshot.size;
+          
+          // Check subscription limit
+          const subscriptionCheck = await canParticipantJoin(hostUserId, currentParticipantCount);
+          if (!subscriptionCheck.allowed) {
+            return res.status(403).json({ 
+              error: subscriptionCheck.reason,
+              upgradeRequired: subscriptionCheck.upgradeRequired,
+            });
+          }
+        }
+        
         return res.status(403).json({ error: 'User is not a participant in this room' });
       }
 
@@ -470,6 +495,35 @@ export const getRoomGuard = functions.https.onRequest(async (req, res) => {
         canJoin = true;
       }
       
+      // ✅ SUBSCRIPTION CHECK: Check participant limit (HOST-BASED)
+      if (canJoin && !isParticipant) {
+        const hostUserId = roomData.createdBy;
+        if (hostUserId) {
+          // Get current participant count
+          const participantsSnapshot = await admin.firestore()
+            .collection('rooms')
+            .doc(roomId)
+            .collection('participants')
+            .where('leftAt', '==', null)
+            .get();
+          const currentParticipantCount = participantsSnapshot.size;
+          
+          // Check subscription limit
+          const subscriptionCheck = await canParticipantJoin(hostUserId, currentParticipantCount);
+          if (!subscriptionCheck.allowed) {
+            canJoin = false;
+            return res.status(403).json({
+              status: roomData.status,
+              waitingRoom: roomData.waitingRoom,
+              canJoin: false,
+              needsAdmission: false,
+              error: subscriptionCheck.reason,
+              upgradeRequired: subscriptionCheck.upgradeRequired,
+            });
+          }
+        }
+      }
+      
       const needsAdmission = roomData.waitingRoom && !isParticipant;
 
       return res.json({
@@ -513,7 +567,7 @@ export const livekitWebhook = functions.https.onRequest(async (req, res) => {
 
       const data: WebhookData = req.body;
 
-      // Handle egress ended event
+      // Handle egress ended event (recording finished)
       if (data.event === 'egress.ended' && data.egress) {
         const { room } = data;
 
@@ -524,17 +578,65 @@ export const livekitWebhook = functions.https.onRequest(async (req, res) => {
           return res.status(404).json({ error: 'Room not found' });
         }
 
+        const roomData = roomDoc.data()!;
+        const hostUserId = roomData.createdBy;
+
+        // Calculate recording duration (if available in egress data)
+        // Note: duration may not be in egress object, calculate from start/end times if available
+        const recordingDuration = (data.egress as any)?.duration || 0; // in seconds
+        const recordingDurationMinutes = Math.ceil(recordingDuration / 60);
+
         // Create recording document
         const recordingRef = await admin.firestore().collection('recordings').add({
           roomId: room.name,
           storagePath: `recordings/${room.name}/${Date.now()}.mp4`,
           size: 0, // Will be updated when file is uploaded
-          duration: 0, // Will be calculated from egress data
+          duration: recordingDurationMinutes,
           layout: 'speaker',
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
         });
 
+        // ✅ SUBSCRIPTION TRACKING: Track recording duration for HOST
+        if (hostUserId && recordingDurationMinutes > 0) {
+          try {
+            await trackRecordingDuration(hostUserId, recordingDurationMinutes);
+          } catch (error) {
+            console.error('[Subscription] Error tracking recording duration:', error);
+          }
+        }
+
         console.log('Recording created:', recordingRef.id);
+      }
+
+      // Handle room ended event (track meeting duration)
+      if (data.event === 'room.ended' || data.event === 'room.disconnected') {
+        const { room } = data;
+
+        // Get room document to find the host and meeting duration
+        const roomDoc = await admin.firestore().collection('rooms').doc(room.name).get();
+        if (roomDoc.exists) {
+          const roomData = roomDoc.data()!;
+          const hostUserId = roomData.createdBy;
+          const createdAt = roomData.createdAt;
+          const endedAt = roomData.endedAt || admin.firestore.Timestamp.now();
+
+          // Calculate meeting duration
+          if (hostUserId && createdAt) {
+            const startTime = createdAt.toDate();
+            const endTime = endedAt.toDate();
+            const durationMs = endTime.getTime() - startTime.getTime();
+            const durationMinutes = Math.ceil(durationMs / (1000 * 60));
+
+            // ✅ SUBSCRIPTION TRACKING: Track meeting duration for HOST
+            if (durationMinutes > 0) {
+              try {
+                await trackMeetingDuration(hostUserId, durationMinutes);
+              } catch (error) {
+                console.error('[Subscription] Error tracking meeting duration:', error);
+              }
+            }
+          }
+        }
       }
 
       return res.json({ success: true });
@@ -657,6 +759,16 @@ export const createScheduledMeeting = functions.https.onRequest(async (req, res)
 
       if (durationMin < 1 || durationMin > 1440) {
         return res.status(400).json({ error: 'Duration must be between 1 and 1440 minutes' });
+      }
+
+      // ✅ SUBSCRIPTION CHECK: Check if host can create meeting
+      const { canHostStartMeeting } = await import('./subscriptionChecks');
+      const subscriptionCheck = await canHostStartMeeting(user.uid, durationMin);
+      if (!subscriptionCheck.allowed) {
+        return res.status(403).json({
+          error: subscriptionCheck.reason,
+          upgradeRequired: subscriptionCheck.upgradeRequired,
+        });
       }
 
       // Validate passcode if required
@@ -1843,6 +1955,9 @@ export const enforceParticipantCapacity = functions.https.onRequest(async (req, 
 });
 
 // Main API function
+// Export billing functions directly (not through API router for webhook)
+export { createCheckoutSession, billingWebhook } from './billing';
+
 export const api = functions.https.onRequest(async (req, res) => {
   return corsHandler(req, res, async () => {
     const path = req.path;
@@ -1892,6 +2007,10 @@ export const api = functions.https.onRequest(async (req, res) => {
       return endRoom(req, res);
     } else if ((path === '/api/meet/leave' || path === '/meet/leave') && method === 'POST') {
       return leaveMeeting(req, res);
+    } else if (path === '/api/billing/create-checkout-session' && method === 'POST') {
+      return createCheckoutSession(req, res);
+    } else if (path === '/api/billing/webhook' && method === 'POST') {
+      return billingWebhook(req, res);
     } else {
       console.log('[API Router] No route found for:', path, 'Method:', method);
       return res.status(404).json({ error: 'Endpoint not found' });

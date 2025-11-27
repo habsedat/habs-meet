@@ -13,6 +13,7 @@ import WaitingRoomPage from './pages/WaitingRoomPage';
 import AdminPage from './pages/AdminPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
 import InboxPage from './pages/InboxPage';
+import PricingPage from './pages/PricingPage';
 import ProtectedRoute from './components/ProtectedRoute';
 import SEOHead from './components/SEOHead';
 import AppRedirectHandler from './components/AppRedirectHandler';
@@ -46,6 +47,7 @@ function AppRoutes() {
             <HomePage />
           </ProtectedRoute>
         } />
+        <Route path="/pricing" element={<PricingPage />} />
         <Route path="/invite/:inviteId" element={<InvitePage />} />
         <Route
           path="/join/:roomId"

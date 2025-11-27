@@ -7,6 +7,7 @@ import Header from '../components/Header';
 import CalendarInterface from '../components/CalendarInterface';
 import ScheduleMeetingForm from '../components/ScheduleMeetingForm';
 import FeedbackPopup, { FeedbackData } from '../components/FeedbackPopup';
+import UpgradeModal from '../components/UpgradeModal';
 import {
   canShowFeedbackPopup,
   updateLastFeedbackPopupShown,
@@ -55,9 +56,43 @@ const HomePage: React.FC = () => {
   const [feedbackMeetingId, setFeedbackMeetingId] = useState<string | null>(null);
   const [feedbackMeetingDuration, setFeedbackMeetingDuration] = useState<number>(0);
   const [isCheckingFeedback, setIsCheckingFeedback] = useState(false);
+  
+  // Upgrade modal state
+  const [upgradeModalProps, setUpgradeModalProps] = useState<{
+    isOpen: boolean;
+    title?: string;
+    message?: string;
+    feature?: string;
+    currentTier?: 'free' | 'pro' | 'business' | 'enterprise';
+    reasonCode?: string;
+  }>({
+    isOpen: false,
+  });
 
   const handleCreateRoom = async () => {
     if (!user || !userProfile) return;
+
+    // ✅ SUBSCRIPTION CHECK: Verify host can start meeting
+    try {
+      const { canStartMeeting, getSubscriptionFromProfile } = await import('../lib/subscriptionService');
+      const subscription = getSubscriptionFromProfile(userProfile);
+      const check = canStartMeeting(subscription, 0); // 0 = instant meeting, duration unknown
+      
+      if (!check.allowed) {
+        setUpgradeModalProps({
+          isOpen: true,
+          title: check.reason || 'Cannot create meeting',
+          message: 'Upgrade your plan to host meetings or extend your meeting limits.',
+          feature: 'Instant Meeting',
+          currentTier: subscription.subscriptionTier,
+          reasonCode: check.reasonCode,
+        });
+        return;
+      }
+    } catch (error) {
+      console.error('[Subscription] Error checking meeting creation:', error);
+      // Continue anyway (fail open)
+    }
 
     setIsCreatingRoom(true);
     try {
@@ -80,7 +115,13 @@ const HomePage: React.FC = () => {
       
     } catch (error: any) {
       console.error('Error creating meeting:', error);
-      toast.error('Failed to create meeting: ' + error.message);
+      // Check if error is subscription-related
+      if (error.message?.includes('subscription') || error.message?.includes('limit') || error.message?.includes('plan')) {
+        toast.error(error.message);
+        // TODO: Show upgrade modal
+      } else {
+        toast.error('Failed to create meeting: ' + error.message);
+      }
     } finally {
       setIsCreatingRoom(false);
     }
@@ -630,6 +671,7 @@ const HomePage: React.FC = () => {
             <div className="space-y-4 sm:space-y-6 order-1 xl:order-2">
               {/* Quick Actions Cards */}
               <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-1 gap-4">
+
                 {/* Create Meeting Card */}
                 <div className="bg-gradient-to-b from-purple-500 to-blue-600 rounded-lg p-3 text-white">
                   <div className="text-center">
@@ -1211,6 +1253,17 @@ const HomePage: React.FC = () => {
           meetingDuration={feedbackMeetingDuration}
         />
       )}
+
+      {/* Upgrade Modal */}
+      <UpgradeModal
+        isOpen={upgradeModalProps.isOpen}
+        onClose={() => setUpgradeModalProps({ isOpen: false })}
+        title={upgradeModalProps.title}
+        message={upgradeModalProps.message}
+        feature={upgradeModalProps.feature}
+        currentTier={upgradeModalProps.currentTier}
+        reasonCode={upgradeModalProps.reasonCode}
+      />
     </div>
   );
 };

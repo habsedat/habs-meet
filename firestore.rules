@@ -211,6 +211,14 @@ service cloud.firestore {
       // Only admins can update/delete feedback
       allow update, delete: if isAdmin();
     }
+    
+    // Subscription Plans collection - editable only by admins, readable by all authenticated users
+    match /subscriptionPlans/{planId} {
+      // All authenticated users can read plan configs (needed for subscription checks)
+      allow read: if isAuthenticated();
+      // Only admins can create/update/delete plan configs
+      allow create, update, delete: if isAdmin();
+    }
   }
 }
 

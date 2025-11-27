@@ -322,8 +322,8 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
     hasInitializedRef.current = true;
     
     // Save toggle state
-    // Save to Firestore (user-specific), not localStorage (device-specific)
-    updateUserPreferences({ backgroundEffectsEnabled: isBackgroundEffectsEnabled }).catch(console.error);
+          // Save to Firestore (user-specific), not localStorage (device-specific)
+          updateUserPreferences({ backgroundEffectsEnabled: isBackgroundEffectsEnabled }).catch(console.error);
     
     const applyBackground = async () => {
       if (!videoTrack) return;
@@ -423,7 +423,7 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
     };
     
     // ✅ CRITICAL FIX: Apply immediately - no delays (like Zoom)
-    applyBackground();
+      applyBackground();
   }, [isBackgroundEffectsEnabled, videoTrack]); // ✅ CRITICAL: Removed savedBackground and previewBackground from dependencies to prevent re-running on user selections
   
   // ✅ CRITICAL FIX: Handle toggle changes separately from initial load
@@ -1001,59 +1001,59 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
           if (videoTrack) {
             try {
               // Validate URL immediately before proceeding
-              if ((type === 'image' || type === 'video') && (!url || url.trim() === '')) {
-                console.error('[BG] Invalid URL provided:', { type, url });
-                toast.error('Invalid background URL');
+        if ((type === 'image' || type === 'video') && (!url || url.trim() === '')) {
+          console.error('[BG] Invalid URL provided:', { type, url });
+          toast.error('Invalid background URL');
                 throw new Error('Invalid background URL');
-              }
+        }
 
-              // Quick validation - don't block if track is valid
-              const videoTracks = videoTrack.mediaStream?.getVideoTracks();
-              if (!videoTracks || videoTracks.length === 0 || videoTracks[0].readyState === 'ended') {
-                console.warn('[BG] Track is not valid, cannot apply background');
+        // Quick validation - don't block if track is valid
+        const videoTracks = videoTrack.mediaStream?.getVideoTracks();
+        if (!videoTracks || videoTracks.length === 0 || videoTracks[0].readyState === 'ended') {
+          console.warn('[BG] Track is not valid, cannot apply background');
                 throw new Error('Video track not ready');
-              }
+        }
 
               // Set lock to prevent track cleanup during background application
-              isApplyingBackgroundRef.current = true;
+        isApplyingBackgroundRef.current = true;
 
-              try {
-                // Validate backgroundEngine is available
-                if (!backgroundEngine) {
-                  console.error('[BG] Background engine is not available');
+        try {
+          // Validate backgroundEngine is available
+          if (!backgroundEngine) {
+            console.error('[BG] Background engine is not available');
                   throw new Error('Background engine not available');
                 }
 
                 // Initialize background engine with preview track
                 console.log('[PreMeeting] Initializing background engine...');
-                await backgroundEngine.init(videoTrack);
+            await backgroundEngine.init(videoTrack);
                 console.log('[PreMeeting] Background engine initialized');
 
                 // Apply the background effect immediately
-                if (type === 'none') {
+          if (type === 'none') {
                   if (typeof backgroundEngine.setNone === 'function') {
                     await backgroundEngine.setNone();
                     console.log('[PreMeeting] ✅ Background removed');
-                  }
-                } else if (type === 'blur') {
+            }
+          } else if (type === 'blur') {
                   if (typeof backgroundEngine.setBlur === 'function') {
                     await backgroundEngine.setBlur();
                     console.log('[PreMeeting] ✅ Blur applied');
                   }
-                } else if (type === 'image' && url) {
+          } else if (type === 'image' && url) {
                   if (typeof backgroundEngine.setImage === 'function') {
                     console.log('[PreMeeting] Applying image background:', url);
                     await backgroundEngine.setImage(url);
                     console.log('[PreMeeting] ✅ Image background applied');
-                  } else {
+              } else {
                     throw new Error('setImage function not available');
                   }
-                } else if (type === 'video' && url) {
-                  // Validate video URL before attempting to load
-                  if (url.includes('example.com')) {
-                    toast.error('Video URL is not available. Please configure a valid video URL.');
+          } else if (type === 'video' && url) {
+            // Validate video URL before attempting to load
+            if (url.includes('example.com')) {
+              toast.error('Video URL is not available. Please configure a valid video URL.');
                     throw new Error('Video URL not available');
-                  }
+            }
                   if (typeof backgroundEngine.setVideo === 'function') {
                     console.log('[PreMeeting] Applying video background:', url);
                     await backgroundEngine.setVideo(url);
@@ -1070,7 +1070,7 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
                   ? 'none:none'
                   : `${type}:${url || ''}`;
                 lastAppliedBackgroundRef.current = backgroundKey;
-              } catch (error: any) {
+        } catch (error: any) {
                 console.error('[PreMeeting] ❌ Failed to apply preview background:', error);
                 // ✅ CRITICAL: Show user-friendly error message
                 const errorMsg = error?.message || 'Unknown error';
@@ -1082,13 +1082,13 @@ const PreMeetingSetup: React.FC<PreMeetingSetupProps> = ({ roomId, roomTitle, is
                   } else {
                     toast.error('Failed to apply background: ' + errorMsg);
                   }
-                }
+          }
                 // Throw so BackgroundEffectsPanel can revert selection on error
                 throw error;
-              } finally {
+        } finally {
                 // Release lock
-                isApplyingBackgroundRef.current = false;
-              }
+            isApplyingBackgroundRef.current = false;
+        }
             } catch (error: any) {
               // Re-throw to caller
               throw error;

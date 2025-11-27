@@ -14,10 +14,19 @@ interface SavedAccount {
 
 interface AccountSwitcherProps {
   onProfileClick?: () => void;
+  onSignOut?: () => void;
 }
 
-const AccountSwitcher: React.FC<AccountSwitcherProps> = ({ onProfileClick }) => {
+const AccountSwitcher: React.FC<AccountSwitcherProps> = ({ onProfileClick, onSignOut }) => {
   const { user, userProfile, logout } = useAuth();
+  const handleSignOut = () => {
+    if (onSignOut) {
+      onSignOut();
+    } else {
+      logout();
+    }
+    setShowDropdown(false);
+  };
   const [showDropdown, setShowDropdown] = useState(false);
   const [savedAccounts, setSavedAccounts] = useState<SavedAccount[]>([]);
 
@@ -137,7 +146,11 @@ const AccountSwitcher: React.FC<AccountSwitcherProps> = ({ onProfileClick }) => 
             className="fixed inset-0 z-10"
             onClick={() => setShowDropdown(false)}
           />
-          <div className="absolute right-0 top-full mt-2 bg-cloud rounded-lg shadow-lg border border-gray-200 min-w-64 z-20">
+          <div className="absolute right-0 top-full mt-2 bg-cloud rounded-lg shadow-xl border border-gray-200 min-w-64 max-w-[calc(100vw-1rem)] sm:max-w-none z-20 overflow-visible"
+               style={{ 
+                 maxHeight: 'calc(100vh - 100px)',
+                 overflowY: 'auto'
+               }}>
             <div className="p-2">
               {/* Current Account */}
               <div className="px-3 py-2 border-b border-gray-200">
@@ -241,6 +254,19 @@ const AccountSwitcher: React.FC<AccountSwitcherProps> = ({ onProfileClick }) => 
                     </svg>
                     <span>Add Another Account</span>
                   </div>
+                </button>
+              </div>
+
+              {/* Sign Out */}
+              <div className="mt-2 border-t border-gray-200 pt-2">
+                <button
+                  onClick={handleSignOut}
+                  className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 rounded flex items-center space-x-2"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                  </svg>
+                  <span>Sign Out</span>
                 </button>
               </div>
             </div>

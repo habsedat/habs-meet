@@ -37,7 +37,7 @@ import {
   browserSessionPersistence,
 } from 'firebase/auth';
 import { AuthErrorCodes } from 'firebase/auth';
-import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, setDoc, getDoc, serverTimestamp, Timestamp } from 'firebase/firestore';
 import { isValidPhoneNumber } from 'react-phone-number-input';
 import { auth, db } from '../lib/firebase';
 import toast from '../lib/toast';
@@ -63,6 +63,22 @@ interface UserProfile {
     audioDeviceId?: string | null;
     videoEnabled?: boolean;
     audioEnabled?: boolean;
+  };
+  // Subscription fields
+  subscriptionTier?: 'free' | 'pro' | 'business' | 'enterprise';
+  subscriptionStatus?: 'active' | 'canceled' | 'trial' | 'inactive';
+  subscriptionExpiresAt?: any; // Firestore Timestamp or null
+  stripeCustomerId?: string;
+  // Billing period (based on subscription start date, not calendar month)
+  billingPeriodStartAt?: any; // Firestore Timestamp or null
+  billingPeriodEndAt?: any; // Firestore Timestamp or null
+  // Usage tracking (host-based for meetings/recordings, personal for storage)
+  // Note: "ThisMonth" naming kept for backward compatibility, but logic is per billing period
+  usage?: {
+    totalMeetingMinutesThisMonth?: number; // Per billing period
+    totalRecordingMinutesThisMonth?: number; // Per billing period
+    storageUsedBytes?: number; // Cumulative (doesn't reset)
+    meetingsCountThisMonth?: number; // Per billing period
   };
 }
 
@@ -337,6 +353,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       
       // 3) Create Firestore doc WHILE user is signed in
       console.log('[SignUp] Writing to Firestore. User UID:', user.uid);
+      
+      // Initialize billing period and usage for new user
+      const now = new Date();
+      const billingPeriodEnd = new Date(now);
+      billingPeriodEnd.setMonth(billingPeriodEnd.getMonth() + 1); // 1 month from now
+      
       await setDoc(doc(db, 'users', user.uid), {
         displayName,
         email: user.email || email,
@@ -347,6 +369,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         isEmailVerified: false,
         isPhoneVerified: false,
         role: 'user',
+        // ✅ SUBSCRIPTION: Initialize with free tier and billing period
+        subscriptionTier: 'free',
+        subscriptionStatus: 'active',
+        subscriptionExpiresAt: null,
+        billingPeriodStartAt: Timestamp.fromDate(now),
+        billingPeriodEndAt: Timestamp.fromDate(billingPeriodEnd),
+        usage: {
+          totalMeetingMinutesThisMonth: 0,
+          totalRecordingMinutesThisMonth: 0,
+          storageUsedBytes: 0,
+          meetingsCountThisMonth: 0,
+        },
       });
       console.log('[SignUp] ✅ User profile created successfully in Firestore');
       
@@ -384,6 +418,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
           
           await updateProfile(existingUser, { displayName });
           
+          // Initialize billing period and usage (if not exists)
+          const now = new Date();
+          const billingPeriodEnd = new Date(now);
+          billingPeriodEnd.setMonth(billingPeriodEnd.getMonth() + 1); // 1 month from now
+          
           await setDoc(doc(db, 'users', existingUser.uid), {
             displayName,
             email: existingUser.email || email,
@@ -394,6 +433,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
             isEmailVerified: false,
             isPhoneVerified: false,
             role: 'user',
+            // ✅ SUBSCRIPTION: Initialize with free tier and billing period (merge to preserve existing if any)
+            subscriptionTier: 'free',
+            subscriptionStatus: 'active',
+            subscriptionExpiresAt: null,
+            billingPeriodStartAt: Timestamp.fromDate(now),
+            billingPeriodEndAt: Timestamp.fromDate(billingPeriodEnd),
+            usage: {
+              totalMeetingMinutesThisMonth: 0,
+              totalRecordingMinutesThisMonth: 0,
+              storageUsedBytes: 0,
+              meetingsCountThisMonth: 0,
+            },
           }, { merge: true });
           
           await sendEmailVerificationWithBetterDeliverability(existingUser, displayName);

@@ -1299,6 +1299,25 @@ const RoomPage: React.FC = () => {
       return;
     }
 
+    // ✅ SUBSCRIPTION CHECK: Verify host can start recording
+    if (isHost && userProfile) {
+      try {
+        const { canStartRecording } = await import('../lib/subscriptionService');
+        const { getSubscriptionFromProfile } = await import('../lib/subscriptionService');
+        const subscription = getSubscriptionFromProfile(userProfile);
+        const check = canStartRecording(subscription);
+        
+        if (!check.allowed) {
+          toast.error(check.reason || 'Cannot start recording');
+          // TODO: Show upgrade modal if upgradeRequired
+          return;
+        }
+      } catch (error) {
+        console.error('[Subscription] Error checking recording:', error);
+        // Continue anyway (fail open)
+      }
+    }
+
     // IMPORTANT: Recording is only started on explicit host action to avoid burning LiveKit minutes.
     // Never auto-start recording when host joins, first participant joins, or any other automatic trigger.
     // Start recording immediately - no options, just record everything
@@ -1309,7 +1328,13 @@ const RoomPage: React.FC = () => {
       toast.success('Recording started - capturing entire meeting room');
     } catch (error: any) {
       console.error('Error starting recording:', error);
-      toast.error('Failed to start recording: ' + error.message);
+      // Check if error is subscription-related
+      if (error.message?.includes('subscription') || error.message?.includes('limit') || error.message?.includes('plan')) {
+        toast.error(error.message);
+        // TODO: Show upgrade modal
+      } else {
+        toast.error('Failed to start recording: ' + error.message);
+      }
     }
   };
 

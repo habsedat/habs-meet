@@ -6,6 +6,8 @@ import toast from 'react-hot-toast';
 import UserAvatar from './UserAvatar';
 import Cropper from 'react-easy-crop';
 import { Area } from 'react-easy-crop';
+import { getSubscriptionFromProfile } from '../lib/subscriptionService';
+import { getLimitsForTier } from '../lib/subscriptionPlans';
 
 interface ProfileSettingsModalProps {
   isOpen: boolean;
@@ -305,6 +307,81 @@ const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({
               placeholder="Enter your phone number"
             />
           </div>
+
+          {/* Subscription Information */}
+          {userProfile && (
+            <div className="bg-gradient-to-r from-purple-50 to-blue-50 rounded-lg p-4 border border-purple-200">
+              <label className="block text-sm font-semibold text-midnight mb-3">
+                Subscription Plan
+              </label>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600">Current Plan:</span>
+                  <span className="text-sm font-semibold text-midnight capitalize">
+                    {userProfile.subscriptionTier || 'Free'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600">Status:</span>
+                  <span className={`text-sm font-medium capitalize ${
+                    userProfile.subscriptionStatus === 'active' ? 'text-green-600' : 
+                    userProfile.subscriptionStatus === 'trial' ? 'text-blue-600' : 
+                    'text-gray-600'
+                  }`}>
+                    {userProfile.subscriptionStatus || 'Active'}
+                  </span>
+                </div>
+                {userProfile.usage && (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-gray-600">Meeting Minutes Used:</span>
+                      <span className="text-sm font-medium text-midnight">
+                        {userProfile.usage.totalMeetingMinutesThisMonth || 0} min
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-gray-600">Storage Used:</span>
+                      <span className="text-sm font-medium text-midnight">
+                        {((userProfile.usage.storageUsedBytes || 0) / (1024 * 1024)).toFixed(2)} MB
+                      </span>
+                    </div>
+                  </>
+                )}
+                {(() => {
+                  const subscription = getSubscriptionFromProfile(userProfile);
+                  const plan = getLimitsForTier(subscription.subscriptionTier);
+                  if (plan) {
+                    return (
+                      <div className="mt-3 pt-3 border-t border-purple-200">
+                        <p className="text-xs text-gray-500 mb-2">Plan Limits:</p>
+                        <div className="space-y-1 text-xs">
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">Max Meeting Duration:</span>
+                            <span className="text-gray-800">
+                              {plan.maxMeetingDurationMinutes === Infinity ? 'Unlimited' : `${plan.maxMeetingDurationMinutes} min`}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">Max Participants:</span>
+                            <span className="text-gray-800">
+                              {plan.maxParticipantsPerMeeting === Infinity ? 'Unlimited' : plan.maxParticipantsPerMeeting}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">Recording:</span>
+                            <span className="text-gray-800">
+                              {plan.recordingEnabled ? 'Enabled' : 'Disabled'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
+              </div>
+            </div>
+          )}
 
           {/* Footer */}
           <div className="flex items-center justify-end space-x-3 pt-4 border-t border-gray-200">

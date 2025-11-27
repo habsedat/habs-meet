@@ -3,11 +3,13 @@ import { useAuth } from '../contexts/AuthContext';
 import { defaultMediaService, DefaultMedia } from '../lib/defaultMediaService';
 import { FileUploadProgress } from '../lib/fileStorageService';
 import { getFeedback, getFeedbackStats, MeetingFeedback } from '../lib/feedbackService';
+import SubscriptionSettingsTab from '../components/SubscriptionSettingsTab';
+import UserSubscriptionManagement from '../components/UserSubscriptionManagement';
 import toast from '../lib/toast';
 
 const AdminPage: React.FC = () => {
   const { user, isAdmin } = useAuth();
-  const [activeTab, setActiveTab] = useState<'background' | 'avatar' | 'filter' | 'effect' | 'feedback'>('background');
+  const [activeTab, setActiveTab] = useState<'background' | 'avatar' | 'filter' | 'effect' | 'feedback' | 'subscription' | 'users'>('background');
   const [defaultMedia, setDefaultMedia] = useState<DefaultMedia[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<FileUploadProgress | null>(null);
@@ -37,7 +39,7 @@ const AdminPage: React.FC = () => {
       if (activeTab === 'feedback') {
         loadFeedback();
         loadFeedbackStats();
-      } else {
+      } else if (activeTab !== 'subscription' && activeTab !== 'users') {
         loadDefaultMedia();
       }
     }
@@ -47,12 +49,13 @@ const AdminPage: React.FC = () => {
   const loadDefaultMedia = async () => {
     setLoading(true);
     try {
-      // Skip loading media for feedback tab
-      if (activeTab === 'feedback') {
+      // Skip loading media for feedback, subscription, and users tabs
+      if (activeTab === 'feedback' || activeTab === 'subscription' || activeTab === 'users') {
         setLoading(false);
         return;
       }
-      const media = await defaultMediaService.getDefaultMedia(activeTab);
+      // Type assertion for activeTab - we know it's a valid media category at this point
+      const media = await defaultMediaService.getDefaultMedia(activeTab as 'background' | 'avatar' | 'filter' | 'effect');
       setDefaultMedia(media);
     } catch (error) {
       console.error('Error loading default media:', error);
@@ -66,8 +69,8 @@ const AdminPage: React.FC = () => {
     const files = event.target.files;
     if (!files || files.length === 0 || !user) return;
 
-    // Don't allow uploads on feedback tab
-    if (activeTab === 'feedback') {
+    // Don't allow uploads on feedback, subscription, or users tabs
+    if (activeTab === 'feedback' || activeTab === 'subscription' || activeTab === 'users') {
       return;
     }
 
@@ -153,8 +156,8 @@ const AdminPage: React.FC = () => {
   const handleDeleteHardcodedDefaults = async () => {
     if (!user) return;
     
-    // Don't allow deletion on feedback tab
-    if (activeTab === 'feedback') {
+    // Don't allow deletion on feedback, subscription, or users tabs
+    if (activeTab === 'feedback' || activeTab === 'subscription' || activeTab === 'users') {
       return;
     }
     
@@ -163,7 +166,7 @@ const AdminPage: React.FC = () => {
     }
 
     try {
-      const result = await defaultMediaService.deleteHardcodedDefaults(user.uid, activeTab);
+      const result = await defaultMediaService.deleteHardcodedDefaults(user.uid, activeTab as 'background' | 'avatar' | 'filter' | 'effect');
       toast.success(`Deleted ${result.deleted} hardcoded default(s). ${result.errors > 0 ? `${result.errors} error(s) occurred.` : ''}`);
       await loadDefaultMedia(); // Reload the list
     } catch (error: any) {
@@ -262,7 +265,9 @@ const AdminPage: React.FC = () => {
                 { id: 'avatar', label: 'Avatars' },
                 { id: 'filter', label: 'Video Filters' },
                 { id: 'effect', label: 'Studio Effects' },
-                { id: 'feedback', label: 'Meeting Feedback' }
+                { id: 'feedback', label: 'Meeting Feedback' },
+                { id: 'subscription', label: 'Subscription & Pricing' },
+                { id: 'users', label: 'User Subscriptions' }
               ].map((tab) => (
                 <button
                   key={tab.id}
@@ -280,7 +285,11 @@ const AdminPage: React.FC = () => {
           </div>
 
           <div className="p-6">
-            {activeTab === 'feedback' ? (
+            {activeTab === 'subscription' ? (
+              <SubscriptionSettingsTab />
+            ) : activeTab === 'users' ? (
+              <UserSubscriptionManagement />
+            ) : activeTab === 'feedback' ? (
               // Feedback Dashboard
               <div>
                 {/* Stats */}
