@@ -44,7 +44,11 @@ const UserAvatar: React.FC<UserAvatarProps> = ({
       <img
         src={photoURL}
         alt={displayName || email || 'User'}
-        className={`${sizeClass} rounded-full object-cover ${className}`}
+        className={`${sizeClass} rounded-full object-cover flex-shrink-0 ${className}`}
+        style={{
+          borderRadius: '50%',
+          aspectRatio: '1 / 1',
+        }}
         onError={(e) => {
           // Fallback to initials if image fails to load
           const target = e.target as HTMLImageElement;
@@ -52,7 +56,8 @@ const UserAvatar: React.FC<UserAvatarProps> = ({
           const parent = target.parentElement;
           if (parent) {
             const fallback = document.createElement('div');
-            fallback.className = `${sizeClass} rounded-full bg-techBlue text-cloud flex items-center justify-center font-semibold ${className}`;
+            fallback.className = `${sizeClass} rounded-full bg-techBlue text-cloud flex items-center justify-center font-semibold flex-shrink-0 ${className}`;
+            fallback.style.borderRadius = '50%';
             fallback.textContent = getInitials();
             parent.appendChild(fallback);
           }
@@ -63,7 +68,11 @@ const UserAvatar: React.FC<UserAvatarProps> = ({
 
   return (
     <div
-      className={`${sizeClass} rounded-full bg-techBlue text-cloud flex items-center justify-center font-semibold ${className}`}
+      className={`${sizeClass} rounded-full bg-techBlue text-cloud flex items-center justify-center font-semibold flex-shrink-0 ${className}`}
+      style={{
+        borderRadius: '50%',
+        aspectRatio: '1 / 1',
+      }}
     >
       {getInitials()}
     </div>

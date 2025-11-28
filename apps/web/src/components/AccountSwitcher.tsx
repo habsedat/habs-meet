@@ -129,12 +129,14 @@ const AccountSwitcher: React.FC<AccountSwitcherProps> = ({ onProfileClick, onSig
         className="flex items-center space-x-2 px-2 py-1 rounded-lg hover:bg-gray-700 transition-colors"
         title="Switch Account"
       >
-        <UserAvatar
-          photoURL={userProfile?.photoURL || user?.photoURL}
-          displayName={userProfile?.displayName}
-          email={user?.email || ''}
-          size="sm"
-        />
+        <div className="flex-shrink-0">
+          <UserAvatar
+            photoURL={userProfile?.photoURL || user?.photoURL}
+            displayName={userProfile?.displayName}
+            email={user?.email || ''}
+            size="sm"
+          />
+        </div>
         <svg className="w-4 h-4 text-cloud" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
         </svg>
