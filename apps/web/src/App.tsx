@@ -1,6 +1,7 @@
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { LiveKitProvider } from './contexts/LiveKitContext';
+import WelcomePage from './pages/WelcomePage';
 import AuthPage from './pages/AuthPage';
 import HomePage from './pages/HomePage';
 import PreMeetingPage from './pages/PreMeetingPage';
@@ -14,6 +15,14 @@ import AdminPage from './pages/AdminPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
 import InboxPage from './pages/InboxPage';
 import PricingPage from './pages/PricingPage';
+import TermsOfServicePage from './pages/TermsOfServicePage';
+import PrivacyPolicyPage from './pages/PrivacyPolicyPage';
+import CookiePolicyPage from './pages/CookiePolicyPage';
+import DataProcessingAgreementPage from './pages/DataProcessingAgreementPage';
+import GlobalPrivacyPolicyPage from './pages/GlobalPrivacyPolicyPage';
+import GlobalUserRightsPage from './pages/GlobalUserRightsPage';
+import InternationalCompliancePage from './pages/InternationalCompliancePage';
+import RecordingConsentInfoPage from './pages/RecordingConsentInfoPage';
 import ProtectedRoute from './components/ProtectedRoute';
 import SEOHead from './components/SEOHead';
 import AppRedirectHandler from './components/AppRedirectHandler';
@@ -40,7 +49,8 @@ function AppRoutes() {
       <SEOHead />
       <AppRedirectHandler />
       <Routes>
-        <Route path="/" element={<AuthPage />} />
+        <Route path="/" element={<WelcomePage />} />
+        <Route path="/auth" element={<AuthPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route path="/home" element={
           <ProtectedRoute>
@@ -48,6 +58,14 @@ function AppRoutes() {
           </ProtectedRoute>
         } />
         <Route path="/pricing" element={<PricingPage />} />
+        <Route path="/terms" element={<TermsOfServicePage />} />
+        <Route path="/privacy" element={<PrivacyPolicyPage />} />
+        <Route path="/cookie-policy" element={<CookiePolicyPage />} />
+        <Route path="/data-processing-agreement" element={<DataProcessingAgreementPage />} />
+        <Route path="/global-privacy-policy" element={<GlobalPrivacyPolicyPage />} />
+        <Route path="/global-user-rights" element={<GlobalUserRightsPage />} />
+        <Route path="/international-compliance" element={<InternationalCompliancePage />} />
+        <Route path="/recording-consent-info" element={<RecordingConsentInfoPage />} />
         <Route path="/invite/:inviteId" element={<InvitePage />} />
         <Route
           path="/join/:roomId"

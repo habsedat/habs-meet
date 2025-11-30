@@ -134,3 +134,6 @@ The code reads from `functions.config().stripe.secret_key` and `functions.config
 
 **Status:** Stripe is installed and ready. You just need to configure the API keys and webhooks for both projects!
 
+
+
+

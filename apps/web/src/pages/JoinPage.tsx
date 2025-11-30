@@ -7,6 +7,7 @@ import { db } from '../lib/firebase';
 import toast from '../lib/toast';
 import { getScheduledMeetingToken } from '../lib/scheduledMeetingService';
 import SEOHead from '../components/SEOHead';
+import RecordingConsentModal from '../components/RecordingConsentModal';
 
 const JoinPage: React.FC = () => {
   const { roomId } = useParams<{ roomId: string }>();
@@ -17,6 +18,8 @@ const JoinPage: React.FC = () => {
   const [passcodeInput, setPasscodeInput] = useState('');
   const [isRequestingToken, setIsRequestingToken] = useState(false);
   const [roomData, setRoomData] = useState<any>(null);
+  const [showRecordingConsentModal, setShowRecordingConsentModal] = useState(false);
+  const [hasConsentedToRecording, setHasConsentedToRecording] = useState(false);
 
   // Fetch room data for SEO/meta tags (early, before auth check)
   useEffect(() => {
@@ -66,6 +69,19 @@ const JoinPage: React.FC = () => {
             toast.error('This meeting has ended. The meeting link has expired.');
             navigate('/home');
             return;
+          }
+          
+          // ✅ RECORDING CONSENT: Check if meeting is being recorded
+          // If recording is active and user hasn't consented, show consent modal before joining
+          if (roomData.isRecording === true && !hasConsentedToRecording) {
+            const recordingStartedBy = roomData.recordingStartedBy;
+            // Only show modal if user is NOT the one who started recording
+            if (recordingStartedBy !== user?.uid) {
+              console.log('[JoinPage] Meeting is being recorded, showing consent modal before join');
+              setShowRecordingConsentModal(true);
+              // Will show modal and handle join after consent in handleRecordingConsent
+              return; // Don't proceed with join until consent is given
+            }
           }
         }
         
@@ -171,6 +187,19 @@ const JoinPage: React.FC = () => {
           navigate('/home');
           return;
         }
+        
+        // ✅ RECORDING CONSENT: Check if meeting is being recorded
+        // If recording is active and user hasn't consented, show consent modal before joining
+        if (room.isRecording === true && !hasConsentedToRecording) {
+          const recordingStartedBy = (room as any).recordingStartedBy;
+          // Only show modal if user is NOT the one who started recording
+          if (recordingStartedBy !== user?.uid) {
+            console.log('[JoinPage] Meeting is being recorded, showing consent modal before join');
+            setShowRecordingConsentModal(true);
+            // Will show modal and handle join after consent in handleRecordingConsent
+            return; // Don't proceed with join until consent is given
+          }
+        }
 
         // Check if user is joining with a host key
         const hostJoinKeyParam = searchParams.get('k');
@@ -271,6 +300,25 @@ const JoinPage: React.FC = () => {
     let roomData: any = null;
     if (roomSnap.exists()) {
       roomData = roomSnap.data();
+      
+      // ✅ RECORDING CONSENT: Check if meeting is being recorded before joining
+      if (roomData.isRecording === true && !hasConsentedToRecording) {
+        const recordingStartedBy = roomData.recordingStartedBy;
+        // Only show modal if user is NOT the one who started recording
+        if (recordingStartedBy !== user?.uid) {
+          console.log('[JoinPage] Scheduled meeting is being recorded, showing consent modal before join');
+          setShowRecordingConsentModal(true);
+              // Will show modal and handle join after consent in handleRecordingConsent
+              // Store token response for later use
+              sessionStorage.setItem('pendingTokenResponse', JSON.stringify({
+                token: tokenResponse.token,
+                roomName: tokenResponse.roomName,
+                role: tokenResponse.role,
+                meeting: tokenResponse.meeting
+              }));
+              return; // Don't proceed with join until consent is given
+        }
+      }
     } else {
       // Create the room document
       roomData = {
@@ -496,6 +544,114 @@ const JoinPage: React.FC = () => {
     );
   }
 
+  const handleRecordingConsent = async () => {
+    console.log('[JoinPage] User consented to recording, proceeding with join');
+    setShowRecordingConsentModal(false);
+    setHasConsentedToRecording(true);
+    
+    // Check if we have a pending scheduled meeting token response
+    const pendingTokenResponseStr = sessionStorage.getItem('pendingTokenResponse');
+    if (pendingTokenResponseStr && userProfile && user) {
+      try {
+        const tokenResponse = JSON.parse(pendingTokenResponseStr);
+        sessionStorage.removeItem('pendingTokenResponse');
+        await handleSuccessfulTokenResponse(tokenResponse, userProfile, user);
+        return;
+      } catch (error) {
+        console.error('Error parsing pending token response:', error);
+      }
+    }
+    
+    // Otherwise, continue with regular join flow
+    if (!roomId || !user) return;
+    
+    try {
+      const room = await MeetingService.getMeeting(roomId);
+      if (!room) {
+        toast.error('Meeting room not found');
+        navigate('/home');
+        return;
+      }
+      
+      if (room.status === 'ended') {
+        toast.error('This meeting has ended. The meeting link has expired.');
+        navigate('/home');
+        return;
+      }
+      
+      // Check if user is joining with a host key
+      const hostJoinKeyParam = searchParams.get('k');
+      let isHostRejoin = false;
+      
+      if (hostJoinKeyParam && room.hostJoinKey && hostJoinKeyParam === room.hostJoinKey) {
+        if (room.createdBy === user.uid) {
+          isHostRejoin = true;
+        }
+      }
+      
+      // Check if room is locked
+      if (room.status === 'locked' && !isHostRejoin) {
+        toast.error('This meeting is locked. The host has locked the meeting. Please wait for the host to unlock it.');
+        navigate('/home');
+        return;
+      }
+      
+      // Check if waiting room is enabled
+      const waitingRoomEnabled = room.waitingRoom || false;
+      const participantRole = isHostRejoin ? 'host' : 'viewer';
+      
+      // Add participant to meeting
+      if (userProfile) {
+        const participantRef = doc(db, 'rooms', roomId, 'participants', user.uid);
+        const lobbyStatus = (isHostRejoin || !waitingRoomEnabled) ? 'admitted' : 'waiting';
+        
+        await setDoc(participantRef, {
+          uid: user.uid,
+          displayName: userProfile.displayName,
+          role: participantRole,
+          isActive: true,
+          isMuted: false,
+          isVideoEnabled: true,
+          isScreenSharing: false,
+          joinedAt: serverTimestamp(),
+          lastSeen: serverTimestamp(),
+          lobbyStatus: lobbyStatus,
+          ...(lobbyStatus === 'admitted' && { admittedAt: serverTimestamp() }),
+        }, { merge: true });
+      }
+      
+      // Store room ID in session
+      sessionStorage.setItem('currentRoomId', roomId);
+      sessionStorage.setItem('isParticipant', 'true');
+      if (isHostRejoin) {
+        sessionStorage.setItem('isHost', 'true');
+      }
+      sessionStorage.removeItem('isScheduledMeeting');
+      sessionStorage.removeItem('meetingToken');
+      
+      const lobbyStatusForSession = (isHostRejoin || !waitingRoomEnabled) ? 'admitted' : 'waiting';
+      sessionStorage.setItem('lobbyStatus', lobbyStatusForSession);
+      
+      // Navigate based on waiting room
+      if (waitingRoomEnabled) {
+        navigate('/waiting-room');
+      } else {
+        navigate('/pre-meeting');
+      }
+    } catch (error: any) {
+      console.error('Error joining meeting after consent:', error);
+      toast.error('Failed to join meeting: ' + error.message);
+      navigate('/home');
+    }
+  };
+
+  const handleRecordingDecline = () => {
+    console.log('[JoinPage] User declined recording consent, canceling join');
+    setShowRecordingConsentModal(false);
+    sessionStorage.removeItem('pendingTokenResponse');
+    navigate('/home');
+  };
+
   return (
     <>
       <SEOHead 
@@ -503,6 +659,14 @@ const JoinPage: React.FC = () => {
         description={seoDescription}
         url={seoUrl}
       />
+      
+      {/* Recording Consent Modal */}
+      <RecordingConsentModal
+        isOpen={showRecordingConsentModal}
+        onContinue={handleRecordingConsent}
+        onLeave={handleRecordingDecline}
+      />
+      
       <div className="min-h-screen bg-midnight flex items-center justify-center">
       <div className="text-center">
         <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-techBlue mx-auto mb-4"></div>

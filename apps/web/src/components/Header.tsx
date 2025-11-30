@@ -22,6 +22,7 @@ const Header: React.FC<HeaderProps> = ({ title, showUserMenu = true, onLeave }) 
   const [unreadInboxCount, setUnreadInboxCount] = useState(0);
   const [upgradeLabel, setUpgradeLabel] = useState<string>('Upgrade');
   const [currentTier, setCurrentTier] = useState<SubscriptionTier>('free');
+  const [currentPlanName, setCurrentPlanName] = useState<string>('');
 
   // Load unread inbox count from all rooms
   useEffect(() => {
@@ -92,7 +93,7 @@ const Header: React.FC<HeaderProps> = ({ title, showUserMenu = true, onLeave }) 
     };
   }, [user]);
 
-  // Load subscription data to show upgrade button with pricing
+  // Load subscription data to show upgrade button with pricing and current plan
   useEffect(() => {
     const loadUpgradeInfo = async () => {
       if (!userProfile) return;
@@ -101,6 +102,18 @@ const Header: React.FC<HeaderProps> = ({ title, showUserMenu = true, onLeave }) 
         const subscription = getSubscriptionFromProfile(userProfile);
         const tier = subscription.subscriptionTier || 'free';
         setCurrentTier(tier);
+        
+        // Get all plans to find current plan name and next tier
+        const plans = await getAllSubscriptionPlanConfigs();
+        const sortedPlans = plans.sort((a, b) => a.sortOrder - b.sortOrder);
+        
+        // Find current plan and set display name (only if not free)
+        const currentPlan = sortedPlans.find(p => p.tierKey === tier);
+        if (currentPlan && tier !== 'free') {
+          setCurrentPlanName(currentPlan.displayName);
+        } else {
+          setCurrentPlanName(''); // Clear plan name for free tier
+        }
         
         // If already on highest tier, don't show upgrade label
         if (tier === 'enterprise') {
@@ -119,11 +132,7 @@ const Header: React.FC<HeaderProps> = ({ title, showUserMenu = true, onLeave }) 
           console.log('[Header] No custom upgrade button text found, using default');
         }
         
-        // Fallback: Get all plans to find next tier
-        const plans = await getAllSubscriptionPlanConfigs();
-        const sortedPlans = plans.sort((a, b) => a.sortOrder - b.sortOrder);
-        
-        // Find current tier index and get next tier
+        // Fallback: Find current tier index and get next tier
         const currentIndex = sortedPlans.findIndex(p => p.tierKey === tier);
         if (currentIndex >= 0 && currentIndex < sortedPlans.length - 1) {
           const nextPlan = sortedPlans[currentIndex + 1];
@@ -134,6 +143,7 @@ const Header: React.FC<HeaderProps> = ({ title, showUserMenu = true, onLeave }) 
       } catch (error) {
         console.error('[Header] Error loading upgrade info:', error);
         setUpgradeLabel('Upgrade');
+        setCurrentPlanName(''); // Clear on error
       }
     };
     
@@ -152,6 +162,15 @@ const Header: React.FC<HeaderProps> = ({ title, showUserMenu = true, onLeave }) 
           />
           {title && (
             <h1 className="text-base sm:text-lg font-semibold text-cloud">{title}</h1>
+          )}
+          {/* Current Plan Badge - Only show if not free */}
+          {currentPlanName && (
+            <div className="hidden sm:flex items-center px-2 sm:px-3 py-1 bg-gradient-to-r from-blue-600 to-purple-600 rounded-full text-xs sm:text-sm font-semibold text-white shadow-md">
+              <svg className="w-3 h-3 sm:w-4 sm:h-4 mr-1.5" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+              </svg>
+              <span>{currentPlanName}</span>
+            </div>
           )}
         </div>
 

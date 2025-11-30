@@ -175,24 +175,41 @@ const MeetingControls: React.FC<MeetingControlsProps> = ({
       )}
 
       {/* Record button - only show on desktop/laptop (screen recording requires getDisplayMedia) */}
-      {isRecordingSupported && (
+      {isRecordingSupported && onRecord && (
         <button
-          onClick={onRecord}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            console.log('[MeetingControls] Record button clicked, calling onRecord');
+            onRecord();
+          }}
           className={`p-1.5 sm:p-2 rounded-full transition-colors ${
             isRecording
               ? 'bg-red-600 text-cloud hover:bg-red-700 animate-pulse'
               : 'bg-cloud text-midnight hover:bg-gray-200'
           }`}
-          title={isRecording ? 'Stop recording' : 'Start recording'}
+          title={isRecording ? 'Stop recording (click to stop)' : 'Start recording (click to start)'}
+          type="button"
+          style={{ pointerEvents: 'auto', cursor: 'pointer' }}
         >
           <svg
             className="w-5 h-5"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
+            strokeWidth={2}
+            style={{ pointerEvents: 'none' }}
           >
-            <circle cx="12" cy="12" r="10" />
-            <circle cx="12" cy="12" r="3" />
+            {isRecording ? (
+              // Stop icon (square)
+              <rect x="6" y="6" width="12" height="12" rx="2" />
+            ) : (
+              // Record icon (circle)
+              <>
+                <circle cx="12" cy="12" r="10" />
+                <circle cx="12" cy="12" r="3" fill="currentColor" />
+              </>
+            )}
           </svg>
         </button>
       )}

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { auth } from '../lib/firebase';
 import { signInWithEmailAndPassword, signOut as firebaseSignOut, sendEmailVerification as firebaseSendEmailVerification } from 'firebase/auth';
@@ -15,6 +15,7 @@ import toast from '../lib/toast';
 const AuthPage: React.FC = () => {
   const { signIn, signUp, loading, user } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   
   // Redirect authenticated users to home page
   useEffect(() => {
@@ -23,7 +24,9 @@ const AuthPage: React.FC = () => {
     }
   }, [loading, user, navigate]);
   
-  const [isSignUp, setIsSignUp] = useState(false);
+  // Check URL parameter for mode (signin or signup)
+  const modeParam = searchParams.get('mode');
+  const [isSignUp, setIsSignUp] = useState(modeParam === 'signup');
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [showForgotPasswordModal, setShowForgotPasswordModal] = useState(false);
@@ -561,9 +564,16 @@ const AuthPage: React.FC = () => {
                   />
                   <span className="ml-2 text-sm text-gray-600">
                     I agree to the{' '}
-                    <a href="#" className="text-techBlue hover:underline">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        navigate('/terms');
+                      }}
+                      className="text-techBlue hover:underline"
+                    >
                       Terms and Conditions
-                    </a>
+                    </button>
                   </span>
                 </label>
               ) : (

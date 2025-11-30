@@ -37,3 +37,6 @@ To verify the rules are deployed:
 ## Note
 The production project (`habs-meet-prod`) already had the rules deployed, which is why it was working there. Now both projects have the same rules.
 
+
+
+

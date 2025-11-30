@@ -26,7 +26,16 @@ service cloud.firestore {
     match /rooms/{roomId} {
       allow read: if isAuthenticated();
       allow create: if isAuthenticated() && request.auth.uid == request.resource.data.createdBy;
-      allow update: if isHost(roomId);
+      // ✅ CRITICAL FIX: Allow hosts to update room, OR allow participants to update recording fields
+      // This enables recording consent modal to work - participants need to update isRecording and recordingStartedBy
+      // Participants can only update recording-related fields, hosts can update anything
+      allow update: if isHost(roomId) || 
+        (isParticipant(roomId) && 
+         // Only allow updating recording fields
+         (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRecording', 'recordingStartedBy', 'recordingStartedAt']) ||
+          // Or allow clearing recording fields when stopping
+          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRecording', 'recordingStartedBy']) && 
+           request.resource.data.isRecording == false)));
       allow delete: if isHost(roomId);
       
       // Participants subcollection

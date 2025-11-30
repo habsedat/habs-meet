@@ -410,3 +410,6 @@ firebase functions:config:get
 
 **Next Steps:** Follow this guide step-by-step for both projects. The system will be fully activated once all steps are completed.
 
+
+
+

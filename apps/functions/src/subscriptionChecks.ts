@@ -6,6 +6,7 @@
  */
 
 import * as admin from 'firebase-admin';
+import { isSubscriptionEnforcementEnabled } from './subscriptionConfig';
 
 // Initialize db lazily to avoid initialization order issues
 function getDb() {
@@ -167,6 +168,11 @@ export async function canHostStartMeeting(
   hostUserId: string,
   requestedDurationMinutes: number = 0
 ): Promise<SubscriptionCheckResult> {
+  // ✅ SUBSCRIPTION ENFORCEMENT: If enforcement is disabled, allow all actions
+  if (!isSubscriptionEnforcementEnabled()) {
+    return { allowed: true };
+  }
+  
   try {
     const subscription = await getUserSubscriptionData(hostUserId);
     
@@ -213,6 +219,11 @@ export async function canParticipantJoin(
   hostUserId: string,
   currentParticipantCount: number
 ): Promise<SubscriptionCheckResult> {
+  // ✅ SUBSCRIPTION ENFORCEMENT: If enforcement is disabled, allow all actions
+  if (!isSubscriptionEnforcementEnabled()) {
+    return { allowed: true };
+  }
+  
   try {
     const hostSubscription = await getUserSubscriptionData(hostUserId);
     
@@ -249,6 +260,11 @@ export async function canParticipantJoin(
 export async function canHostStartRecording(
   hostUserId: string
 ): Promise<SubscriptionCheckResult> {
+  // ✅ SUBSCRIPTION ENFORCEMENT: If enforcement is disabled, allow all actions
+  if (!isSubscriptionEnforcementEnabled()) {
+    return { allowed: true };
+  }
+  
   try {
     const subscription = await getUserSubscriptionData(hostUserId);
     
@@ -296,6 +312,11 @@ export async function canUserUploadMedia(
   fileSizeBytes: number,
   mediaType: 'backgroundImage' | 'backgroundVideo' | 'chatFile' | 'other'
 ): Promise<SubscriptionCheckResult> {
+  // ✅ SUBSCRIPTION ENFORCEMENT: If enforcement is disabled, allow all actions
+  if (!isSubscriptionEnforcementEnabled()) {
+    return { allowed: true };
+  }
+  
   try {
     const subscription = await getUserSubscriptionData(userId);
     

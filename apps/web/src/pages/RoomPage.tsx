@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useLiveKit } from '../contexts/LiveKitContext';
 import { api } from '../lib/api';
-import { doc, onSnapshot, collection, query, orderBy, addDoc, serverTimestamp, updateDoc, getDoc, where } from 'firebase/firestore';
+import { doc, onSnapshot, collection, query, orderBy, addDoc, serverTimestamp, updateDoc, getDoc, getDocs, where } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { MeetingService } from '../lib/meetingService';
 import { activeMeetingService } from '../lib/activeMeetingService';
@@ -16,16 +16,16 @@ import PrivateMessagesPanel from '../components/PrivateMessagesPanel';
 import ParticipantsPanel from '../components/ParticipantsPanel';
 import SettingsPanel from '../components/SettingsPanel';
 import DeviceConflictModal from '../components/DeviceConflictModal';
+import RecordingConsentModal from '../components/RecordingConsentModal';
 import { recordingService, RecordingService } from '../lib/recordingService';
 import { ViewMode } from '../types/viewModes';
 import { useCostOptimizations } from '../hooks/useCostOptimizations';
-import { Track } from 'livekit-client';
 
 const RoomPage: React.FC = () => {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
   const { user, userProfile, updateUserPreferences } = useAuth();
-  const { connect, disconnect, isConnected, isConnecting, publishFromSavedSettings, room, participantCount, setMicrophoneEnabled, setCameraEnabled } = useLiveKit();
+  const { connect, disconnect, isConnected, isConnecting, publishFromSavedSettings, room, participantCount, setMicrophoneEnabled } = useLiveKit();
   
   // Apply cost optimizations: active speaker quality, background pause, auto-disconnect
   useCostOptimizations(room);
@@ -48,6 +48,14 @@ const RoomPage: React.FC = () => {
   const [lastSeenMessageId, setLastSeenMessageId] = useState<string | null>(null);
   const [showDeviceConflictModal, setShowDeviceConflictModal] = useState(false);
   const [conflictInfo, setConflictInfo] = useState<{ activeMeeting: any; currentDevice: string } | null>(null);
+  const [showRecordingConsentModal, setShowRecordingConsentModal] = useState(false);
+  const [hasConsentedToRecording, setHasConsentedToRecording] = useState(false);
+  const [meetingEnded, setMeetingEnded] = useState(false); // Track if meeting has ended to prevent reconnection
+  const previousRecordingStatusRef = React.useRef<boolean>(false); // Track previous recording status to detect transitions
+  // ✅ CRITICAL FIX: Use refs to access current state values without recreating listener
+  const hasConsentedToRecordingRef = React.useRef<boolean>(false);
+  const isConnectedRef = React.useRef<boolean>(false);
+  const showRecordingConsentModalRef = React.useRef<boolean>(false);
   // Load view mode from userProfile (Firestore) - user-specific, not device-specific
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     const saved = userProfile?.preferences?.viewMode;
@@ -78,9 +86,99 @@ const RoomPage: React.FC = () => {
         setRoomData(roomData);
         setIsLocked(roomData.status === 'locked');
         
+        // ✅ RECORDING STATUS: Listen to room-level recording status for consent modal
+        // Note: Each participant tracks their own recording in their participant document
+        // Room-level tracking is used to notify all participants when ANYONE starts recording
+        const roomHasActiveRecording = roomData.isRecording === true;
+        const recordingStartedBy = roomData.recordingStartedBy; // Who started the recording (for consent modal)
+        const wasRoomRecording = previousRecordingStatusRef.current; // Use ref to track previous state
+        
+        // ✅ CRITICAL DEBUG: Log room data to help diagnose production issues
+        console.log('[RoomPage] 🔍 Room data snapshot:', {
+          roomId,
+          isRecording: roomData.isRecording,
+          recordingStartedBy: roomData.recordingStartedBy,
+          wasRoomRecording,
+          roomHasActiveRecording,
+          userUid: user?.uid,
+          isConnected: isConnectedRef.current,
+          hasConsented: hasConsentedToRecordingRef.current
+        });
+        
+        // ✅ CRITICAL: Show consent modal ONLY to participants who are NOT the one who started recording
+        // If ANY participant just started recording (transition from false to true at room level):
+        if (roomHasActiveRecording && !wasRoomRecording) {
+          const isUserWhoStartedRecording = recordingStartedBy === user.uid;
+          
+          console.log('[RoomPage] 🔍 Recording transition detected:', {
+            roomHasActiveRecording,
+            wasRoomRecording,
+            recordingStartedBy,
+            isUserWhoStartedRecording,
+            hasConsentedToRecording: hasConsentedToRecordingRef.current,
+            isConnected: isConnectedRef.current,
+            showModal: showRecordingConsentModalRef.current
+          });
+          
+          if (!isUserWhoStartedRecording) {
+            // User is NOT the one who started recording
+            // Show consent modal if they haven't consented yet
+            // Note: We check isConnected to ensure user is actually in the meeting
+            if (!hasConsentedToRecordingRef.current && isConnectedRef.current) {
+              console.log('[RoomPage] ✅ Another participant started recording, showing consent modal to active participant');
+              // Use setTimeout to ensure state is ready and modal shows properly
+              setTimeout(() => {
+                setShowRecordingConsentModal(true);
+                showRecordingConsentModalRef.current = true;
+              }, 100);
+            } else {
+              console.log('[RoomPage] ⚠️ Cannot show modal:', {
+                hasConsented: hasConsentedToRecordingRef.current,
+                isConnected: isConnectedRef.current
+              });
+            }
+          } else {
+            // User started recording themselves - auto-consent, no modal needed
+            console.log('[RoomPage] User started recording themselves, no consent modal needed');
+            setHasConsentedToRecording(true);
+            hasConsentedToRecordingRef.current = true;
+          }
+        }
+        
+        // ✅ FALLBACK: Also check if recording is active and user hasn't consented yet
+        // This handles edge cases where the transition detection might have been missed
+        // (e.g., if user was on another tab, or state update timing issues)
+        if (roomHasActiveRecording && !hasConsentedToRecordingRef.current && recordingStartedBy) {
+          const isUserWhoStartedRecording = recordingStartedBy === user.uid;
+          
+          // Only show modal if:
+          // 1. User is NOT the one who started recording
+          // 2. Modal is not already showing
+          // 3. User is connected to the meeting (to avoid showing before they join)
+          if (!isUserWhoStartedRecording && !showRecordingConsentModalRef.current && isConnectedRef.current) {
+            console.log('[RoomPage] ✅ Fallback: Recording is active, user has not consented, showing modal');
+            // Use setTimeout to ensure state is ready and modal shows properly
+            setTimeout(() => {
+              setShowRecordingConsentModal(true);
+              showRecordingConsentModalRef.current = true;
+            }, 100);
+          }
+        }
+        
+        // Update ref to track previous room-level recording status for next listener call
+        previousRecordingStatusRef.current = roomHasActiveRecording;
+        
+        // Note: Recording state (isRecording) is now tracked from participant document, not room document
+        
         // ✅ CRITICAL: If room is ended, disconnect and leave immediately - NO DELAYS
-        if (roomData.status === 'ended') {
+        if (roomData.status === 'ended' && !meetingEnded) {
           console.log('[RoomPage] ⚠️⚠️⚠️ ROOM ENDED - FORCING IMMEDIATE DISCONNECT ⚠️⚠️⚠️');
+          setMeetingEnded(true); // Set flag to prevent any further connection attempts
+          
+          // Stop any ongoing connection attempts
+          connectionAttemptRef.current = false;
+          connectionEstablishedRef.current = false;
+          
           toast.error('Meeting has ended. Disconnecting now...', { duration: 1500 });
           
           // Clear active meeting
@@ -132,9 +230,10 @@ const RoomPage: React.FC = () => {
     });
 
     return unsubscribe;
-  }, [roomId, user, navigate, disconnect]);
+  }, [roomId, user, navigate, disconnect]); // ✅ CRITICAL FIX: Removed dependencies that cause listener recreation
 
   // Check if user is host (including cohost) and if they're banned
+  // Also track participant's own recording status (for recording badge display)
   useEffect(() => {
     if (!roomId || !user) return;
 
@@ -144,6 +243,39 @@ const RoomPage: React.FC = () => {
         const participantData = participantDoc.data() as any;
         // Both host and cohost have host privileges
         setIsHost(participantData.role === 'host' || participantData.role === 'cohost');
+        
+        // ✅ Check participant's own recording status (each participant records independently)
+        // This is used to show the recording badge ONLY to the person who is recording
+        // Use functional state updates to avoid dependency issues
+        const participantRecordingStatus = participantData.isRecording === true;
+        const participantRecordingStartedAt = participantData.recordingStartedAt;
+        
+        // Update local recording state from participant document (functional update to avoid loops)
+        setIsRecording((prevIsRecording) => {
+          if (participantRecordingStatus !== prevIsRecording) {
+            return participantRecordingStatus;
+          }
+          return prevIsRecording;
+        });
+        
+        // Calculate recording duration from participant's recording start time (functional update)
+        if (participantRecordingStatus && participantRecordingStartedAt) {
+          const startTime = participantRecordingStartedAt.toMillis ? participantRecordingStartedAt.toMillis() : participantRecordingStartedAt;
+          const duration = Math.floor((Date.now() - startTime) / 1000);
+          setRecordingDuration((prevDuration) => {
+            if (duration !== prevDuration) {
+              return duration;
+            }
+            return prevDuration;
+          });
+        } else if (!participantRecordingStatus) {
+          setRecordingDuration((prevDuration) => {
+            if (prevDuration !== 0) {
+              return 0;
+            }
+            return prevDuration;
+          });
+        }
         
         // If user is banned, disconnect them immediately
         if (participantData.isBanned === true) {
@@ -155,7 +287,20 @@ const RoomPage: React.FC = () => {
     });
 
     return unsubscribeParticipant;
-  }, [roomId, user, disconnect, navigate]);
+  }, [roomId, user, disconnect, navigate]); // Removed isRecording and recordingDuration to prevent dependency loops
+
+  // ✅ CRITICAL FIX: Keep refs in sync with state values
+  useEffect(() => {
+    hasConsentedToRecordingRef.current = hasConsentedToRecording;
+  }, [hasConsentedToRecording]);
+  
+  useEffect(() => {
+    isConnectedRef.current = isConnected;
+  }, [isConnected]);
+  
+  useEffect(() => {
+    showRecordingConsentModalRef.current = showRecordingConsentModal;
+  }, [showRecordingConsentModal]);
 
   // Listen for mute/unmute notifications from host
   useEffect(() => {
@@ -475,6 +620,14 @@ const RoomPage: React.FC = () => {
     }
 
     const connectToRoom = async () => {
+      // ✅ CRITICAL: Don't attempt connection if meeting has ended
+      if (meetingEnded || roomData?.status === 'ended') {
+        console.log('[RoomPage] ⚠️ Meeting has ended, skipping connection attempt');
+        setMeetingEnded(true);
+        connectionAttemptRef.current = false;
+        return;
+      }
+      
       // ✅ STABILITY FIX: Set flag immediately to prevent race conditions
       connectionAttemptRef.current = true;
       
@@ -531,6 +684,18 @@ const RoomPage: React.FC = () => {
 
     const proceedWithConnection = async () => {
       try {
+        // ✅ CRITICAL: Check if meeting has ended before attempting connection
+        if (meetingEnded || roomData?.status === 'ended') {
+          console.log('[RoomPage] ⚠️ Meeting has ended, aborting connection attempt');
+          setMeetingEnded(true);
+          connectionAttemptRef.current = false;
+          toast.error('This meeting has ended. Redirecting...', { duration: 2000 });
+          setTimeout(() => {
+            navigate('/home');
+          }, 2000);
+          return;
+        }
+        
         // Check if this is a scheduled meeting with a pre-generated token
         const isScheduledMeeting = sessionStorage.getItem('isScheduledMeeting') === 'true';
         const preGeneratedToken = sessionStorage.getItem('meetingToken');
@@ -542,6 +707,18 @@ const RoomPage: React.FC = () => {
           sessionStorage.removeItem('meetingToken');
           sessionStorage.removeItem('isScheduledMeeting');
         } else {
+          // ✅ CRITICAL: Check room status again before getting token
+          if (roomData?.status === 'ended') {
+            console.log('[RoomPage] ⚠️ Meeting ended before token request, aborting');
+            setMeetingEnded(true);
+            connectionAttemptRef.current = false;
+            toast.error('This meeting has ended. Redirecting...', { duration: 2000 });
+            setTimeout(() => {
+              navigate('/home');
+            }, 2000);
+            return;
+          }
+          
           // Retry logic: If user is room creator, ensure participant doc exists
           if (roomData?.createdBy === user.uid) {
             // Check if participant document exists, if not wait a bit and retry
@@ -555,108 +732,62 @@ const RoomPage: React.FC = () => {
             }
           }
           
-          const response = await api.getMeetingToken(roomId);
-          token = response.token;
+          try {
+            const response = await api.getMeetingToken(roomId);
+            token = response.token;
+          } catch (tokenError: any) {
+            // Handle 403/ended meeting error specifically
+            if (tokenError.message?.includes('meeting has ended') || tokenError.message?.includes('expired') || tokenError.status === 403) {
+              console.log('[RoomPage] ⚠️ Meeting ended during token request');
+              setMeetingEnded(true);
+              connectionAttemptRef.current = false;
+              toast.error('This meeting has ended. Redirecting...', { duration: 2000 });
+              setTimeout(() => {
+                navigate('/home');
+              }, 2000);
+              return;
+            }
+            throw tokenError; // Re-throw if it's a different error
+          }
         }
         
         console.log('[RoomPage] 🔄 Starting connection...');
         
-        // Connect first - the connect() function resolves when connection starts
+        // Connect - the connect() function will trigger RoomEvent.Connected
+        // We don't need to poll - the event handler will update state
         await connect(token);
         
-        // ✅ STABILITY FIX: Improved connection verification with better state checks
-        // Wait for connection to be fully established with more reliable checks
-        let attempts = 0;
-        const maxAttempts = 50; // ✅ REDUCED: 5 seconds max wait (was 20 seconds)
-        let connectionEstablished = false;
+        // ✅ CRITICAL FIX: Don't poll for connection - rely on RoomEvent.Connected event
+        // The event handler in LiveKitContext will update state and trigger track publishing
+        // Just wait a brief moment for the connection event to fire
+        await new Promise(resolve => setTimeout(resolve, 300));
         
-        while (attempts < maxAttempts && !connectionEstablished) {
-          // ✅ CRITICAL: Check both isConnected AND room state for reliability
-          const currentRoom = room;
-          const currentIsConnected = isConnected;
-          
-          // Connection is established when:
-          // 1. isConnected is true AND
-          // 2. room exists AND room.state is 'connected' AND
-          // 3. localParticipant exists (indicates full connection)
-          if (currentIsConnected && currentRoom) {
-            if (currentRoom.state === 'connected' && currentRoom.localParticipant) {
-              connectionEstablished = true;
-              connectionEstablishedRef.current = true;
-              
-              console.log('[RoomPage] ✅ Connection fully established:', {
-                isConnected: currentIsConnected,
-                roomState: currentRoom.state,
-                hasLocalParticipant: !!currentRoom.localParticipant,
-                attempts
-              });
-              break;
-            } else {
-              // Log progress every 5 attempts (0.5 seconds)
-              if (attempts % 5 === 0) {
-                console.log('[RoomPage] Waiting for connection...', {
-                  isConnected: currentIsConnected,
-                  roomState: currentRoom?.state,
-                  hasLocalParticipant: !!currentRoom?.localParticipant,
-                  attempts
-                });
-              }
-            }
-          }
-          
-          // Small delay between checks
-          await new Promise(resolve => setTimeout(resolve, 100));
-          attempts++;
-        }
-        
-        // ✅ STABILITY FIX: If connection not established, verify before proceeding
-        if (!connectionEstablished) {
-          // Final check - sometimes state updates are delayed
-          const finalRoom = room;
-          const finalIsConnected = isConnected;
-          
-          if (finalIsConnected && finalRoom && finalRoom.state === 'connected' && finalRoom.localParticipant) {
-            connectionEstablished = true;
-            connectionEstablishedRef.current = true;
-            console.log('[RoomPage] ✅ Connection verified on final check');
-          } else {
-            // ✅ CRITICAL: Don't block on timeout - connection might still be establishing
-            // But log warning for debugging
-            console.warn('[RoomPage] ⚠️ Connection check timeout (continuing anyway)', {
-              isConnected: finalIsConnected,
-              roomState: finalRoom?.state,
-              hasLocalParticipant: !!finalRoom?.localParticipant,
-              attempts
-            });
-            // ✅ CRITICAL: Set flag but don't block - allow track publishing to proceed
-            // Connection might be established but state updates are delayed
-            connectionEstablishedRef.current = finalIsConnected && finalRoom?.state === 'connected';
+        // Set active meeting if we have room data
+        if (roomData?.title) {
+          try {
+            await activeMeetingService.setActiveMeeting(user.uid, roomId, roomData.title);
+            console.log('[RoomPage] ✅ Active meeting set successfully');
+          } catch (error) {
+            console.warn('[RoomPage] ⚠️ Failed to set active meeting:', error);
           }
         }
-        
-    // ✅ STABILITY FIX: Set active meeting if connection is established (even if timeout)
-    // Don't block on timeout - connection might still be establishing
-    if (connectionEstablished || (isConnected && room && room.state === 'connected')) {
-      console.log('[RoomPage] Connection ready, setting active meeting...');
-      
-      // Small delay to ensure connection is fully ready
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      if (roomData?.title) {
-        try {
-          await activeMeetingService.setActiveMeeting(user.uid, roomId, roomData.title);
-          console.log('[RoomPage] ✅ Active meeting set successfully');
-        } catch (error) {
-          console.warn('[RoomPage] ⚠️ Failed to set active meeting:', error);
-        }
-      }
-    } else {
-      console.warn('[RoomPage] ⚠️ Skipping active meeting set - connection not ready');
-    }
       } catch (error: any) {
         connectionAttemptRef.current = false;
         connectionEstablishedRef.current = false;
         console.error('[RoomPage] ❌ Failed to connect:', error);
+        
+        // Handle meeting ended error gracefully
+        if (error.message?.includes('meeting has ended') || error.message?.includes('expired') || error.status === 403 || error.response?.status === 403) {
+          console.log('[RoomPage] Meeting has ended, handling gracefully');
+          setMeetingEnded(true); // Set flag to prevent any further attempts
+          connectionAttemptRef.current = false;
+          connectionEstablishedRef.current = false;
+          toast.error('This meeting has ended. Redirecting...', { duration: 2000 });
+          setTimeout(() => {
+            navigate('/home');
+          }, 2000);
+          return;
+        }
         toast.error('Failed to join room: ' + (error.message || 'Unknown error'));
         navigate('/');
       }
@@ -789,235 +920,90 @@ const RoomPage: React.FC = () => {
   // Track publishing is now handled in the main publishing effect below
   // Camera/mic are enabled automatically via publishFromSavedSettings
 
-  // ✅ STABILITY FIX: Track publishing ref to prevent multiple simultaneous attempts
+  // ✅ CRITICAL FIX: Track publishing ref to prevent multiple simultaneous attempts
   const trackPublishingRef = useRef(false);
-  const trackPublishAttemptRef = useRef(0);
+  const tracksPublishedRef = useRef(false); // Track if we've already published tracks for this connection
 
-  // Create and publish local tracks after connecting
-  // ✅ STABILITY FIX: Only publish tracks after connection is FULLY established and stable
+  // ✅ CRITICAL FIX: Publish tracks immediately when connection is established
+  // This prevents flashing/blinking by ensuring camera/mic are enabled right away
   useEffect(() => {
-    // ✅ CRITICAL: Multiple guards to ensure we only publish when truly ready
-    if (!isConnected || !roomId || !room) {
+    // Reset published flag when disconnected
+    if (!isConnected || !room) {
+      tracksPublishedRef.current = false;
+      trackPublishingRef.current = false;
       return;
     }
     
-    // ✅ CRITICAL: Check connection - don't require flag, just verify room state
-    // This allows publishing even if the flag check timed out (connection might still be good)
-    if (!connectionEstablishedRef.current) {
-      // ✅ CRITICAL: If flag is false but room is connected, allow publishing anyway
-      // This handles cases where connection is established but flag check timed out
-      if (room.state === 'connected' && room.localParticipant) {
-        console.log('[RoomPage] Connection flag not set but room is connected, allowing publishing...');
-        connectionEstablishedRef.current = true; // Set flag now
-      } else {
-        console.log('[RoomPage] Connection not fully established yet, waiting...');
-        return;
-      }
+    // ✅ CRITICAL: Only publish ONCE per connection - prevent multiple publishes
+    if (tracksPublishedRef.current) {
+      return;
+    }
+    
+    // ✅ CRITICAL: Multiple guards to ensure we only publish when truly ready
+    if (!roomId || !room) {
+      return;
     }
     
     // ✅ CRITICAL: Room MUST be in connected state
     if (room.state !== 'connected') {
-      console.log('[RoomPage] Room not fully connected yet, waiting...', room.state);
       return;
     }
     
     // ✅ CRITICAL: Must have localParticipant
     if (!room.localParticipant) {
-      console.log('[RoomPage] No localParticipant yet, waiting...');
       return;
     }
     
     // ✅ STABILITY FIX: Prevent multiple simultaneous publishing attempts
     if (trackPublishingRef.current) {
-      console.log('[RoomPage] Track publishing already in progress, skipping...');
       return;
     }
     
-    console.log('[RoomPage] ✅ All conditions met, publishing tracks IMMEDIATELY...');
+    console.log('[RoomPage] ✅ All conditions met, publishing tracks immediately...');
     
-    // ✅ CRITICAL FIX: Publish tracks IMMEDIATELY - no delay
-    // The connection is already verified, so we can publish right away
-    // This ensures camera opens immediately when joining
+    // ✅ CRITICAL FIX: Publish tracks immediately with minimal delay
     const publishTracks = async () => {
-      // ✅ CRITICAL: Final verification before publishing
+      // Check if room is still connected
       if (!room || room.state !== 'connected' || !isConnected || !room.localParticipant) {
-        console.warn('[RoomPage] ⚠️ Connection state changed, aborting track publication', {
-          hasRoom: !!room,
-          roomState: room?.state,
-          isConnected,
-          hasLocalParticipant: !!room?.localParticipant
-        });
+        trackPublishingRef.current = false;
         return;
       }
       
-      // ✅ STABILITY FIX: Set flag to prevent concurrent attempts
+      // Set flag to prevent concurrent attempts
       trackPublishingRef.current = true;
-      trackPublishAttemptRef.current++;
-      const attemptNumber = trackPublishAttemptRef.current;
-      
-      console.log(`[RoomPage] 🔄 Publishing tracks IMMEDIATELY (attempt ${attemptNumber})...`);
       
       try {
-        // ✅ STABILITY FIX: Add timeout and retry logic with better error handling
-        const publishWithRetry = async (retries = 3) => {
-          for (let i = 0; i < retries; i++) {
-            try {
-              // ✅ CRITICAL: Verify connection state before each attempt
-              if (!room || room.state !== 'connected' || !isConnected || !room.localParticipant) {
-                throw new Error('Connection lost during publish attempt');
-              }
-              
-              await Promise.race([
-                publishFromSavedSettings(),
-                new Promise((_, reject) => 
-                  setTimeout(() => reject(new Error('Publish timeout')), 20000)
-                )
-              ]);
-              
-              console.log(`[RoomPage] ✅ Tracks published successfully (attempt ${attemptNumber})`);
-              
-              // ✅ CRITICAL FIX: Verify tracks are actually published with hard fallback
-              setTimeout(() => {
-                if (room && room.localParticipant) {
-                  const videoPub = room.localParticipant.getTrack(Track.Source.Camera);
-                  const audioTrack = room.localParticipant.getTrack(Track.Source.Microphone);
-
-                  const hasVideoTrack =
-                    !!videoPub &&
-                    !!videoPub.track &&
-                    !videoPub.isMuted &&
-                    !(videoPub.track as any).isMuted;
-
-                  const hasAudioTrack =
-                    !!audioTrack &&
-                    !!audioTrack.track &&
-                    !audioTrack.isMuted &&
-                    !(audioTrack.track as any).isMuted;
-
-                  console.log('[RoomPage] 📹 Track verification (with force-camera/mic fallback):', {
-                    hasVideoTrack,
-                    hasAudioTrack,
-                    videoTrackId: (videoPub as any)?.trackSid,
-                    audioTrackId: audioTrack?.trackSid,
-                  });
-
-                  if (!hasVideoTrack && room.state === 'connected') {
-                    console.warn(
-                      '[RoomPage] ⚠️ Video track missing or muted after publish, forcing camera ON via setCameraEnabled(true).'
-                    );
-
-                    // Release the publishing flag so future attempts are allowed
-                    trackPublishingRef.current = false;
-
-                    // 🚀 HARD FALLBACK: force camera ON just like Zoom
-                    setCameraEnabled(true).catch((err) => {
-                      console.error('[RoomPage] ❌ Failed to force-enable camera:', err);
-                    });
-                  }
-                  
-                  // ✅ CRITICAL FIX: Force microphone ON if missing or muted
-                  if (!hasAudioTrack && room.state === 'connected') {
-                    console.warn(
-                      '[RoomPage] ⚠️ Audio track missing or muted after publish, forcing microphone ON via setMicrophoneEnabled(true).'
-                    );
-
-                    // 🚀 HARD FALLBACK: force microphone ON just like Zoom
-                    setMicrophoneEnabled(true).catch((err) => {
-                      console.error('[RoomPage] ❌ Failed to force-enable microphone:', err);
-                    });
-                  }
-                }
-              }, 500);
-              
-              trackPublishingRef.current = false;
-              return; // Success - exit retry loop
-            } catch (e: any) {
-              const errorMsg = e.message || String(e);
-              console.warn(`[RoomPage] Publish attempt ${i + 1}/${retries} failed:`, errorMsg);
-              
-              // ✅ CRITICAL: If connection is lost, don't retry
-              if (!room || room.state !== 'connected' || !isConnected) {
-                console.error('[RoomPage] ❌ Connection lost, aborting track publication');
-                trackPublishingRef.current = false;
-                return;
-              }
-              
-              // If it's a connection issue, wait and retry
-              if (errorMsg.includes('not connected') || 
-                  errorMsg.includes('closed') || 
-                  errorMsg.includes('timeout') ||
-                  errorMsg.includes('timed out') ||
-                  errorMsg.includes('Cannot publish')) {
-                if (i < retries - 1) {
-                  // Wait before retry (exponential backoff)
-                  const backoffDelay = 500 * (i + 1); // Faster retries: 500ms, 1000ms, 1500ms
-                  console.log(`[RoomPage] Retrying in ${backoffDelay}ms...`);
-                  await new Promise(resolve => setTimeout(resolve, backoffDelay));
-                  continue;
-                }
-              }
-              
-              // Last attempt or non-connection error
-              if (i === retries - 1) {
-                if (!errorMsg.includes('not connected') && 
-                    !errorMsg.includes('closed') && 
-                    !errorMsg.includes('timeout') &&
-                    !errorMsg.includes('timed out') &&
-                    !errorMsg.includes('Track ended') &&
-                    !errorMsg.includes('Cannot publish')) {
-                  toast.error('Failed to start camera/microphone: ' + errorMsg);
-                } else {
-                  console.warn('[RoomPage] Track publishing failed due to connection/track issue:', errorMsg);
-                }
-                trackPublishingRef.current = false;
-              }
-            }
-          }
-        };
+        // ✅ CRITICAL: Small delay to ensure peer connection is ready (reduced from 1000ms to 300ms)
+        await new Promise(resolve => setTimeout(resolve, 300));
         
-        await publishWithRetry();
-      } catch (error: any) {
-        console.error('[RoomPage] ❌ Track publishing failed:', error);
-        trackPublishingRef.current = false;
-      }
-    };
-    
-    // ✅ CRITICAL FIX: Listen for track published events to ensure immediate detection
-    const handleTrackPublished = (publication: any) => {
-      if (publication.kind === 'video' || publication.source === Track.Source.Camera) {
-        console.log('[RoomPage] 📹 Camera track published event detected!', {
-          trackSid: publication.trackSid,
-          source: publication.source
-        });
-        // Force a re-render to ensure VideoTile picks up the track
-        // This is handled by the LiveKitContext forceUpdate, but we log it here
-      }
-    };
-    
-    if (room && room.localParticipant) {
-      room.localParticipant.on('trackPublished', handleTrackPublished);
-    }
-    
-    // ✅ CRITICAL FIX: Publish tracks IMMEDIATELY (no delay)
-    publishTracks();
-    
-    // ✅ CRITICAL FIX: Fallback - if tracks aren't published after 1 second, try again
-    const fallbackTimeout = setTimeout(() => {
-      if (room && room.localParticipant && room.state === 'connected') {
-        const hasVideo = room.localParticipant.getTrack(Track.Source.Camera);
-        const hasAudio = room.localParticipant.getTrack(Track.Source.Microphone);
-        if (!hasVideo && !hasAudio && !trackPublishingRef.current) {
-          console.warn('[RoomPage] ⚠️ Tracks not published after 1s, retrying...');
-          publishTracks();
+        // Verify again after delay
+        if (!room || room.state !== 'connected' || !isConnected || !room.localParticipant) {
+          trackPublishingRef.current = false;
+          return;
         }
+        
+        // Publish tracks immediately
+        await publishFromSavedSettings();
+        console.log('[RoomPage] ✅ Tracks published successfully');
+        tracksPublishedRef.current = true; // Mark as published
+        trackPublishingRef.current = false;
+      } catch (error: any) {
+        console.error('[RoomPage] Error publishing tracks:', error);
+        trackPublishingRef.current = false;
+        // Don't mark as published if it failed - allow retry after a delay
+        setTimeout(() => {
+          tracksPublishedRef.current = false;
+        }, 2000);
       }
-    }, 1000);
+    };
+    
+    // ✅ CRITICAL FIX: Publish immediately with minimal delay (reduced from 1200ms to 200ms)
+    const publishTimeout = setTimeout(() => {
+      publishTracks();
+    }, 200);
     
     return () => {
-      clearTimeout(fallbackTimeout);
-      if (room && room.localParticipant) {
-        room.localParticipant.off('trackPublished', handleTrackPublished);
-      }
+      clearTimeout(publishTimeout);
     };
   }, [isConnected, roomId, room, publishFromSavedSettings]);
 
@@ -1235,11 +1221,43 @@ const RoomPage: React.FC = () => {
     }
   }, [disconnect, navigate, isHost, roomId, user]);
 
-  // Subscribe to recording state changes
+  // Check recording status when user connects (for participants joining already-recording meetings)
+  // This is now handled by the Firestore room listener above
+
+  // Update recording duration timer (for all participants)
+  // Each participant tracks their own recording duration
+  useEffect(() => {
+    if (!isRecording) {
+      setRecordingDuration(0);
+      return;
+    }
+
+    const interval = setInterval(() => {
+      // Get duration from recording service (works for all participants who are recording)
+      const state = recordingService.getState();
+      if (state.isRecording && state.startTime) {
+        setRecordingDuration(state.duration);
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [isRecording]);
+
+  // Subscribe to recording state changes (for all participants' local recording service)
   useEffect(() => {
     const handleRecordingStateChange = (state: any) => {
-      setIsRecording(state.isRecording);
+      const wasRecording = isRecording;
+      const nowRecording = state.isRecording;
+      
+      // Update from local service (works for all participants)
+      setIsRecording(nowRecording);
       setRecordingDuration(state.duration);
+      
+      // If recording just started and user hasn't consented, show consent modal
+      if (nowRecording && !wasRecording && !hasConsentedToRecordingRef.current && isConnectedRef.current) {
+        setShowRecordingConsentModal(true);
+        showRecordingConsentModalRef.current = true;
+      }
     };
 
     const handleSaveComplete = (result: { success: boolean; message: string; filename?: string; location?: string }) => {
@@ -1273,13 +1291,71 @@ const RoomPage: React.FC = () => {
         recordingService.stopRecording();
       }
     };
-  }, []);
+  }, [isRecording, hasConsentedToRecording, isConnected]);
 
   const handleRecord = async () => {
+    console.log('[RoomPage] handleRecord called, isRecording:', isRecording, 'room:', !!room, 'roomId:', roomId, 'user:', !!user);
+    
     // If already recording, stop it
     if (isRecording) {
+      console.log('[RoomPage] Stopping recording...');
       try {
         recordingService.stopRecording();
+        
+        // ✅ Update Firestore to stop THIS USER's recording
+        // Each participant records independently, so we only update their own status
+        if (roomId && user) {
+          try {
+            // Update participant's own recording status
+            const participantRef = doc(db, 'rooms', roomId, 'participants', user.uid);
+            await updateDoc(participantRef, {
+              isRecording: false,
+              recordingStoppedAt: serverTimestamp(),
+            });
+            console.log('[RoomPage] Recording stopped - Participant document updated for user:', user.uid);
+            
+            // Check if this user was the one who triggered room-level recording status
+            // If so, we need to check if anyone else is still recording before clearing room-level status
+            const roomRef = doc(db, 'rooms', roomId);
+            const roomSnap = await getDoc(roomRef);
+            if (roomSnap.exists()) {
+              const roomData = roomSnap.data();
+              if (roomData?.recordingStartedBy === user.uid) {
+                // This user was the one who triggered room-level recording
+                // Check if any other participant is still recording
+                const participantsRef = collection(db, 'rooms', roomId, 'participants');
+                const participantsSnap = await getDocs(participantsRef);
+                const anyOtherRecording = participantsSnap.docs.some(
+                  (docSnap: any) => docSnap.id !== user.uid && docSnap.data().isRecording === true
+                );
+                
+                if (!anyOtherRecording) {
+                  // No one else is recording, clear room-level status
+                  await updateDoc(roomRef, {
+                    isRecording: false,
+                    recordingStartedBy: null,
+                    recordingStoppedAt: serverTimestamp(),
+                  });
+                  console.log('[RoomPage] No other participants recording - room-level status cleared');
+                } else {
+                  // Someone else is still recording, update recordingStartedBy to the next person
+                  const stillRecording = participantsSnap.docs.find(
+                    (docSnap: any) => docSnap.id !== user.uid && docSnap.data().isRecording === true
+                  );
+                  if (stillRecording) {
+                    await updateDoc(roomRef, {
+                      recordingStartedBy: stillRecording.id,
+                    });
+                    console.log('[RoomPage] Another participant still recording - room-level status updated');
+                  }
+                }
+              }
+            }
+          } catch (error) {
+            console.error('[RoomPage] Failed to update Firestore recording status:', error);
+          }
+        }
+        
         // Don't show message here - wait for save complete callback
       } catch (error: any) {
         console.error('Error stopping recording:', error);
@@ -1288,19 +1364,23 @@ const RoomPage: React.FC = () => {
       return;
     }
 
+    console.log('[RoomPage] Starting recording flow...');
+
     // Check if recording is supported
     if (!RecordingService.isSupported()) {
+      console.log('[RoomPage] Recording not supported on this device');
       toast.error('Recording is not supported on this device');
       return;
     }
 
-    if (!room) {
+    if (!room || !roomId || !user) {
+      console.log('[RoomPage] Missing requirements - room:', !!room, 'roomId:', roomId, 'user:', !!user);
       toast.error('Not connected to meeting room. Please wait...');
       return;
     }
 
-    // ✅ SUBSCRIPTION CHECK: Verify host can start recording
-    if (isHost && userProfile) {
+    // ✅ SUBSCRIPTION CHECK: Verify user can start recording (applies to ALL participants)
+    if (userProfile) {
       try {
         const { canStartRecording } = await import('../lib/subscriptionService');
         const { getSubscriptionFromProfile } = await import('../lib/subscriptionService');
@@ -1308,26 +1388,96 @@ const RoomPage: React.FC = () => {
         const check = canStartRecording(subscription);
         
         if (!check.allowed) {
-          toast.error(check.reason || 'Cannot start recording');
+          console.log('[RoomPage] Recording not allowed:', check.reason);
+          toast.error(check.reason || 'Cannot start recording. Please upgrade your subscription.');
           // TODO: Show upgrade modal if upgradeRequired
           return;
         }
+        console.log('[RoomPage] Subscription check passed');
       } catch (error) {
         console.error('[Subscription] Error checking recording:', error);
         // Continue anyway (fail open)
       }
     }
 
-    // IMPORTANT: Recording is only started on explicit host action to avoid burning LiveKit minutes.
-    // Never auto-start recording when host joins, first participant joins, or any other automatic trigger.
-    // Start recording immediately - no options, just record everything
+    // ✅ CRITICAL: Person starting recording does NOT see the modal
+    // They start recording immediately, and other participants will be notified
+    console.log('[RoomPage] Starting recording - user will NOT see consent modal');
+    
     try {
+      // ✅ Update Firestore to track recording status:
+      // 1. Participant-level: Track THIS user's recording status (for badge display)
+      // 2. Room-level: Track that someone is recording (for consent modal to other participants)
+      if (roomId && user) {
+        try {
+          // Update participant's own recording status
+          const participantRef = doc(db, 'rooms', roomId, 'participants', user.uid);
+          await updateDoc(participantRef, {
+            isRecording: true,
+            recordingStartedAt: serverTimestamp(),
+          });
+          console.log('[RoomPage] Recording started - Participant document updated for user:', user.uid);
+          
+          // Update room-level recording status (for consent modal to other participants)
+          const roomRef = doc(db, 'rooms', roomId);
+          try {
+            await updateDoc(roomRef, {
+              isRecording: true, // Indicates someone is recording (for consent modal)
+              recordingStartedBy: user.uid, // Track who started (for consent modal exclusion)
+              recordingStartedAt: serverTimestamp(),
+            });
+            console.log('[RoomPage] ✅ Recording started - Room document updated for consent modal');
+          } catch (updateError: any) {
+            console.error('[RoomPage] ❌ Failed to update room document for recording:', updateError);
+            console.error('[RoomPage] Error code:', updateError.code, 'Error message:', updateError.message);
+            // Continue - participant document was updated, recording will still work
+            // But consent modal won't show to other participants
+            toast.error('Recording started but failed to notify other participants. Please try again.');
+          }
+        } catch (error) {
+          console.error('[RoomPage] Failed to update Firestore recording status:', error);
+          toast.error('Failed to update recording status');
+        }
+      }
+      
+      // Start the actual recording
       await recordingService.startRecording({
         room: room,
       });
-      toast.success('Recording started - capturing entire meeting room');
+      toast.success('Recording started - capturing your screen and meeting audio');
+      setHasConsentedToRecording(true); // Person starting recording automatically consents
+      hasConsentedToRecordingRef.current = true; // Update ref
+      setIsRecording(true); // Update local state for badge display
     } catch (error: any) {
       console.error('Error starting recording:', error);
+      
+      // If recording failed, update Firestore to reflect that
+      if (roomId && user) {
+        try {
+          // Revert participant's recording status
+          const participantRef = doc(db, 'rooms', roomId, 'participants', user.uid);
+          await updateDoc(participantRef, {
+            isRecording: false,
+          });
+          
+          // Check if this user was the only one recording, then clear room-level status
+          const roomRef = doc(db, 'rooms', roomId);
+          const roomSnap = await getDoc(roomRef);
+          if (roomSnap.exists()) {
+            const roomData = roomSnap.data();
+            if (roomData?.recordingStartedBy === user.uid) {
+              // This user was the one who triggered room-level recording, clear it
+              await updateDoc(roomRef, {
+                isRecording: false,
+                recordingStartedBy: null,
+              });
+            }
+          }
+        } catch (updateError) {
+          console.error('[RoomPage] Failed to revert Firestore recording status:', updateError);
+        }
+      }
+      
       // Check if error is subscription-related
       if (error.message?.includes('subscription') || error.message?.includes('limit') || error.message?.includes('plan')) {
         toast.error(error.message);
@@ -1336,6 +1486,25 @@ const RoomPage: React.FC = () => {
         toast.error('Failed to start recording: ' + error.message);
       }
     }
+  };
+
+  // Handle recording consent
+  const handleRecordingConsent = () => {
+    console.log('[RoomPage] Participant consented to recording');
+    setShowRecordingConsentModal(false);
+    showRecordingConsentModalRef.current = false;
+    setHasConsentedToRecording(true);
+    hasConsentedToRecordingRef.current = true;
+    // No pending action needed - recording is already active, user just consented to participate
+  };
+
+  const handleRecordingDecline = () => {
+    console.log('[RoomPage] Participant declined recording consent, leaving meeting');
+    setShowRecordingConsentModal(false);
+    showRecordingConsentModalRef.current = false;
+    // User declined consent, they must leave the meeting
+    disconnect();
+    navigate('/home');
   };
 
   const handleLock = async () => {
@@ -1574,7 +1743,7 @@ const RoomPage: React.FC = () => {
             }
           }} />
           
-          {/* Recording indicator */}
+          {/* Recording indicator - visible to all participants */}
           {isRecording && (
             <div className="flex items-center space-x-2 bg-red-600/20 px-3 py-1 rounded-full border border-red-600/50">
               <div className="w-2 h-2 bg-red-600 rounded-full animate-pulse"></div>
@@ -1681,10 +1850,10 @@ const RoomPage: React.FC = () => {
       </div>
 
             {/* Bottom controls bar - auto-hide - NO BORDERS */}
-      <div className={`h-14 bg-gray-900/95 backdrop-blur-sm flex items-center justify-center px-2 sm:px-4 z-20 transition-transform duration-300 ${showBottomControls ? 'translate-y-0' : 'translate-y-full'}`} style={{ border: 'none', borderTop: 'none' }}>                                           
+      <div className={`h-14 bg-gray-900/95 backdrop-blur-sm flex items-center justify-center px-2 sm:px-4 z-[60] transition-transform duration-300 ${showBottomControls ? 'translate-y-0' : 'translate-y-full'}`} style={{ border: 'none', borderTop: 'none', pointerEvents: 'auto' }}>                                           
                 {/* Center - main controls - scrollable on smaller screens */}
-        <div className="flex items-center space-x-1 sm:space-x-2 overflow-x-auto w-full lg:w-auto lg:justify-center flex-nowrap scrollbar-hide" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none', WebkitOverflowScrolling: 'touch' }}>
-          <div className="flex items-center space-x-1 sm:space-x-2 flex-shrink-0">
+        <div className="flex items-center space-x-1 sm:space-x-2 overflow-x-auto w-full lg:w-auto lg:justify-center flex-nowrap scrollbar-hide" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none', WebkitOverflowScrolling: 'touch', pointerEvents: 'auto' }}>
+          <div className="flex items-center space-x-1 sm:space-x-2 flex-shrink-0" style={{ pointerEvents: 'auto' }}>
             <MeetingControls
               isHost={isHost}
               onRecord={handleRecord}
@@ -1867,8 +2036,43 @@ const RoomPage: React.FC = () => {
           onCancel={handleCancelConflict}
         />
       )}
+
+      {/* Recording Consent Modal - Shows to ALL participants when recording starts */}
+      <RecordingConsentModal
+        isOpen={showRecordingConsentModal}
+        onContinue={handleRecordingConsent}
+        onLeave={handleRecordingDecline}
+        isHost={isHost}
+      />
+      
+      {/* Professional Recording Status Badge - Only visible to the person recording - Top Right */}
+      {isRecording && (
+        <div className="fixed top-4 right-4 z-50 bg-gradient-to-r from-red-600 to-red-700 text-cloud px-4 py-2.5 rounded-lg flex items-center gap-3 shadow-xl border border-red-500/30 backdrop-blur-sm">
+          <div className="relative">
+            <div className="w-3 h-3 bg-cloud rounded-full animate-pulse"></div>
+            <div className="absolute inset-0 w-3 h-3 bg-cloud rounded-full animate-ping opacity-75"></div>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-xs font-semibold uppercase tracking-wide">Recording</span>
+            {recordingDuration > 0 && (
+              <span className="text-xs font-mono text-red-100">
+                {RecordingService.formatDuration(recordingDuration)}
+              </span>
+            )}
+          </div>
+          <button
+            onClick={handleRecord}
+            className="ml-2 px-3 py-1 bg-red-800 hover:bg-red-900 text-cloud text-xs font-semibold rounded transition-colors"
+            title="Stop Recording"
+          >
+            Stop
+          </button>
+        </div>
+      )}
     </div>
   );
 };
 
 export default RoomPage;
+
+

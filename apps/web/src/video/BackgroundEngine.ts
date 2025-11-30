@@ -35,27 +35,59 @@ class BackgroundEngine {
       throw new Error('Track not ready');
     }
 
-    // ✅ CRITICAL: Don't wait for track to become live - just check and proceed
+    // ✅ CRITICAL FIX: Wait for track to be live and verify it stays live
     if (videoTracks[0].readyState !== 'live') {
-      // Quick check - if not live, wait max 500ms then proceed anyway
-      await new Promise<void>((resolve) => {
-        const timeout = setTimeout(resolve, 500);
-        const checkState = () => {
-          const currentTracks = track.mediaStream?.getVideoTracks();
-          if (currentTracks && currentTracks.length > 0 && currentTracks[0].readyState === 'live') {
-            clearTimeout(timeout);
-            resolve();
-          } else {
-            setTimeout(checkState, 50);
+      // Wait up to 2 seconds for track to become live
+      let attempts = 0;
+      const maxAttempts = 40; // 2 seconds max wait
+      
+      while (attempts < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+        
+        const currentTracks = track.mediaStream?.getVideoTracks();
+        if (currentTracks && currentTracks.length > 0) {
+          if (currentTracks[0].readyState === 'live') {
+            break; // Track is now live
+          } else if (currentTracks[0].readyState === 'ended') {
+            throw new Error('Track ended while waiting for live state');
           }
-        };
-        checkState();
-      });
+        }
+        
+        attempts++;
+      }
+      
+      // Final check
+      const finalTracks = track.mediaStream?.getVideoTracks();
+      if (!finalTracks || finalTracks.length === 0 || finalTracks[0].readyState !== 'live') {
+        throw new Error('Track not live after wait');
+      }
     }
+    
+    // ✅ CRITICAL FIX: Add track end listener to detect when track ends
+    const videoTrack = videoTracks[0];
+    const handleTrackEnd = () => {
+      console.warn('[BG] Track ended, clearing processor');
+      if (this.track === track) {
+        this.track = null;
+        this.processor = null;
+      }
+    };
+    
+    videoTrack.addEventListener('ended', handleTrackEnd);
+    
+    // Store cleanup function
+    (track as any).__bgCleanup = () => {
+      videoTrack.removeEventListener('ended', handleTrackEnd);
+    };
 
     // ✅ CRITICAL: Clean up previous track quickly - don't wait
     if (this.track && this.track !== track) {
       try {
+        // Clean up old track's event listener
+        if ((this.track as any).__bgCleanup) {
+          (this.track as any).__bgCleanup();
+        }
+        
         const oldTracks = this.track.mediaStream?.getVideoTracks();
         if (oldTracks && oldTracks.length > 0 && oldTracks[0].readyState !== 'ended') {
           // Fire and forget - don't wait
@@ -67,7 +99,7 @@ class BackgroundEngine {
     }
 
     this.track = track;
-    console.log('[BG] Track initialized');
+    console.log('[BG] Track initialized and monitoring for end events');
   }
 
   checkWebGLSupport(): boolean {
@@ -721,44 +753,61 @@ class BackgroundEngine {
         // ✅ CRITICAL FIX: Store the new blob URL IMMEDIATELY - this keeps it alive while the background is active
         this.bgImageUrl = imageUrl;
         
-        // ✅ CRITICAL FIX: Set processor IMMEDIATELY - no requestAnimationFrame delays
-        try {
-          // Check if cancelled before setting
-          if (abortController.signal.aborted) {
-            this.processor = null;
-            if (imageUrl.startsWith('blob:') && imageUrl !== oldImageBlobUrl) {
-              URL.revokeObjectURL(imageUrl);
-            }
-            this.bgImageUrl = oldImageBlobUrl;
-            this.isSettingImage = false;
-            return;
+      // ✅ CRITICAL FIX: Set processor IMMEDIATELY - no requestAnimationFrame delays
+      try {
+        // Check if cancelled before setting
+        if (abortController.signal.aborted) {
+          this.processor = null;
+          if (imageUrl.startsWith('blob:') && imageUrl !== oldImageBlobUrl) {
+            URL.revokeObjectURL(imageUrl);
           }
-          
-          if (!this.track) {
-            this.processor = null;
-            this.isSettingImage = false;
-            return;
-          }
-          
-          // Final check
-          const finalTracks = this.track.mediaStream?.getVideoTracks();
-          if (!finalTracks || finalTracks.length === 0 || finalTracks[0].readyState !== 'live') {
-            this.processor = null;
-            this.isSettingImage = false;
-            return;
-          }
-          
-          if (!processor || typeof processor !== 'object') {
-            this.processor = null;
-            this.isSettingImage = false;
-            return;
-          }
-          
-          // ✅ CRITICAL FIX: Store processor reference and set IMMEDIATELY
-          this.processor = processor;
-          
-          // Set processor IMMEDIATELY - no delays
-          const setResult = this.track.setProcessor(processor);
+          this.bgImageUrl = oldImageBlobUrl;
+          this.isSettingImage = false;
+          return;
+        }
+        
+        if (!this.track) {
+          this.processor = null;
+          this.isSettingImage = false;
+          return;
+        }
+        
+        // ✅ CRITICAL FIX: Final check - verify track is still live RIGHT BEFORE setting processor
+        const finalTracks = this.track.mediaStream?.getVideoTracks();
+        if (!finalTracks || finalTracks.length === 0) {
+          console.warn('[BG] No video tracks found before setting processor');
+          this.processor = null;
+          this.isSettingImage = false;
+          return;
+        }
+        
+        if (finalTracks[0].readyState !== 'live') {
+          console.warn('[BG] Track not live before setting processor, state:', finalTracks[0].readyState);
+          this.processor = null;
+          this.isSettingImage = false;
+          throw new Error(`Track not live (state: ${finalTracks[0].readyState})`);
+        }
+        
+        if (!processor || typeof processor !== 'object') {
+          this.processor = null;
+          this.isSettingImage = false;
+          return;
+        }
+        
+        // ✅ CRITICAL FIX: Store processor reference and set IMMEDIATELY
+        this.processor = processor;
+        
+        // ✅ CRITICAL FIX: Double-check track is still live RIGHT before setProcessor
+        const immediateCheck = this.track.mediaStream?.getVideoTracks();
+        if (!immediateCheck || immediateCheck.length === 0 || immediateCheck[0].readyState !== 'live') {
+          console.error('[BG] Track ended between check and setProcessor call!');
+          this.processor = null;
+          this.isSettingImage = false;
+          throw new Error('Track ended before processor could be set');
+        }
+        
+        // Set processor IMMEDIATELY - no delays
+        const setResult = this.track.setProcessor(processor);
           
           // If setProcessor returns a promise, handle it
           if (setResult && typeof setResult.then === 'function') {
